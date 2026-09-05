@@ -545,7 +545,26 @@ fn clean_hosts() -> Result<String, AppError> {
 
 mod nodes;
 
+/// 清掉 WorkBuddy 等环境注入的代理变量。
+/// 否则 reqwest 默认走 `HTTPS_PROXY=127.0.0.1:55995` 假代理，直连被劫持；
+/// 同时 mihomo 子进程也会继承该代理，测速结果失真。
+fn clear_proxy_env() {
+    for k in [
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "https_proxy",
+        "http_proxy",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ] {
+        let _ = std::env::remove_var(k);
+    }
+}
+
 fn main() {
+    clear_proxy_env();
     let args: Vec<String> = std::env::args().collect();
     let mut registry = Registry::new();
     registry
