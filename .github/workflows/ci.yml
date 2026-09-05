@@ -60,7 +60,18 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Install zig
-        uses: mlugg/setup-zig@v1
+        run: |
+          set -e
+          ZIG_VER=0.13.0
+          for URL in \
+            "https://ziglang.org/download/${ZIG_VER}/zig-linux-x86_64-${ZIG_VER}.tar.xz" \
+            "https://github.com/ziglang/zig/releases/download/${ZIG_VER}/zig-linux-x86_64-${ZIG_VER}.tar.xz" ; do
+            if curl -fsSL "$URL" -o zig.tar.xz; then break; fi
+          done
+          tar -xf zig.tar.xz
+          echo "$PWD/zig-linux-x86_64-${ZIG_VER}" >> "$GITHUB_PATH"
+      - name: Verify zig
+        run: zig version
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
       - name: Build (zigbuild)
