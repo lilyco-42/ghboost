@@ -739,7 +739,10 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
     // 组测速：一次请求测 ALL 组全部成员（含 provider 展开）。
     // 关键点：节点名作为 JSON 响应的 key 返回，不经过 URL 路径编码，
     // 因此彻底避开 emoji/中文名在 /proxies/{name}/delay 上的 404 问题。
-    let url = format!("{base}/proxies/ALL/delay?url={test_url}&timeout={timeout_ms}");
+    let url = format!(
+        "{base}/proxies/ALL/delay?url={}&timeout={}",
+        app.test_url, app.timeout_ms
+    );
     let mut tested: Vec<TestedNode> = Vec::new();
     match client.get(&url).header("Authorization", auth).send().await {
         Ok(r) => {
@@ -749,7 +752,11 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
                         let d = ms.as_u64();
                         tested.push(TestedNode {
                             name: name.clone(),
-                            delay_ms: if d == Some(0) { None } else { d },
+                            delay_ms: if d == Some(0) {
+                                None
+                            } else {
+                                d.map(|v| v as u128)
+                            },
                             protocol: String::new(),
                             source: String::new(),
                         });
@@ -891,12 +898,7 @@ async fn probe_delay(
                 return Some(d as u128);
             }
             if DIAG.fetch_add(1, Ordering::SeqCst) < 5 {
-                eprintln!(
-                    "[probe-err] name={:?} status={} body={}",
-                    name,
-                    status,
-                    j
-                );
+                eprintln!("[probe-err] name={:?} status={} body={}", name, status, j);
             }
         } else if DIAG.fetch_add(1, Ordering::SeqCst) < 5 {
             eprintln!("[probe-err] name={:?} status={} (非 JSON)", name, status);
@@ -1024,8 +1026,8 @@ async fn add_async(app: &Add, ctx: &Context) -> Result<AddResult, AppError> {
     // --apply：注入用户 profile
     if app.apply {
         let profile = resolve_profile(app.profile.clone())?;
-        let detail = inject_profile(&profile, &good_uri_path, &good_clash)
-            .map_err(AppError::Runtime)?;
+        let detail =
+            inject_profile(&profile, &good_uri_path, &good_clash).map_err(AppError::Runtime)?;
         result.applied = true;
         ctx.log(LogLevel::Info, detail.clone());
         result.apply_detail = Some(detail);
