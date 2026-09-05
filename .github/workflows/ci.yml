@@ -1,0 +1,167 @@
+name: CI
+
+# 跨平台构建 ghboost：
+#   - cargo-zigbuild（单 ubuntu runner）：Linux(x86_64/aarch64, gnu+musl) + Windows(x86_64/aarch64, gnu)
+#   - macOS runner：apple-darwin（Apple Silicon + Intel）
+#   - Android：NDK + cargo-ndk → aarch64-linux-android
+# 打 v* tag 时把全部产物发布为 GitHub Release。
+#
+# 参考：lilyco/build-release.yml、cute_box/build-all.yml（macOS/Android 走原生 runner + NDK）
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------
+  # 测试 + 静态检查（离线单元测试，无需网络）
+  # ---------------------------------------------------------------
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets
+      - name: Run tests
+        run: cargo test
+
+  # ---------------------------------------------------------------
+  # cargo-zigbuild：Linux + Windows（单 runner 出全部二进制）
+  # ---------------------------------------------------------------
+  zigbuild:
+    name: zigbuild (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+          - aarch64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install zig
+        uses: mlugg/setup-zig@v1
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+      - name: Build (zigbuild)
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist
+          SRC="target/${{ matrix.target }}/release/ghboost"
+          [ -f "$SRC.exe" ] && SRC="$SRC.exe"
+          cp "$SRC" "dist/ghboost-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # macOS：原生 runner（apple-darwin 需要 macOS SDK）
+  # ---------------------------------------------------------------
+  macos:
+    name: macos (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/ghboost" "dist/ghboost-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Android：NDK + cargo-ndk → aarch64-linux-android（Termux）
+  # ---------------------------------------------------------------
+  android:
+    name: android (aarch64-linux-android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install NDK
+        run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973" --sdk_root=$ANDROID_HOME
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build (aarch64-linux-android)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: cargo ndk --platform 24 -t arm64-v8a build --release
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp target/aarch64-linux-android/release/ghboost dist/ghboost-aarch64-linux-android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-aarch64-linux-android
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # 发布 GitHub Release（版本 tag 时）
+  # ---------------------------------------------------------------
+  release:
+    name: Publish Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, zigbuild, macos, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Show artifacts
+        run: find artifacts -type f | sort
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
