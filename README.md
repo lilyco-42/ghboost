@@ -76,6 +76,114 @@ ghboost add --apply                # 把最优节点注入当前激活的 Clash 
 
 `scan` / `test` / `add` 共享 `./nodes_data` 目录作为节点库。
 
+## C ABI / 多语言调用
+
+除了 CLI / TUI / Web / MCP 四端，核心能力还以 **C ABI 动态库**形式导出，可从任意支持 FFI 的语言 / 设备 / 平台嵌入调用（无需 Rust 工具链）。
+
+Release 中随二进制一起附带：
+
+| 平台 | 库文件名 | 头文件 |
+| --- | --- | --- |
+| Linux x86_64 / aarch64 (gnu) | `libghboost-x86_64-unknown-linux-gnu.so` / `...-aarch64...so` | `ghboost.h` |
+| macOS (Apple Silicon / Intel) | `libghboost-aarch64-apple-darwin.dylib` / `...-x86_64...dylib` | `ghboost.h` |
+| Windows x86_64 | `ghboost-x86_64-pc-windows-gnu.dll` | `ghboost.h` |
+
+> 注：`*-unknown-linux-musl` 目标因 musl 仅支持静态链接，Rust 不会产出 cdylib，故无对应 `.so`（属预期行为）。
+
+### 调用约定
+
+- 入参：JSON 字符串（`const char*`，UTF-8）。传 `NULL` / 空串 / `"{}"` 即全部默认；缺字段取默认。
+- 出参：JSON 字符串（`char*`，堆分配）。成功为结果对象，失败为 `{"error":"..."}`。
+- **调用方必须用 `ghboost_free()` 释放返回的指针**，否则内存泄漏；传 `NULL` 安全。
+- 6 个导出符号：`ghboost_boost` / `ghboost_scan` / `ghboost_test` / `ghboost_add`（均接收 `const char* params_json`，返回 `char*`）、`ghboost_version`（无参，返回 `char*`）、`ghboost_free`（`char*` → `void`）。
+
+### Python（ctypes）
+
+```python
+import ctypes, json
+
+lib = ctypes.CDLL("./libghboost.so")          # Windows 用 "ghboost.dll"
+lib.ghboost_free.argtypes = [ctypes.c_char_p]
+lib.ghboost_free.restype = None
+for fn in ("ghboost_boost","ghboost_scan","ghboost_test","ghboost_add","ghboost_version"):
+    f = getattr(lib, fn)
+    f.restype = ctypes.c_char_p
+    f.argtypes = [ctypes.c_char_p]
+
+def call(f, params=None):
+    raw = f((json.dumps(params) if params is not None else None).encode("utf-8")
+            if params is not None else None)
+    s = ctypes.string_at(raw).decode("utf-8") if raw else "null"
+    lib.ghboost_free(raw)
+    return s
+
+print(call(lib.ghboost_version))                       # 版本信息
+print(call(lib.ghboost_boost, {"apply": False}))      # 优选（不写 hosts）
+print(call(lib.ghboost_scan, {"per_limit": 200}))     # 扫描
+```
+
+### C#
+
+```csharp
+using System;
+using System.Runtime.InteropServices;
+
+class GhBoost
+{
+    [DllImport("ghboost", CallingConvention = CallingConvention.Cdecl)]
+    static extern IntPtr ghboost_boost(IntPtr paramsJson);
+    [DllImport("ghboost", CallingConvention = CallingConvention.Cdecl)]
+    static extern IntPtr ghboost_scan(IntPtr paramsJson);
+    [DllImport("ghboost", CallingConvention = CallingConvention.Cdecl)]
+    static extern IntPtr ghboost_test(IntPtr paramsJson);
+    [DllImport("ghboost", CallingConvention = CallingConvention.Cdecl)]
+    static extern IntPtr ghboost_add(IntPtr paramsJson);
+    [DllImport("ghboost", CallingConvention = CallingConvention.Cdecl)]
+    static extern IntPtr ghboost_version();
+    [DllImport("ghboost", CallingConvention = CallingConvention.Cdecl)]
+    static extern void ghboost_free(IntPtr ptr);
+
+    static string Call(Func<IntPtr, IntPtr> f, string json = null)
+    {
+        IntPtr arg = json == null ? IntPtr.Zero
+                                  : Marshal.StringToHGlobalAnsi(json);
+        IntPtr raw = f(arg);
+        if (arg != IntPtr.Zero) Marshal.FreeHGlobal(arg);
+        if (raw == IntPtr.Zero) return null;
+        string s = Marshal.PtrToStringAnsi(raw);
+        ghboost_free(raw);
+        return s;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Call(ghboost_version));
+        Console.WriteLine(Call(ghboost_boost, "{\"apply\":false}"));
+    }
+}
+```
+
+### C / C++
+
+```c
+#include "ghboost.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void) {
+    char *ver = ghboost_version();
+    printf("version: %s\n", ver);
+    ghboost_free(ver);
+
+    char *out = ghboost_boost("{\"apply\":false}");
+    printf("boost: %s\n", out);
+    ghboost_free(out);
+    return 0;
+}
+```
+
+编译：`cc main.c -L. -lghboost -o demo`（Windows 把 `ghboost.dll` 与 `ghboost.lib` 放链接路径）。
+
 ## 支持平台
 
 通过 GitHub Actions + **cargo-zigbuild**（Linux / Windows）与 **原生 runner / NDK**（macOS / Android）全平台构建，详见 `.github/workflows/ci.yml`。打 `v*` tag 自动发布 GitHub Release。
