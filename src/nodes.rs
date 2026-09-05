@@ -1,18 +1,19 @@
-//! 节点管理：自动扫描订阅源 → mihomo 内核精确测速 → 注入 Clash Verge / 导出订阅
+//! 节点管理核心：自动扫描订阅源 → mihomo 内核精确测速 → 注入/导出（纯逻辑，不依赖 lilyco）
 //!
 //! 设计要点：
 //! - **扫描** 只做"聚合 + 分类 + 去重"：把每个订阅源按格式拆成
 //!   ① URI 文本行（`ss://`/`vless://`/...）或 ② Clash YAML 的 `proxies:` 块。
-//!   不做 URI→结构化转换（vless+Reality 全套自实现不现实）。
-//! - **测速** 借用本机已有的 Mihomo 内核：生成一个临时 config，用
+//! - **测速** 借用本机已有的 Mihomo 内核：生成临时 config，用
 //!   `proxy-providers`（`parse-type: v2ray` / `clash`）直接吃原始订阅，启动
 //!   **独立实例**（独立端口 + external-controller + secret + `-d` 隔离），
 //!   REST API 批量测延迟。绝不动用户正在跑的 Clash Verge。
 //! - **添加** 默认只导出：把测过的可用节点写成 `nodes_good_uri.txt` +
-//!   `nodes_good.yaml`。`--apply` 才把它们注入用户当前激活的 local profile
-//!   （备份原文件），URI 型以 provider 注入（mihomo 自己解析，零转换）。
+//!   `nodes_good.yaml`。`apply` 才把它们注入用户当前激活的 local profile
+//!   （备份原文件）。
+//!
+//! 对外暴露 `ScanParams`/`TestParams`/`AddParams` + `*_core` 异步函数，bin 与 cdylib 共用。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -20,15 +21,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
-use lilyco::prelude::*;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::{Event, Level};
+
 /// free-VPN 仓库 README（订阅源索引）
-const REPO_README: &str = "https://raw.githubusercontent.com/lilyco-42/free-VPN/main/README.md";
+pub const REPO_README: &str = "https://raw.githubusercontent.com/lilyco-42/free-VPN/main/README.md";
 
 /// Mihomo 二进制候选路径（按存在性选第一个）
 const MIHOMO_CANDIDATES: &[&str] = &[
@@ -39,12 +41,6 @@ const MIHOMO_CANDIDATES: &[&str] = &[
     "verge-mihomo",
     "mihomo",
 ];
-
-/// 节点库默认数据目录（相对当前工作目录）
-#[allow(dead_code)]
-fn default_data_dir() -> PathBuf {
-    PathBuf::from("nodes_data")
-}
 
 // ── 数据结构 ────────────────────────────────────────────────
 
@@ -92,6 +88,95 @@ pub struct AddResult {
     pub exported_yaml: String,
     pub applied: bool,
     pub apply_detail: Option<String>,
+}
+
+// ── 参数（FFI / bin 共用，JSON 反序列化，缺字段用 Default） ──
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ScanParams {
+    /// 额外订阅源 URL（与仓库索引合并）
+    pub source: Option<Vec<String>>,
+    /// 是否也扫描 free-VPN 仓库 README 索引
+    pub include_repo: bool,
+    /// 最多处理的订阅源数
+    pub max_sources: u64,
+    /// 并发拉取数
+    pub concurrency: u64,
+    /// 单源最多取前 N 行节点
+    pub per_limit: u64,
+    /// 节点库数据目录
+    pub output: PathBuf,
+}
+
+impl Default for ScanParams {
+    fn default() -> Self {
+        Self {
+            source: None,
+            include_repo: true,
+            max_sources: 60,
+            concurrency: 16,
+            per_limit: 500,
+            output: PathBuf::from("nodes_data"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TestParams {
+    /// 节点库数据目录（需先 scan）
+    pub input: PathBuf,
+    /// 最多测试节点数
+    pub top: u64,
+    /// 测速并发
+    pub concurrency: u64,
+    /// 单个节点测速超时（毫秒）
+    pub timeout_ms: u64,
+    /// 测速用的探测 URL
+    pub test_url: String,
+    /// mihomo 二进制路径（默认自动探测）
+    pub mihomo: Option<PathBuf>,
+}
+
+impl Default for TestParams {
+    fn default() -> Self {
+        Self {
+            input: PathBuf::from("nodes_data"),
+            top: 300,
+            concurrency: 32,
+            timeout_ms: 8000,
+            test_url: "https://www.gstatic.com/generate_204".to_string(),
+            mihomo: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AddParams {
+    /// 测试结果数据目录
+    pub input: PathBuf,
+    /// 保留延迟最低的 N 个节点
+    pub keep: u64,
+    /// 延迟上限（毫秒），超过的丢弃；0=不限
+    pub max_ms: u64,
+    /// 写入用户当前激活的 local profile（带备份）。默认只导出
+    pub apply: bool,
+    /// 目标 profile 路径（默认自动定位当前激活的 Clash Verge local profile）
+    pub profile: Option<PathBuf>,
+}
+
+impl Default for AddParams {
+    fn default() -> Self {
+        Self {
+            input: PathBuf::from("nodes_data"),
+            keep: 20,
+            max_ms: 0,
+            apply: false,
+            profile: None,
+        }
+    }
 }
 
 // ── 工具函数 ────────────────────────────────────────────────
@@ -307,6 +392,29 @@ fn decode_vmess(b: &str) -> Option<String> {
     None
 }
 
+/// 清理代理名：仅保留 ASCII 字母数字与 `-_.`，其余（emoji/中文/空格/符号）删除。
+/// mihomo 的 `/proxies/{name}` 端点对 emoji/中文名会 404，清理为 ASCII 后才能用 URL 路由精确匹配。
+fn clean_label(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect()
+}
+
+/// 清理单行 URI 的 #name 部分（协议/参数不变），返回新 URI
+fn clean_uri_name(line: &str) -> String {
+    if let Some(pos) = line.rfind('#') {
+        let (head, rest) = line.split_at(pos);
+        let cleaned = clean_label(&rest[1..]);
+        if cleaned.is_empty() {
+            head.to_string()
+        } else {
+            format!("{head}#{cleaned}")
+        }
+    } else {
+        line.to_string()
+    }
+}
+
 /// 从 README 提取 raw.githubusercontent 订阅链接（剥掉 # 片段）
 fn extract_repo_sources(readme: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -346,68 +454,35 @@ async fn fetch_text(client: &reqwest::Client, url: &str) -> Option<String> {
 
 // ── 命令 1：节点自动扫描 ───────────────────────────────────
 
-#[derive(App)]
-#[app(
-    name = "scan",
-    about = "自动扫描 free-VPN 等订阅源，解析去重导出节点库",
-    run = "run_scan"
-)]
-pub struct Scan {
-    /// 额外订阅源 URL（可多次指定，与仓库索引合并）
-    source: Option<Vec<String>>,
-    /// 是否也扫描 free-VPN 仓库 README 索引（默认开）
-    #[arg(default = true)]
-    include_repo: bool,
-    /// 最多处理的订阅源数（源很多，限量避免过慢）
-    #[arg(default = 60, range = 1..=200)]
-    max_sources: u64,
-    /// 并发拉取数
-    #[arg(default = 16, range = 1..=64)]
-    concurrency: u64,
-    /// 单源最多取前 N 行节点（避免巨型源卡死）
-    #[arg(default = 500, range = 1..=5000)]
-    per_limit: u64,
-    /// 节点库数据目录（默认 ./nodes_data）
-    #[arg(default = "nodes_data")]
-    output: PathBuf,
-}
-
-fn run_scan(app: &Scan, ctx: &Context) -> Result<serde_json::Value, AppError> {
-    let r = run_on_rt(async { scan_async(app, ctx).await })?;
-    ctx.done(
-        serde_json::to_value(&r).unwrap_or(serde_json::Value::Null),
-        0,
-    );
-    Ok(serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
-}
-
-async fn scan_async(app: &Scan, ctx: &Context) -> Result<ScanResult, AppError> {
+pub async fn scan_core(
+    app: ScanParams,
+    sink: &dyn Fn(&Event),
+) -> Result<serde_json::Value, String> {
     let data_dir = &app.output;
-    std::fs::create_dir_all(data_dir)
-        .map_err(|e| AppError::Runtime(format!("创建数据目录失败: {e}")))?;
+    std::fs::create_dir_all(data_dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
 
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(30))
         .user_agent("ghboost/0.1")
         .build()
-        .map_err(|e| AppError::Runtime(format!("http 客户端失败: {e}")))?;
+        .map_err(|e| format!("http 客户端失败: {e}"))?;
 
     // 收集源 URL
     let mut sources: Vec<String> = Vec::new();
     if app.include_repo {
         if let Some(readme) = fetch_text(&client, REPO_README).await {
             let mut repo = extract_repo_sources(&readme);
-            ctx.log(
-                LogLevel::Info,
-                format!("仓库索引提取到 {} 个订阅源", repo.len()),
-            );
+            sink(&Event::Log {
+                level: Level::Info,
+                message: format!("仓库索引提取到 {} 个订阅源", repo.len()),
+            });
             sources.append(&mut repo);
         } else {
-            ctx.log(
-                LogLevel::Warn,
-                "仓库 README 抓取失败，跳过（可手动 --source 指定）",
-            );
+            sink(&Event::Log {
+                level: Level::Warn,
+                message: "仓库 README 抓取失败，跳过（可手动 --source 指定）".to_string(),
+            });
         }
     }
     if let Some(extra) = &app.source {
@@ -416,12 +491,15 @@ async fn scan_async(app: &Scan, ctx: &Context) -> Result<ScanResult, AppError> {
     sources.sort();
     sources.dedup();
     if sources.is_empty() {
-        return Err(AppError::Runtime("没有任何订阅源可扫描".into()));
+        return Err("没有任何订阅源可扫描".into());
     }
     let sources: Vec<String> = sources.into_iter().take(app.max_sources as usize).collect();
     let total = sources.len() as u64;
-    ctx.log(LogLevel::Info, format!("共 {} 个源，开始并发扫描", total));
-    ctx.emit(Progress::Started {
+    sink(&Event::Log {
+        level: Level::Info,
+        message: format!("共 {} 个源，开始并发扫描", total),
+    });
+    sink(&Event::Started {
         total: Some(total),
         message: Some("扫描订阅源".into()),
     });
@@ -447,11 +525,11 @@ async fn scan_async(app: &Scan, ctx: &Context) -> Result<ScanResult, AppError> {
 
     while let Some(res) = set.join_next().await {
         if let Ok((i, url, text)) = res {
-            ctx.tick(
-                i as u64,
-                Some(total),
-                format!("扫描 {}", &url[..url.len().min(48)]),
-            );
+            sink(&Event::Tick {
+                current: i as u64,
+                total: Some(total),
+                message: format!("扫描 {}", &url[..url.len().min(48)]),
+            });
             let Some(text) = text else { continue };
             sources_ok += 1;
             used_sources.insert(url.clone());
@@ -460,6 +538,15 @@ async fn scan_async(app: &Scan, ctx: &Context) -> Result<ScanResult, AppError> {
                 uri_lines.push(u);
             }
             clash_proxies.extend(clash);
+        }
+    }
+
+    // 清理节点名：emoji/中文/空格会导致 mihomo REST 端点 `/proxies/{name}` 404，
+    // 清理为 ASCII 安全名后再写入，测速才能精确匹配。
+    uri_lines = uri_lines.into_iter().map(|l| clean_uri_name(&l)).collect();
+    for p in &mut clash_proxies {
+        if let Some(n) = p.get("name").and_then(|x| x.as_str()) {
+            p["name"] = serde_yaml::Value::String(clean_label(n));
         }
     }
 
@@ -479,7 +566,7 @@ async fn scan_async(app: &Scan, ctx: &Context) -> Result<ScanResult, AppError> {
     // 写磁盘
     let uri_path = data_dir.join("nodes_uri.txt");
     std::fs::write(&uri_path, uri_lines.join("\n") + "\n")
-        .map_err(|e| AppError::Runtime(format!("写 {} 失败: {e}", uri_path.display())))?;
+        .map_err(|e| format!("写 {} 失败: {e}", uri_path.display()))?;
     let clash_path = data_dir.join("nodes_clash.yaml");
     let clash_doc = serde_yaml::to_string(&serde_yaml::Value::Mapping(
         serde_yaml::Mapping::from_iter(vec![(
@@ -487,9 +574,9 @@ async fn scan_async(app: &Scan, ctx: &Context) -> Result<ScanResult, AppError> {
             serde_yaml::Value::Sequence(clash_proxies.clone()),
         )]),
     ))
-    .map_err(|e| AppError::Runtime(format!("序列化 clash 失败: {e}")))?;
+    .map_err(|e| format!("序列化 clash 失败: {e}"))?;
     std::fs::write(&clash_path, clash_doc)
-        .map_err(|e| AppError::Runtime(format!("写 {} 失败: {e}", clash_path.display())))?;
+        .map_err(|e| format!("写 {} 失败: {e}", clash_path.display()))?;
 
     // 索引：name↔源行，供测速/添加映射
     let mut index: Vec<NodeInfo> = Vec::new();
@@ -523,73 +610,46 @@ async fn scan_async(app: &Scan, ctx: &Context) -> Result<ScanResult, AppError> {
     }
     let index_path = data_dir.join("nodes_index.json");
     std::fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap())
-        .map_err(|e| AppError::Runtime(format!("写索引失败: {e}")))?;
+        .map_err(|e| format!("写索引失败: {e}"))?;
 
-    ctx.log(
-        LogLevel::Info,
-        format!(
+    sink(&Event::Log {
+        level: Level::Info,
+        message: format!(
             "扫描完成：{} 源成功 / URI 节点 {} / Clash 节点 {}",
             sources_ok,
             uri_lines.len(),
             clash_proxies.len()
         ),
-    );
+    });
 
-    Ok(ScanResult {
+    let result = ScanResult {
         sources_total: total as usize,
         sources_ok,
         uri_nodes: uri_lines.len(),
         clash_nodes: clash_proxies.len(),
         data_dir: data_dir.display().to_string(),
-    })
+    };
+    sink(&Event::Done {
+        output: serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+        elapsed_ms: 0,
+    });
+    Ok(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null))
 }
 
 // ── 命令 2：节点测试（mihomo 内核） ─────────────────────────
 
-#[derive(App)]
-#[app(
-    name = "test",
-    about = "启动独立 Mihomo 实例，对扫描出的节点做真实延迟测试",
-    run = "run_test"
-)]
-pub struct Test {
-    /// 节点库数据目录（默认 ./nodes_data，需先 scan）
-    #[arg(default = "nodes_data")]
-    input: PathBuf,
-    /// 最多测试节点数（太多 mihomo 启动慢，默认 300）
-    #[arg(default = 300, range = 10..=3000)]
-    top: u64,
-    /// 测速并发
-    #[arg(default = 32, range = 1..=128)]
-    concurrency: u64,
-    /// 单个节点测速超时（毫秒）
-    #[arg(default = 8000, range = 1000..=30000)]
-    timeout_ms: u64,
-    /// 测速用的探测 URL（代表能否访问墙外）
-    #[arg(default = "https://www.gstatic.com/generate_204")]
-    test_url: String,
-    /// mihomo 二进制路径（默认自动探测）
-    mihomo: Option<PathBuf>,
-}
-
-fn run_test(app: &Test, ctx: &Context) -> Result<serde_json::Value, AppError> {
-    let r = run_on_rt(async { test_async(app, ctx).await })?;
-    ctx.done(
-        serde_json::to_value(&r).unwrap_or(serde_json::Value::Null),
-        0,
-    );
-    Ok(serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
-}
-
-async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
+pub async fn test_core(
+    app: TestParams,
+    sink: &dyn Fn(&Event),
+) -> Result<serde_json::Value, String> {
     let dir = &app.input;
     let uri_path = dir.join("nodes_uri.txt");
     let clash_path = dir.join("nodes_clash.yaml");
     if !uri_path.exists() && !clash_path.exists() {
-        return Err(AppError::Runtime(format!(
+        return Err(format!(
             "数据目录 {} 没有 nodes_uri.txt / nodes_clash.yaml，请先运行 scan",
             dir.display()
-        )));
+        ));
     }
 
     let mihomo = app
@@ -597,31 +657,29 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
         .clone()
         .or_else(find_mihomo)
         .ok_or_else(|| {
-            AppError::Runtime(
-                "未找到 Mihomo 内核（C:\\Program Files\\Clash Verge\\verge-mihomo.exe 或 PATH 中的 mihomo）。\n\
-                 请先用 Clash Verge / 手动安装 Mihomo，或 --mihomo 指定路径"
-                    .into(),
-            )
+            "未找到 Mihomo 内核（C:\\Program Files\\Clash Verge\\verge-mihomo.exe 或 PATH 中的 mihomo）。\n\
+             请先用 Clash Verge / 手动安装 Mihomo，或 --mihomo 指定路径"
+                .to_string()
         })?;
-    ctx.log(LogLevel::Info, format!("使用内核: {}", mihomo.display()));
+    sink(&Event::Log {
+        level: Level::Info,
+        message: format!("使用内核: {}", mihomo.display()),
+    });
 
     // 临时工作目录（独立于用户 Clash Verge，绝不干扰）
     let tmp = dir.join("mihomo_test");
     let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp)
-        .map_err(|e| AppError::Runtime(format!("创建临时目录失败: {e}")))?;
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
     // mihomo 的 file provider 路径必须在 -d home 目录内（安全限制），
     // 所以把节点文件复制进临时 home，provider 改用相对/内部路径。
     let uri_in_tmp = tmp.join("nodes_uri.txt");
     let clash_in_tmp = tmp.join("nodes_clash.yaml");
     if uri_path.exists() {
-        std::fs::copy(&uri_path, &uri_in_tmp)
-            .map_err(|e| AppError::Runtime(format!("复制 URI 失败: {e}")))?;
+        std::fs::copy(&uri_path, &uri_in_tmp).map_err(|e| format!("复制 URI 失败: {e}"))?;
     }
     if clash_path.exists() {
-        std::fs::copy(&clash_path, &clash_in_tmp)
-            .map_err(|e| AppError::Runtime(format!("复制 Clash 失败: {e}")))?;
+        std::fs::copy(&clash_path, &clash_in_tmp).map_err(|e| format!("复制 Clash 失败: {e}"))?;
     }
 
     let mixed = free_port();
@@ -685,20 +743,18 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
         uses = uses.join("\n      - ")
     );
     let cfg_path = tmp.join("config.yaml");
-    std::fs::write(&cfg_path, cfg)
-        .map_err(|e| AppError::Runtime(format!("写临时配置失败: {e}")))?;
+    std::fs::write(&cfg_path, cfg).map_err(|e| format!("写临时配置失败: {e}"))?;
 
     // 启动独立 mihomo 实例（stderr 落日志，便于失败时诊断；stdout 丢弃）
-    ctx.log(
-        LogLevel::Info,
-        format!("启动独立实例 (mixed:{mixed} ctrl:{ctrl})..."),
-    );
+    sink(&Event::Log {
+        level: Level::Info,
+        message: format!("启动独立实例 (mixed:{mixed} ctrl:{ctrl})..."),
+    });
     let log_path = tmp.join("mihomo.log");
-    let log_file = std::fs::File::create(&log_path)
-        .map_err(|e| AppError::Runtime(format!("创建日志失败: {e}")))?;
+    let log_file = std::fs::File::create(&log_path).map_err(|e| format!("创建日志失败: {e}"))?;
     let log_dup = log_file
         .try_clone()
-        .map_err(|e| AppError::Runtime(format!("克隆日志失败: {e}")))?;
+        .map_err(|e| format!("克隆日志失败: {e}"))?;
     let mut child = Command::new(&mihomo)
         .arg("-d")
         .arg(&tmp)
@@ -707,7 +763,7 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
         .stdout(Stdio::from(log_dup))
         .stderr(Stdio::from(log_file))
         .spawn()
-        .map_err(|e| AppError::Runtime(format!("启动 mihomo 失败: {e}（可能端口被占，重试）")))?;
+        .map_err(|e| format!("启动 mihomo 失败: {e}（可能端口被占，重试）"))?;
 
     let base = format!("http://127.0.0.1:{ctrl}");
     let auth = format!("Bearer {secret}");
@@ -715,64 +771,73 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
         .no_proxy()
         .timeout(Duration::from_secs(600))
         .build()
-        .map_err(|e| AppError::Runtime(format!("rest 客户端失败: {e}")))?;
+        .map_err(|e| format!("rest 客户端失败: {e}"))?;
 
     // 等待就绪
     let ready = wait_ready(&client, &base, &auth).await;
     if !ready {
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();
         let _ = child.kill();
-        return Err(AppError::Runtime(format!(
-            "mihomo 启动后 30s 内未就绪。日志:\n{log}"
-        )));
+        return Err(format!("mihomo 启动后 30s 内未就绪。日志:\n{log}"));
     }
 
-    // 先拿成员总数（/providers/proxies 列表，节点名仅用于计数，不进 URL 路径）
+    // 拿待测节点名（已是 ASCII 安全名，scan 阶段清理过），top 限制
     let members = get_all_members(&client, &base, &auth).await;
+    let members: Vec<String> = members.into_iter().take(app.top as usize).collect();
     let n = members.len();
-    ctx.log(LogLevel::Info, format!("实例就绪，共 {} 个节点待测", n));
-    ctx.emit(Progress::Started {
+    sink(&Event::Log {
+        level: Level::Info,
+        message: format!("实例就绪，共 {} 个节点待测", n),
+    });
+    sink(&Event::Started {
         total: Some(n as u64),
         message: Some("延迟测试".into()),
     });
 
-    // 组测速：一次请求测 ALL 组全部成员（含 provider 展开）。
-    // 关键点：节点名作为 JSON 响应的 key 返回，不经过 URL 路径编码，
-    // 因此彻底避开 emoji/中文名在 /proxies/{name}/delay 上的 404 问题。
-    let url = format!(
-        "{base}/proxies/ALL/delay?url={}&timeout={}",
-        app.test_url, app.timeout_ms
-    );
-    let mut tested: Vec<TestedNode> = Vec::new();
-    match client.get(&url).header("Authorization", auth).send().await {
-        Ok(r) => {
-            if let Ok(j) = r.json::<serde_json::Value>().await {
-                if let Some(map) = j.get("delay").and_then(|x| x.as_object()) {
-                    for (name, ms) in map {
-                        let d = ms.as_u64();
-                        tested.push(TestedNode {
-                            name: name.clone(),
-                            delay_ms: if d == Some(0) {
-                                None
-                            } else {
-                                d.map(|v| v as u128)
-                            },
-                            protocol: String::new(),
-                            source: String::new(),
-                        });
-                    }
-                }
-            }
-        }
-        Err(e) => return Err(AppError::Runtime(format!("组测速请求失败: {e}"))),
+    // 逐节点测延迟：节点名是 ASCII，URL 路由精确匹配，不会 404。
+    let sem = Arc::new(Semaphore::new(app.concurrency.max(1) as usize));
+    let timeout = app.timeout_ms;
+    let mut set = JoinSet::new();
+    for (i, name) in members.iter().enumerate() {
+        let sem = sem.clone();
+        let client = client.clone();
+        let base = base.clone();
+        let auth = auth.clone();
+        let name = name.clone();
+        let url = app.test_url.clone();
+        set.spawn(async move {
+            let _p = sem.acquire().await;
+            let ms = probe_delay(&client, &base, &auth, &name, &url, timeout).await;
+            (i, name, ms)
+        });
     }
-    // 按延迟升序，仅保留前 top 个（其余丢弃以省内存/输出）
+
+    let mut tested: Vec<TestedNode> = Vec::new();
+    let mut done = 0u64;
+    while let Some(res) = set.join_next().await {
+        if let Ok((_i, name, ms)) = res {
+            done += 1;
+            if done.is_multiple_of(25) {
+                sink(&Event::Tick {
+                    current: done,
+                    total: Some(n as u64),
+                    message: format!("已测 {done}/{n}"),
+                });
+            }
+            tested.push(TestedNode {
+                name,
+                delay_ms: ms,
+                protocol: String::new(),
+                source: String::new(),
+            });
+        }
+    }
+    // 按延迟升序
     tested.sort_by_key(|t| t.delay_ms.unwrap_or(u128::MAX));
-    tested.truncate(app.top as usize);
-    ctx.log(
-        LogLevel::Info,
-        format!("收到 {} 个节点测速结果，保留前 {}", tested.len(), app.top),
-    );
+    sink(&Event::Log {
+        level: Level::Info,
+        message: format!("收到 {} 个节点测速结果", tested.len()),
+    });
 
     // 关实例
     let _ = child.kill();
@@ -795,21 +860,21 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
 
     let alive: Vec<&TestedNode> = tested.iter().filter(|t| t.delay_ms.is_some()).collect();
     let best = alive.iter().filter_map(|t| t.delay_ms).min();
-    ctx.log(
-        LogLevel::Info,
-        format!(
+    sink(&Event::Log {
+        level: Level::Info,
+        message: format!(
             "测试完成：{} 测 / {} 可用 / 最优 {}ms",
             tested.len(),
             alive.len(),
             best.unwrap_or(0)
         ),
-    );
+    });
 
     let out_path = dir.join("nodes_tested.json");
     std::fs::write(&out_path, serde_json::to_string_pretty(&tested).unwrap())
-        .map_err(|e| AppError::Runtime(format!("写结果失败: {e}")))?;
+        .map_err(|e| format!("写结果失败: {e}"))?;
 
-    Ok(TestResult {
+    let result = TestResult {
         tested: tested.len(),
         alive: alive.len(),
         best_ms: if alive.is_empty() {
@@ -818,7 +883,12 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
             Some(best.unwrap_or(0))
         },
         data_dir: dir.display().to_string(),
-    })
+    };
+    sink(&Event::Done {
+        output: serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+        elapsed_ms: 0,
+    });
+    Ok(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null))
 }
 
 async fn wait_ready(client: &reqwest::Client, base: &str, auth: &str) -> bool {
@@ -911,45 +981,13 @@ async fn probe_delay(
 
 // ── 命令 3：节点添加 ───────────────────────────────────────
 
-#[derive(App)]
-#[app(
-    name = "add",
-    about = "把测过的可用节点导出订阅，或 --apply 注入 Clash Verge",
-    run = "run_add"
-)]
-pub struct Add {
-    /// 测试结果数据目录（默认 ./nodes_data）
-    #[arg(default = "nodes_data")]
-    input: PathBuf,
-    /// 保留延迟最低的 N 个节点
-    #[arg(default = 20, range = 1..=1000)]
-    keep: u64,
-    /// 延迟上限（毫秒），超过的丢弃；0=不限
-    #[arg(default = 0, range = 0..=60000)]
-    max_ms: u64,
-    /// 写入用户当前激活的 local profile（带备份）。默认只导出
-    apply: bool,
-    /// 目标 profile 路径（默认自动定位当前激活的 Clash Verge local profile）
-    profile: Option<PathBuf>,
-}
-
-fn run_add(app: &Add, ctx: &Context) -> Result<serde_json::Value, AppError> {
-    let r = run_on_rt(async { add_async(app, ctx).await })?;
-    ctx.done(
-        serde_json::to_value(&r).unwrap_or(serde_json::Value::Null),
-        0,
-    );
-    Ok(serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
-}
-
-async fn add_async(app: &Add, ctx: &Context) -> Result<AddResult, AppError> {
+pub async fn add_core(app: AddParams, sink: &dyn Fn(&Event)) -> Result<serde_json::Value, String> {
     let dir = &app.input;
     let tested_path = dir.join("nodes_tested.json");
-    let raw = std::fs::read_to_string(&tested_path).map_err(|_| {
-        AppError::Runtime(format!("找不到 {}，请先运行 test", tested_path.display()))
-    })?;
-    let tested: Vec<TestedNode> = serde_json::from_str(&raw)
-        .map_err(|e| AppError::Runtime(format!("解析测试结果失败: {e}")))?;
+    let raw = std::fs::read_to_string(&tested_path)
+        .map_err(|_| format!("找不到 {}，请先运行 test", tested_path.display()))?;
+    let tested: Vec<TestedNode> =
+        serde_json::from_str(&raw).map_err(|e| format!("解析测试结果失败: {e}"))?;
 
     // 筛可用 + 排序 + 限量
     let mut alive: Vec<&TestedNode> = tested.iter().filter(|t| t.delay_ms.is_some()).collect();
@@ -959,15 +997,13 @@ async fn add_async(app: &Add, ctx: &Context) -> Result<AddResult, AppError> {
     }
     alive.truncate(app.keep as usize);
     if alive.is_empty() {
-        return Err(AppError::Runtime(
-            "没有可用节点（全部测速失败）。换网络或放宽条件重试 scan/test".into(),
-        ));
+        return Err("没有可用节点（全部测速失败）。换网络或放宽条件重试 scan/test".into());
     }
     let alive_names: HashSet<String> = alive.iter().map(|t| t.name.clone()).collect();
-    ctx.log(
-        LogLevel::Info,
-        format!("保留 {} 个最优可用节点", alive.len()),
-    );
+    sink(&Event::Log {
+        level: Level::Info,
+        message: format!("保留 {} 个最优可用节点", alive.len()),
+    });
 
     // 导出：从 nodes_uri.txt 过滤可用 name 的行
     let uri_path = dir.join("nodes_uri.txt");
@@ -984,7 +1020,7 @@ async fn add_async(app: &Add, ctx: &Context) -> Result<AddResult, AppError> {
     }
     let good_uri_path = dir.join("nodes_good_uri.txt");
     std::fs::write(&good_uri_path, good_uri.join("\n") + "\n")
-        .map_err(|e| AppError::Runtime(format!("写可用 URI 失败: {e}")))?;
+        .map_err(|e| format!("写可用 URI 失败: {e}"))?;
 
     // 导出：从 nodes_clash.yaml 过滤可用 name 的块
     let clash_path = dir.join("nodes_clash.yaml");
@@ -1010,9 +1046,8 @@ async fn add_async(app: &Add, ctx: &Context) -> Result<AddResult, AppError> {
             serde_yaml::Value::Sequence(good_clash.clone()),
         )],
     )))
-    .map_err(|e| AppError::Runtime(format!("序列化失败: {e}")))?;
-    std::fs::write(&good_clash_path, doc)
-        .map_err(|e| AppError::Runtime(format!("写可用 clash 失败: {e}")))?;
+    .map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&good_clash_path, doc).map_err(|e| format!("写可用 clash 失败: {e}"))?;
 
     let mut result = AddResult {
         kept: alive.len(),
@@ -1026,44 +1061,49 @@ async fn add_async(app: &Add, ctx: &Context) -> Result<AddResult, AppError> {
     // --apply：注入用户 profile
     if app.apply {
         let profile = resolve_profile(app.profile.clone())?;
-        let detail =
-            inject_profile(&profile, &good_uri_path, &good_clash).map_err(AppError::Runtime)?;
+        let detail = inject_profile(&profile, &good_uri_path, &good_clash)?;
         result.applied = true;
-        ctx.log(LogLevel::Info, detail.clone());
+        sink(&Event::Log {
+            level: Level::Info,
+            message: detail.clone(),
+        });
         result.apply_detail = Some(detail);
     } else {
-        ctx.log(
-            LogLevel::Info,
-            "未注入（默认只导出）。加 --apply 才写入 Clash Verge 当前 profile",
-        );
+        sink(&Event::Log {
+            level: Level::Info,
+            message: "未注入（默认只导出）。加 apply 才写入 Clash Verge 当前 profile".to_string(),
+        });
     }
 
-    Ok(result)
+    sink(&Event::Done {
+        output: serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+        elapsed_ms: 0,
+    });
+    Ok(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null))
 }
 
 /// 定位当前激活的 Clash Verge local profile
-fn resolve_profile(explicit: Option<PathBuf>) -> Result<PathBuf, AppError> {
+fn resolve_profile(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(p) = explicit {
         return Ok(p);
     }
     // Clash Verge Rev 配置目录
-    let base =
-        dirs_config().ok_or_else(|| AppError::Runtime("找不到 Clash Verge 配置目录".into()))?;
+    let base = dirs_config().ok_or_else(|| "找不到 Clash Verge 配置目录".to_string())?;
     let profiles_yaml = base.join("profiles.yaml");
     if !profiles_yaml.exists() {
-        return Err(AppError::Runtime(format!(
+        return Err(format!(
             "找不到 {}，无法自动定位 profile",
             profiles_yaml.display()
-        )));
+        ));
     }
     let txt = std::fs::read_to_string(&profiles_yaml)
-        .map_err(|e| AppError::Runtime(format!("读 profiles.yaml 失败: {e}")))?;
-    let v: serde_yaml::Value = serde_yaml::from_str(&txt)
-        .map_err(|e| AppError::Runtime(format!("解析 profiles.yaml 失败: {e}")))?;
+        .map_err(|e| format!("读 profiles.yaml 失败: {e}"))?;
+    let v: serde_yaml::Value =
+        serde_yaml::from_str(&txt).map_err(|e| format!("解析 profiles.yaml 失败: {e}"))?;
     let current = v
         .get("current")
         .and_then(|x| x.as_str())
-        .ok_or_else(|| AppError::Runtime("profiles.yaml 无 current 字段".into()))?;
+        .ok_or_else(|| "profiles.yaml 无 current 字段".to_string())?;
     // 在 items 里找 uid == current，type == local，取其 file
     if let Some(items) = v.get("items").and_then(|x| x.as_sequence()) {
         for it in items {
@@ -1074,9 +1114,7 @@ fn resolve_profile(explicit: Option<PathBuf>) -> Result<PathBuf, AppError> {
             }
         }
     }
-    Err(AppError::Runtime(format!(
-        "profile current={current} 未找到对应 local 文件",
-    )))
+    Err(format!("profile current={current} 未找到对应 local 文件"))
 }
 
 fn dirs_config() -> Option<PathBuf> {
@@ -1224,25 +1262,6 @@ fn inject_profile(
         added_names.len(),
         bak.display()
     ))
-}
-
-use std::collections::HashSet;
-
-/// 在 tokio 运行时内执行 future：优先复用当前运行时，否则新建一个。
-/// 与 boost 命令保持一致，避免 lilyco 在非 runtime 上下文调用时直接报错。
-fn run_on_rt<F, T>(fut: F) -> Result<T, AppError>
-where
-    F: std::future::Future<Output = Result<T, AppError>>,
-    T: Sized,
-{
-    match tokio::runtime::Handle::try_current() {
-        Ok(h) => h.block_on(fut),
-        Err(_) => tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| AppError::Runtime(format!("tokio 启动失败: {e}")))?
-            .block_on(fut),
-    }
 }
 
 #[cfg(test)]

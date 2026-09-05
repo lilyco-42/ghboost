@@ -83,9 +83,18 @@ jobs:
         run: |
           set -e
           mkdir -p dist
-          SRC="target/${{ matrix.target }}/release/ghboost"
-          [ -f "$SRC.exe" ] && SRC="$SRC.exe"
-          cp "$SRC" "dist/ghboost-${{ matrix.target }}"
+          TRIPLE="${{ matrix.target }}"
+          BIN="target/${TRIPLE}/release/ghboost"
+          if [ -f "$BIN.exe" ]; then cp "$BIN.exe" "dist/ghboost-${TRIPLE}.exe"; else cp "$BIN" "dist/ghboost-${TRIPLE}"; fi
+          # cdylib（C ABI 库）
+          case "$TRIPLE" in
+            *windows*) LIB="ghboost.dll";      EXT="dll" ;;
+            *apple*)   LIB="libghboost.dylib"; EXT="dylib" ;;
+            *)         LIB="libghboost.so";    EXT="so" ;;
+          esac
+          if [ -f "target/${TRIPLE}/release/$LIB" ]; then
+            cp "target/${TRIPLE}/release/$LIB" "dist/libghboost-${TRIPLE}.${EXT}"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ghboost-${{ matrix.target }}
@@ -117,8 +126,19 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
       - name: Stage artifact
         run: |
+          set -e
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/ghboost" "dist/ghboost-${{ matrix.target }}"
+          TRIPLE="${{ matrix.target }}"
+          cp "target/${TRIPLE}/release/ghboost" "dist/ghboost-${TRIPLE}"
+          # cdylib（C ABI 库）
+          case "$TRIPLE" in
+            *windows*) LIB="ghboost.dll";      EXT="dll" ;;
+            *apple*)   LIB="libghboost.dylib"; EXT="dylib" ;;
+            *)         LIB="libghboost.so";    EXT="so" ;;
+          esac
+          if [ -f "target/${TRIPLE}/release/$LIB" ]; then
+            cp "target/${TRIPLE}/release/$LIB" "dist/libghboost-${TRIPLE}.${EXT}"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ghboost-${{ matrix.target }}
@@ -148,8 +168,12 @@ jobs:
         run: cargo ndk --platform 24 -t arm64-v8a build --release
       - name: Stage artifact
         run: |
+          set -e
           mkdir -p dist
           cp target/aarch64-linux-android/release/ghboost dist/ghboost-aarch64-linux-android
+          if [ -f target/aarch64-linux-android/release/libghboost.so ]; then
+            cp target/aarch64-linux-android/release/libghboost.so dist/libghboost-aarch64-linux-android.so
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ghboost-aarch64-linux-android
@@ -179,8 +203,14 @@ jobs:
       - name: Stage artifact
         shell: bash
         run: |
+          set -e
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/ghboost.exe" "dist/ghboost-${{ matrix.target }}.exe"
+          TRIPLE="${{ matrix.target }}"
+          cp "target/${TRIPLE}/release/ghboost.exe" "dist/ghboost-${TRIPLE}.exe"
+          # cdylib（C ABI 库）
+          if [ -f "target/${TRIPLE}/release/ghboost.dll" ]; then
+            cp "target/${TRIPLE}/release/ghboost.dll" "dist/libghboost-${TRIPLE}.dll"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ghboost-${{ matrix.target }}
