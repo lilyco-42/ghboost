@@ -53,7 +53,9 @@ jobs:
           - aarch64-unknown-linux-gnu
           - aarch64-unknown-linux-musl
           - x86_64-pc-windows-gnu
-          - aarch64-pc-windows-gnu
+          # 注：aarch64-pc-windows-gnu 在 Rust stable 上不存在（Windows on ARM64
+          # 只有 msvc ABI），无法用 zig 从 Linux 交叉编译；改由下方 windows job
+          # 用 aarch64-pc-windows-msvc 在 Windows runner 上原生构建。
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -155,12 +157,43 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------
+  # Windows aarch64：aarch64-pc-windows-gnu 在 Rust stable 上不存在
+  # （Windows on ARM64 仅提供 msvc ABI），必须用 Windows runner 原生构建。
+  # （x86_64 Windows 走上面的 zigbuild gnu 目标。）
+  # ---------------------------------------------------------------
+  windows:
+    name: windows (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/ghboost.exe" "dist/ghboost-${{ matrix.target }}.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
   # 发布 GitHub Release（版本 tag 时）
   # ---------------------------------------------------------------
   release:
     name: Publish Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, zigbuild, macos, android]
+    needs: [test, zigbuild, macos, android, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
