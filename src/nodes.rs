@@ -17,7 +17,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine;
 use lilyco::prelude::*;
@@ -41,6 +41,7 @@ const MIHOMO_CANDIDATES: &[&str] = &[
 ];
 
 /// 节点库默认数据目录（相对当前工作目录）
+#[allow(dead_code)]
 fn default_data_dir() -> PathBuf {
     PathBuf::from("nodes_data")
 }
@@ -631,19 +632,30 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
         b.iter().map(|x| format!("{x:02x}")).collect()
     };
 
-    // 动态生成 providers
+    // 动态生成 providers。
+    // 注意：mihomo 的 file provider 路径必须是相对 -d home 的文件名
+    //（安全限制，绝对路径会被静默拒绝，导致 0 节点）。文件已复制到 tmp 内，
+    // 这里只用文件名。
+    let uri_rel = uri_in_tmp
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let clash_rel = clash_in_tmp
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut providers = String::new();
     if uri_in_tmp.exists() {
         providers.push_str(&format!(
             "  uri_nodes:\n    type: file\n    path: {}\n    provider-type: Proxy\n    parse-type: v2ray\n    health-check:\n      enable: true\n      url: {}\n      interval: 600\n",
-            uri_in_tmp.display(),
+            uri_rel,
             app.test_url
         ));
     }
     if clash_in_tmp.exists() {
         providers.push_str(&format!(
             "  clash_nodes:\n    type: file\n    path: {}\n    provider-type: Proxy\n    parse-type: clash\n    health-check:\n      enable: true\n      url: {}\n      interval: 600\n",
-            clash_in_tmp.display(),
+            clash_rel,
             app.test_url
         ));
     }
@@ -701,7 +713,7 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
     let auth = format!("Bearer {secret}");
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(600))
         .build()
         .map_err(|e| AppError::Runtime(format!("rest 客户端失败: {e}")))?;
 
@@ -715,9 +727,8 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
         )));
     }
 
-    // 拿 ALL 组所有成员名
+    // 先拿成员总数（/providers/proxies 列表，节点名仅用于计数，不进 URL 路径）
     let members = get_all_members(&client, &base, &auth).await;
-    let members: Vec<String> = members.into_iter().take(app.top as usize).collect();
     let n = members.len();
     ctx.log(LogLevel::Info, format!("实例就绪，共 {} 个节点待测", n));
     ctx.emit(Progress::Started {
@@ -725,40 +736,36 @@ async fn test_async(app: &Test, ctx: &Context) -> Result<TestResult, AppError> {
         message: Some("延迟测试".into()),
     });
 
-    // 并发测延迟
-    let sem = Arc::new(Semaphore::new(app.concurrency.max(1) as usize));
-    let timeout = app.timeout_ms;
-    let mut set = JoinSet::new();
-    for (i, name) in members.iter().enumerate() {
-        let sem = sem.clone();
-        let client = client.clone();
-        let base = base.clone();
-        let auth = auth.clone();
-        let name = name.clone();
-        let url = app.test_url.clone();
-        set.spawn(async move {
-            let _p = sem.acquire().await;
-            let ms = probe_delay(&client, &base, &auth, &name, &url, timeout).await;
-            (i, name, ms)
-        });
-    }
-
+    // 组测速：一次请求测 ALL 组全部成员（含 provider 展开）。
+    // 关键点：节点名作为 JSON 响应的 key 返回，不经过 URL 路径编码，
+    // 因此彻底避开 emoji/中文名在 /proxies/{name}/delay 上的 404 问题。
+    let url = format!("{base}/proxies/ALL/delay?url={test_url}&timeout={timeout_ms}");
     let mut tested: Vec<TestedNode> = Vec::new();
-    let mut done = 0u64;
-    while let Some(res) = set.join_next().await {
-        if let Ok((i, name, ms)) = res {
-            done += 1;
-            if done % 25 == 0 {
-                ctx.tick(done, Some(n as u64), format!("已测 {done}/{n}"));
+    match client.get(&url).header("Authorization", auth).send().await {
+        Ok(r) => {
+            if let Ok(j) = r.json::<serde_json::Value>().await {
+                if let Some(map) = j.get("delay").and_then(|x| x.as_object()) {
+                    for (name, ms) in map {
+                        let d = ms.as_u64();
+                        tested.push(TestedNode {
+                            name: name.clone(),
+                            delay_ms: if d == Some(0) { None } else { d },
+                            protocol: String::new(),
+                            source: String::new(),
+                        });
+                    }
+                }
             }
-            tested.push(TestedNode {
-                name,
-                delay_ms: ms,
-                protocol: String::new(),
-                source: String::new(),
-            });
         }
+        Err(e) => return Err(AppError::Runtime(format!("组测速请求失败: {e}"))),
     }
+    // 按延迟升序，仅保留前 top 个（其余丢弃以省内存/输出）
+    tested.sort_by_key(|t| t.delay_ms.unwrap_or(u128::MAX));
+    tested.truncate(app.top as usize);
+    ctx.log(
+        LogLevel::Info,
+        format!("收到 {} 个节点测速结果，保留前 {}", tested.len(), app.top),
+    );
 
     // 关实例
     let _ = child.kill();
@@ -872,17 +879,30 @@ async fn probe_delay(
     test_url: &str,
     timeout_ms: u64,
 ) -> Option<u128> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static DIAG: AtomicU32 = AtomicU32::new(0);
     let enc = utf8_percent_encode(name, NON_ALPHANUMERIC).to_string();
     let url = format!("{base}/proxies/{enc}/delay?url={test_url}&timeout={timeout_ms}");
     let r = client.get(&url).header("Authorization", auth).send().await;
     if let Ok(r) = r {
+        let status = r.status();
         if let Ok(j) = r.json::<serde_json::Value>().await {
-            // 成功返回 {"delay": 123}
             if let Some(d) = j.get("delay").and_then(|x| x.as_u64()) {
                 return Some(d as u128);
             }
-            // 失败返回 {"message": "...", "status": "..."}
+            if DIAG.fetch_add(1, Ordering::SeqCst) < 5 {
+                eprintln!(
+                    "[probe-err] name={:?} status={} body={}",
+                    name,
+                    status,
+                    j
+                );
+            }
+        } else if DIAG.fetch_add(1, Ordering::SeqCst) < 5 {
+            eprintln!("[probe-err] name={:?} status={} (非 JSON)", name, status);
         }
+    } else if DIAG.fetch_add(1, Ordering::SeqCst) < 5 {
+        eprintln!("[probe-err] name={:?} 请求失败", name);
     }
     None
 }
@@ -1005,7 +1025,7 @@ async fn add_async(app: &Add, ctx: &Context) -> Result<AddResult, AppError> {
     if app.apply {
         let profile = resolve_profile(app.profile.clone())?;
         let detail = inject_profile(&profile, &good_uri_path, &good_clash)
-            .map_err(|e| AppError::Runtime(e))?;
+            .map_err(AppError::Runtime)?;
         result.applied = true;
         ctx.log(LogLevel::Info, detail.clone());
         result.apply_detail = Some(detail);
@@ -1298,7 +1318,7 @@ mod tests {
             "vmess://{}#n1",
             base64::engine::general_purpose::STANDARD.encode(json.as_bytes())
         );
-        let text = format!("{}\nvless://u@1.2.3.4:443#n2\n noises \n");
+        let text = format!("{}\nvless://u@1.2.3.4:443#n2\n noises \n", vme);
         let (uris2, _) = classify(&text);
         assert_eq!(uris2.len(), 2, "vmess + vless extracted");
     }
