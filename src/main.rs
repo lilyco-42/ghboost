@@ -207,7 +207,7 @@ struct Deploy {
     no_firewall: bool,
 }
 
-fn run_deploy(app: &Deploy, ctx: &Context) -> Result<serde_json::Value, AppError> {
+fn run_deploy(app: &Deploy, _ctx: &Context) -> Result<serde_json::Value, AppError> {
     let protocol = match app.protocol.as_str() {
         "vless-reality" => deploy::Protocol::VlessReality,
         "vless-ws" => deploy::Protocol::VlessWs,
@@ -494,7 +494,7 @@ fn execute_command(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Va
                 port: args["port"].as_u64().unwrap_or(22) as u16,
                 user: args["user"].as_str().unwrap_or("root").to_string(),
                 password: args["password"].as_str().map(|s| s.to_string()),
-                key_path: args["key_path"].as_str().map(|s| PathBuf::from(s)),
+                key_path: args["key_path"].as_str().map(PathBuf::from),
                 protocol,
                 port_out: args["port_out"].as_u64().map(|p| p as u16),
                 domain: args["domain"].as_str().map(|s| s.to_string()),

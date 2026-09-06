@@ -398,6 +398,7 @@ use macos_impl as platform;
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use super::*;
+    use std::process::Command;
 
     pub fn set_proxy(config: &ProxyConfig) -> Result<ProxyState, String> {
         // 设置模式为手动
@@ -681,21 +682,19 @@ fn linux_get_proxy_status() -> ProxyState {
 // Android/iOS 特殊处理（需要 App 层配合）
 // ═══════════════════════════════════════════════════════════
 
-/// Android 系统代理设置说明：
-/// Android 没有全局系统代理 API，需要通过以下方式之一：
-/// 1. **VPN Service**: 创建本地 VPN 拦截所有流量（推荐，无需 root）
-/// 2. **Root + iptables**: 使用 iptables 重定向流量（需要 root）
-/// 3. **WifiManager API**: 仅对当前 WiFi 设置代理（需要 Android API）
-///
-/// 对于 WebView-based 应用，可以使用 `WebView.setProxy()` 或在 App 层设置代理。
-///
-/// iOS 系统代理设置说明：
-/// iOS 没有公开的系统代理 API，需要通过以下方式之一：
-/// 1. **NEPacketTunnelProvider**: 使用 NetworkExtension 框架（推荐）
-/// 2. **Configuration Profile**: 安装描述文件设置代理
-///
-/// 对于 WebView-based 应用，可以使用 `WKWebViewConfiguration` 的代理设置。
-
+// Android 系统代理设置说明：
+// Android 没有全局系统代理 API，需要通过以下方式之一：
+// 1. VPN Service: 创建本地 VPN 拦截所有流量（推荐，无需 root）
+// 2. Root + iptables: 使用 iptables 重定向流量（需要 root）
+// 3. WifiManager API: 仅对当前 WiFi 设置代理（需要 Android API）
+// 对于 WebView-based 应用，可以使用 WebView.setProxy() 或在 App 层设置代理。
+//
+// iOS 系统代理设置说明：
+// iOS 没有公开的系统代理 API，需要通过以下方式之一：
+// 1. NEPacketTunnelProvider: 使用 NetworkExtension 框架（推荐）
+// 2. Configuration Profile: 安装描述文件设置代理
+// 对于 WebView-based 应用，可以使用 WKWebViewConfiguration 的代理设置。
+//
 // Android/iOS 的 set_proxy/unset_proxy/get_proxy_status 已在上方通用函数中
 // 通过 #[cfg(not(any(...)))] 分支处理，无需重复定义。
 

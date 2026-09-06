@@ -357,7 +357,7 @@ rules:
                 let path = entry.path();
                 if path
                     .extension()
-                    .map_or(false, |ext| ext == "yaml" || ext == "yml")
+                    .is_some_and(|ext| ext == "yaml" || ext == "yml")
                 {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         // 简单解析：找到 proxies 和 proxy-groups 段

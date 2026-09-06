@@ -177,13 +177,12 @@ fn scp_upload(
     user: &str,
     password: Option<&str>,
     key_path: Option<&PathBuf>,
-    local_path: &PathBuf,
+    local_path: &std::path::Path,
     remote_path: &str,
 ) -> Result<(), String> {
     let remote = format!("{}@{}:{}", user, host, remote_path);
     let port_str = port.to_string();
     let key_str;
-    let local_str;
     let mut args: Vec<&str> = vec![
         "-o",
         "StrictHostKeyChecking=no",
@@ -197,7 +196,7 @@ fn scp_upload(
         key_str = key.to_string_lossy().to_string();
         args.extend_from_slice(&["-i", &key_str]);
     }
-    local_str = local_path.to_string_lossy().to_string();
+    let local_str = local_path.to_string_lossy().to_string();
     args.push(&local_str);
     args.push(&remote);
 
@@ -478,7 +477,6 @@ fn deploy_vless_ws(params: &DeployParams, logs: &mut Vec<String>) -> Result<Depl
     }
 
     // 生成连接 URI
-    let domain = params.domain.as_deref().unwrap_or(&params.host);
     let uri = format!(
         "vless://{}@{}:{}?encryption=none&security=none&type=ws&path={}#GHBoost-WS",
         uuid, params.host, port, path
