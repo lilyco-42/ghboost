@@ -80,10 +80,9 @@
 
     <!-- Icon -->
     <Icon Id="ghboost.exe" SourceFile="$(var.CargoTargetBinDir)\ghboost.exe" />
+    <Property Id="ARPPRODUCTICON" Value="ghboost.exe" />
 
-    <!-- UI: WixUI_Minimal = Welcome → Install dir → Progress → Finish (no license page) -->
-    <UIRef Id="WixUI_Minimal" />
-    <Property Id="WIXUI_INSTALLDIR" Value="APPLICATIONFOLDER" />
+    <!-- No UI dialog set — uses MSI built-in UI (avoids WixUIExtension dependency) -->
   </Product>
 
   <!-- Components -->
