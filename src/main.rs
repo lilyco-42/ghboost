@@ -208,18 +208,19 @@ struct Deploy {
 }
 
 fn run_deploy(app: &Deploy, ctx: &Context) -> Result<serde_json::Value, AppError> {
-    let protocol =
-        match app.protocol.as_str() {
-            "vless-reality" => deploy::Protocol::VlessReality,
-            "vless-ws" => deploy::Protocol::VlessWs,
-            "trojan" => deploy::Protocol::Trojan,
-            "shadowsocks" => deploy::Protocol::Shadowsocks,
-            "hysteria2" => deploy::Protocol::Hysteria2,
-            _ => return Err(AppError::Runtime(format!(
+    let protocol = match app.protocol.as_str() {
+        "vless-reality" => deploy::Protocol::VlessReality,
+        "vless-ws" => deploy::Protocol::VlessWs,
+        "trojan" => deploy::Protocol::Trojan,
+        "shadowsocks" => deploy::Protocol::Shadowsocks,
+        "hysteria2" => deploy::Protocol::Hysteria2,
+        _ => {
+            return Err(AppError::Runtime(format!(
                 "不支持的协议: {}。支持: vless-reality, vless-ws, trojan, shadowsocks, hysteria2",
                 app.protocol
-            ))),
-        };
+            )))
+        }
+    };
 
     let dp = deploy::DeployParams {
         host: app.host.clone(),
