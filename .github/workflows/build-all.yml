@@ -1,0 +1,436 @@
+name: Build All Platforms
+
+# 跨平台 ghboost 构建:
+#   Android(arm64/armv7/x86_64, 含 APK) · Windows(x64/arm64) · Linux(x64/arm64, gnu+musl)
+#   macOS(aarch64/x86_64) · iOS(device+sim) · Web(WASM)
+#
+# 参考: lilyco-42/cute-pet build-all.yml
+# 备注:
+#   - Android APK 需要 ghboost-android/ 目录下的 Gradle 项目
+#   - iOS 需要 Apple Developer 签名
+#   - 打 v* tag 时自动发布 GitHub Release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ============ 测试 ============
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Run tests
+        run: cargo test
+
+  # ============ Android (.so 交叉编译) ============
+  android:
+    name: Android (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+            cc: aarch64-linux-android36-clang
+          - abi: armeabi-v7a
+            target: armv7-linux-androideabi
+            cc: armv7a-linux-androideabi36-clang
+          - abi: x86_64
+            target: x86_64-linux-android
+            cc: x86_64-linux-android36-clang
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-android-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-android-
+            cargo-${{ runner.os }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Android SDK + NDK
+        uses: android-actions/setup-android@v3
+      - name: Install NDK
+        run: |
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;27.0.12077973" \
+            --sdk_root=$ANDROID_HOME
+      - name: Build .so
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: |
+          cargo ndk --platform 24 -t ${{ matrix.abi }} build --release -p ghboost-ffi
+      - name: Verify JNI symbols
+        run: |
+          SO="target/aarch64-linux-android/release/libghboost_ffi.so"
+          if [ -f "$SO" ]; then
+            echo "✅ .so built: $(ls -lh "$SO" | awk '{print $5}')"
+            nm -D "$SO" | grep "Java_com_ghboost" | head -5
+          else
+            echo "⚠️  .so not found, trying alternate path"
+            find target -name "libghboost_ffi.so" -type f 2>/dev/null
+          fi
+      - name: Stage artifact
+        run: |
+          set -e
+          mkdir -p dist
+          SO=$(find target -path "*/release/libghboost_ffi.so" -type f | head -1)
+          if [ -n "$SO" ]; then
+            cp "$SO" "dist/libghboost_ffi-${{ matrix.abi }}.so"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.abi }}
+          path: dist/
+          if-no-files-found: warn
+
+  # ============ Android APK ============
+  android-apk:
+    name: Android APK
+    needs: [android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Download all Android .so artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: so-artifacts
+          pattern: android-*
+          merge-multiple: false
+      - name: Prepare jniLibs
+        run: |
+          set -e
+          DEST="ghboost-android/app/src/main/jniLibs"
+          mkdir -p "$DEST/arm64-v8a" "$DEST/armeabi-v7a" "$DEST/x86_64"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            SO="so-artifacts/android-${abi}/libghboost_ffi-${abi}.so"
+            if [ -f "$SO" ]; then
+              cp "$SO" "$DEST/${abi}/libghboost_ffi.so"
+              echo "✅ $abi: $(ls -lh "$SO" | awk '{print $5}')"
+            else
+              echo "⚠️  $abi .so not found, APK will be incomplete"
+            fi
+          done
+      - name: Build APK (Gradle)
+        working-directory: ghboost-android
+        run: |
+          chmod +x gradlew 2>/dev/null || true
+          ./gradlew assembleRelease --no-daemon
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: ghboost-android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+
+  # ============ Windows ============
+  windows:
+    name: Windows (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: target-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            target-${{ runner.os }}-${{ matrix.target }}
+            target-${{ runner.os }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist
+          TRIPLE="${{ matrix.target }}"
+          cp "target/${TRIPLE}/release/ghboost.exe" "dist/ghboost-${TRIPLE}.exe"
+          if [ -f "target/${TRIPLE}/release/ghboost.dll" ]; then
+            cp "target/${TRIPLE}/release/ghboost.dll" "dist/ghboost-${TRIPLE}.dll"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: warn
+
+  # ============ Linux ============
+  linux:
+    name: Linux (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: target-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            target-${{ runner.os }}-${{ matrix.target }}
+            target-${{ runner.os }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install zig (for cross-compile)
+        run: |
+          set -e
+          ZIG_VER=0.13.0
+          for URL in \
+            "https://ziglang.org/download/${ZIG_VER}/zig-linux-x86_64-${ZIG_VER}.tar.xz" \
+            "https://github.com/ziglang/zig/releases/download/${ZIG_VER}/zig-linux-x86_64-${ZIG_VER}.tar.xz" ; do
+            if curl -fsSL "$URL" -o zig.tar.xz; then break; fi
+          done
+          tar -xf zig.tar.xz
+          echo "$PWD/zig-linux-x86_64-${ZIG_VER}" >> "$GITHUB_PATH"
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+      - name: Build
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+      - name: Stage artifact
+        run: |
+          set -e
+          mkdir -p dist
+          TRIPLE="${{ matrix.target }}"
+          cp "target/${TRIPLE}/release/ghboost" "dist/ghboost-${TRIPLE}"
+          if [ -f "target/${TRIPLE}/release/libghboost.so" ]; then
+            cp "target/${TRIPLE}/release/libghboost.so" "dist/libghboost-${TRIPLE}.so"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: warn
+
+  # ============ macOS ============
+  macos:
+    name: macOS (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: target-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            target-${{ runner.os }}-${{ matrix.target }}
+            target-${{ runner.os }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Stage artifact
+        run: |
+          set -e
+          mkdir -p dist
+          TRIPLE="${{ matrix.target }}"
+          cp "target/${TRIPLE}/release/ghboost" "dist/ghboost-${TRIPLE}"
+          if [ -f "target/${TRIPLE}/release/libghboost.dylib" ]; then
+            cp "target/${TRIPLE}/release/libghboost.dylib" "dist/libghboost-${TRIPLE}.dylib"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: warn
+
+  # ============ iOS (静态库 for xcframework) ============
+  ios:
+    name: iOS (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-ios, aarch64-apple-ios-sim]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: target-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            target-${{ runner.os }}-${{ matrix.target }}
+            target-${{ runner.os }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build static lib
+        run: cargo build --release --target ${{ matrix.target }} -p ghboost-ffi
+      - name: Stage artifact
+        run: |
+          set -e
+          mkdir -p dist
+          TRIPLE="${{ matrix.target }}"
+          LIB="target/${TRIPLE}/release/libghboost_ffi.a"
+          if [ -f "$LIB" ]; then
+            cp "$LIB" "dist/libghboost_ffi-${TRIPLE}.a"
+            echo "✅ Built: $(ls -lh "$LIB" | awk '{print $5}')"
+          else
+            echo "⚠️  Static lib not found"
+            find target -name "libghboost_ffi.a" -type f 2>/dev/null
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: warn
+
+  # ============ Web (WASM) ============
+  web:
+    name: Web (WASM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-wasm-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build WASM
+        run: cargo build --target wasm32-unknown-unknown --release
+      - name: Stage artifact
+        run: |
+          set -e
+          mkdir -p dist
+          cp target/wasm32-unknown-unknown/release/ghboost.wasm dist/ghboost-wasm.wasm 2>/dev/null || true
+          ls -lh dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-wasm
+          path: dist/
+          if-no-files-found: warn
+
+  # ============ 发布 ============
+  release:
+    name: Publish GitHub Release
+    needs: [test, android, android-apk, linux, macos, windows, ios, web]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Show artifacts
+        run: find dist -type f | sort
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
+          body: |
+            ## 支持的平台
+            - **Android**: arm64-v8a / armeabi-v7a / x86_64 (APK + .so)
+            - **Windows**: x86_64 / arm64
+            - **Linux**: x86_64 / aarch64 (gnu + musl)
+            - **macOS**: arm64 / x86_64
+            - **iOS**: device / simulator (.a 静态库)
+            - **Web**: WASM

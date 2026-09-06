@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.GhBoost" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#0f3460</item>
+        <item name="colorPrimaryVariant">#16213e</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">#e94560</item>
+        <item name="colorSecondaryVariant">#e94560</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <item name="android:statusBarColor">#1a1a2e</item>
+        <item name="android:navigationBarColor">#1a1a2e</item>
+        <item name="android:windowBackground">#1a1a2e</item>
+    </style>
+</resources>

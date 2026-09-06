@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1a1a2e"
+    android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- Header -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ghboost"
+            android:textColor="#e94560"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:id="@+id/tvVersion"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="loading..."
+            android:textColor="#888888"
+            android:textSize="12sp"
+            android:layout_marginBottom="24dp" />
+
+        <!-- Status -->
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Ready"
+            android:textColor="#16c784"
+            android:textSize="16sp"
+            android:background="#0f3460"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Buttons -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <Button
+                android:id="@+id/btnScan"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Scan"
+                android:layout_marginEnd="8dp"
+                android:backgroundTint="#0f3460" />
+
+            <Button
+                android:id="@+id/btnStart"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Start"
+                android:layout_marginEnd="8dp"
+                android:backgroundTint="#16c784" />
+
+            <Button
+                android:id="@+id/btnStop"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Stop"
+                android:backgroundTint="#e94560"
+                android:enabled="false" />
+        </LinearLayout>
+
+        <!-- Nodes output -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Nodes"
+            android:textColor="#888888"
+            android:textSize="12sp"
+            android:textAllCaps="true"
+            android:letterSpacing="0.1"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/tvNodes"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tap Scan to discover nodes"
+            android:textColor="#cccccc"
+            android:textSize="13sp"
+            android:fontFamily="monospace"
+            android:background="#16213e"
+            android:padding="12dp"
+            android:textIsSelectable="true" />
+
+    </LinearLayout>
+</ScrollView>

@@ -1,2 +1,6 @@
-/target
+/target/
+/ghboost-ffi/target/
+/mihomo_bin/
+/mihomo.zip
+*.ps1
 nodes_data/

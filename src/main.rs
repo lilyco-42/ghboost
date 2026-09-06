@@ -11,6 +11,8 @@ use lilyco::prelude::*;
 
 use ghboost::hosts;
 use ghboost::nodes;
+use ghboost::proxy;
+use ghboost::webview::{self, WebView, HINT_NONE};
 use ghboost::{run_blocking, Event, Level};
 
 /// GitHub 访问加速 — 优选 IP 并写入 hosts
@@ -201,6 +203,225 @@ fn make_sink<'a>(ctx: &'a Context) -> impl Fn(&Event) + 'a {
     }
 }
 
+/// 启动原生 WebView GUI（无外部浏览器依赖）
+fn launch_gui(_registry: Registry) {
+    let mut wv = WebView::new(cfg!(debug_assertions))
+        .expect("WebView 创建失败 — Windows 需安装 WebView2 运行时");
+
+    wv.set_title("ghboost").unwrap();
+    wv.set_size(900, 600, HINT_NONE).unwrap();
+
+    // 加载内嵌 HTML
+    let html = include_str!("gui.html");
+    wv.set_html(html).unwrap();
+
+    // 绑定 run_command：JS → Rust 桥接
+    // JS 调用: window.run_command(JSON.stringify({cmd:"boost", args:{...}}))
+    wv.bind("run_command", |_id: String, req: String| {
+        // req 是 JSON 数组包裹的字符串参数，解析第一个元素
+        let payload: serde_json::Value = serde_json::from_str(&req)
+            .unwrap_or(serde_json::Value::Null);
+        // webview_bind 的 req 格式是 JSON 数组 ["string"]，取第一个
+        let cmd_json = payload
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let parsed: serde_json::Value = serde_json::from_str(cmd_json)
+            .unwrap_or(serde_json::Value::Null);
+        let cmd = parsed["cmd"].as_str().unwrap_or("").to_string();
+        let args = parsed["args"].clone();
+
+        // 立即返回 "started"，实际工作在后台线程
+        std::thread::spawn(move || {
+            let result = execute_command(&cmd, &args);
+            match result {
+                Ok(val) => {
+                    let json_str = serde_json::to_string(&val).unwrap_or_default();
+                    let elapsed = 0u64; // TODO: track real elapsed
+                    let _ = webview::eval_global(&format!(
+                        "push_done({},{})",
+                        serde_json::json!(json_str),
+                        elapsed
+                    ));
+                }
+                Err(e) => {
+                    let _ = webview::eval_global(&format!(
+                        "push_error({})",
+                        serde_json::json!(e)
+                    ));
+                }
+            }
+        });
+
+        // 立即 resolve JS promise
+        serde_json::json!({"status": "started"}).to_string()
+    })
+    .unwrap();
+
+    // 绑定 set_proxy / unset_proxy：JS → Rust 系统代理控制
+    wv.bind("set_proxy", |_id: String, req: String| {
+        let payload: serde_json::Value = serde_json::from_str(&req)
+            .unwrap_or(serde_json::Value::Null);
+        let params = payload
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let config: proxy::ProxyConfig = if params.is_empty() {
+            proxy::ProxyConfig::default()
+        } else {
+            serde_json::from_str(params).unwrap_or_default()
+        };
+
+        match proxy::set_proxy(&config) {
+            Ok(state) => {
+                let _ = webview::eval_global(&format!(
+                    "proxy_set_result({})",
+                    serde_json::json!({"ok": true, "state": format!("{:?}", state)})
+                ));
+            }
+            Err(e) => {
+                let _ = webview::eval_global(&format!(
+                    "proxy_set_result({})",
+                    serde_json::json!({"ok": false, "error": e})
+                ));
+            }
+        }
+        "".to_string()
+    })
+    .unwrap();
+
+    wv.bind("unset_proxy", |_id: String, _req: String| {
+        match proxy::unset_proxy() {
+            Ok(state) => {
+                let _ = webview::eval_global(&format!(
+                    "proxy_set_result({})",
+                    serde_json::json!({"ok": true, "state": format!("{:?}", state)})
+                ));
+            }
+            Err(e) => {
+                let _ = webview::eval_global(&format!(
+                    "proxy_set_result({})",
+                    serde_json::json!({"ok": false, "error": e})
+                ));
+            }
+        }
+        "".to_string()
+    })
+    .unwrap();
+
+    wv.bind("get_proxy_status", |_id: String, _req: String| {
+        let state = proxy::get_proxy_status();
+        let _ = webview::eval_global(&format!(
+            "proxy_status_result({})",
+            serde_json::json!({"state": format!("{:?}", state)})
+        ));
+        "".to_string()
+    })
+    .unwrap();
+
+    // 启动消息循环（阻塞直到窗口关闭）
+    wv.run().expect("WebView 运行失败");
+}
+
+/// 根据命令名分发到对应的 core 函数
+fn execute_command(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    // 创建一个把事件推送到 WebView 的 sink
+    let sink = |e: &Event| {
+        let js = match e {
+            Event::Started { total, message } => {
+                let t = total.unwrap_or(0);
+                let m = message.as_deref().unwrap_or("...");
+                format!("push_log(\"info\",\"{}\")", escape_js(&format!("started ({t} total): {m}")))
+            }
+            Event::Tick { current, total, message } => {
+                format!(
+                    "push_progress({},{},{})",
+                    current,
+                    total.unwrap_or(0),
+                    serde_json::json!(message)
+                )
+            }
+            Event::Log { level, message } => {
+                let lvl = match level {
+                    Level::Info => "info",
+                    Level::Warn => "warn",
+                    Level::Error => "error",
+                };
+                format!("push_log(\"{}\",{})", lvl, serde_json::json!(message))
+            }
+            Event::Done { output, elapsed_ms } => {
+                let json_str = serde_json::to_string(output).unwrap_or_default();
+                format!("push_done({},{})", serde_json::json!(json_str), elapsed_ms)
+            }
+        };
+        let _ = webview::eval_global(&js);
+    };
+
+    match cmd {
+        "boost" => {
+            let bp = hosts::BoostParams {
+                timeout_ms: args["timeout_ms"].as_u64().unwrap_or(3000),
+                concurrency: args["concurrency"].as_u64().unwrap_or(16),
+                top: args["top"].as_u64().unwrap_or(1),
+                extra_ip: None,
+                only: None,
+                apply: args["apply"].as_bool().unwrap_or(false),
+                clean: args["clean"].as_bool().unwrap_or(false),
+            };
+            run_blocking(hosts::boost_core(bp, &sink))
+        }
+        "scan" => {
+            let sp = nodes::ScanParams {
+                source: None,
+                include_repo: true,
+                max_sources: args["max_sources"].as_u64().unwrap_or(60),
+                concurrency: args["concurrency"].as_u64().unwrap_or(16),
+                per_limit: args["per_limit"].as_u64().unwrap_or(500),
+                output: PathBuf::from(args["output"].as_str().unwrap_or("nodes_data")),
+            };
+            run_blocking(nodes::scan_core(sp, &sink))
+        }
+        "test" => {
+            let tp = nodes::TestParams {
+                input: PathBuf::from(args["input"].as_str().unwrap_or("nodes_data")),
+                top: args["top"].as_u64().unwrap_or(300),
+                concurrency: args["concurrency"].as_u64().unwrap_or(32),
+                timeout_ms: args["timeout_ms"].as_u64().unwrap_or(8000),
+                test_url: args["test_url"]
+                    .as_str()
+                    .unwrap_or("https://www.gstatic.com/generate_204")
+                    .to_string(),
+                mihomo: None,
+            };
+            run_blocking(nodes::test_core(tp, &sink))
+        }
+        "add" => {
+            let ap = nodes::AddParams {
+                input: PathBuf::from(args["input"].as_str().unwrap_or("nodes_data")),
+                keep: args["keep"].as_u64().unwrap_or(20),
+                max_ms: args["max_ms"].as_u64().unwrap_or(0),
+                apply: args["apply"].as_bool().unwrap_or(false),
+                profile: None,
+            };
+            run_blocking(nodes::add_core(ap, &sink))
+        }
+        _ => Err(format!("unknown command: {cmd}")),
+    }
+}
+
+/// 转义字符串用于 JS 字面量
+fn escape_js(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
 /// 清掉 WorkBuddy 等环境注入的代理变量。
 /// 否则 reqwest 默认走 `HTTPS_PROXY=127.0.0.1:55995` 假代理，直连被劫持；
 /// 同时 mihomo 子进程也会继承该代理，测速结果失真。
@@ -238,6 +459,8 @@ fn main() {
 
     if args.iter().any(|a| a == "--mcp") {
         lilyco::serve_mcp(registry);
+    } else if args.iter().any(|a| a == "--gui") {
+        launch_gui(registry);
     } else if args.iter().any(|a| a == "--schema") {
         let schemas: Vec<_> = registry.visible().map(|c| &c.schema).collect();
         println!("{}", serde_json::to_string_pretty(&schemas).unwrap());

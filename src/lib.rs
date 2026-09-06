@@ -10,7 +10,10 @@
 //! - 入参为纯数据结构（`BoostParams` / `ScanParams` / ...），FFI 层用 JSON 反序列化得到。
 
 pub mod hosts;
+pub mod mihomo;
 pub mod nodes;
+pub mod proxy;
+pub mod webview;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;

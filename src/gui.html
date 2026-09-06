@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>ghboost</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --surface:#1a1a2e;--surface2:#16213e;--surface3:#0f3460;
+  --on-surface:#e2e8f0;--on-surface2:#94a3b8;--on-surface3:#64748b;
+  --primary:#3b82f6;--primary-hover:#2563eb;--primary-container:rgba(59,130,246,.12);
+  --secondary:#10b981;--secondary-hover:#059669;
+  --danger:#ef4444;--danger-hover:#dc2626;
+  --warning:#f59e0b;--outline:#334155;--outline2:#1e293b;
+  --radius:12px;--radius-sm:8px;--radius-xs:6px;
+  --shadow:0 1px 3px rgba(0,0,0,.3),0 1px 2px rgba(0,0,0,.2);
+  --shadow-lg:0 4px 6px rgba(0,0,0,.3),0 2px 4px rgba(0,0,0,.2);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;background:var(--surface);color:var(--on-surface);height:100vh;display:grid;grid-template-columns:240px 1fr;grid-template-rows:1fr 40px;overflow:hidden}
+
+/* Sidebar */
+.sidebar{grid-row:1/3;background:var(--surface2);border-right:1px solid var(--outline);display:flex;flex-direction:column;overflow:hidden}
+.sidebar-brand{padding:20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--outline)}
+.sidebar-brand h1{font-size:16px;font-weight:700;color:var(--primary);letter-spacing:-.5px}
+.sidebar-brand .ver{font-size:10px;color:var(--on-surface3);background:var(--surface3);padding:2px 6px;border-radius:4px;font-weight:500}
+.sidebar-nav{flex:1;padding:12px;overflow-y:auto}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:var(--radius-sm);cursor:pointer;color:var(--on-surface2);font-size:13px;font-weight:500;transition:all .15s;margin-bottom:2px;position:relative}
+.nav-item:hover{background:rgba(59,130,246,.08);color:var(--on-surface)}
+.nav-item.active{background:var(--primary-container);color:var(--primary)}
+.nav-item.active::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:20px;background:var(--primary);border-radius:0 3px 3px 0}
+.nav-icon{width:18px;text-align:center;font-size:14px}
+.nav-label{flex:1}
+.sidebar-footer{padding:12px;border-top:1px solid var(--outline)}
+.sidebar-status{display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:var(--radius-sm);background:var(--surface);font-size:12px;color:var(--on-surface2)}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--on-surface3);flex-shrink:0}
+.status-dot.on{background:var(--secondary);box-shadow:0 0 8px var(--secondary)}
+
+/* Main */
+.main{display:flex;flex-direction:column;overflow:hidden}
+.main-header{padding:16px 24px;border-bottom:1px solid var(--outline);display:flex;align-items:center;gap:12px;background:var(--surface)}
+.main-header h2{font-size:15px;font-weight:600;color:var(--on-surface)}
+.main-header .badge{font-size:11px;padding:2px 8px;border-radius:4px;background:var(--primary-container);color:var(--primary);font-weight:500}
+.main-content{flex:1;overflow-y:auto;padding:20px 24px}
+
+/* Cards */
+.card{background:var(--surface2);border:1px solid var(--outline);border-radius:var(--radius);padding:20px;margin-bottom:16px;transition:border-color .15s}
+.card:hover{border-color:var(--outline2)}
+.card-title{font-size:13px;font-weight:600;color:var(--on-surface);margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.card-title .icon{opacity:.7}
+
+/* Form */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.form-full{grid-column:1/-1}
+.form-group{display:flex;flex-direction:column;gap:4px}
+.form-label{font-size:11px;font-weight:500;color:var(--on-surface3);text-transform:uppercase;letter-spacing:.5px}
+.form-input{background:var(--surface);border:1px solid var(--outline);border-radius:var(--radius-xs);padding:8px 12px;color:var(--on-surface);font-size:13px;transition:border-color .15s}
+.form-input:focus{outline:none;border-color:var(--primary)}
+.form-check{display:flex;align-items:center;gap:8px;padding:8px 0}
+.form-check input[type=checkbox]{width:16px;height:16px;accent-color:var(--primary)}
+.form-check label{font-size:13px;color:var(--on-surface2);cursor:pointer}
+
+/* Buttons */
+.btn-group{display:flex;gap:8px;margin-top:16px;grid-column:1/-1}
+.btn{padding:8px 16px;border:none;border-radius:var(--radius-xs);cursor:pointer;font-size:12px;font-weight:600;transition:all .15s;display:inline-flex;align-items:center;gap:6px;letter-spacing:.3px}
+.btn-fill{background:var(--primary);color:#fff}.btn-fill:hover{background:var(--primary-hover)}
+.btn-fill:disabled{background:var(--outline);color:var(--on-surface3);cursor:not-allowed}
+.btn-green{background:var(--secondary);color:#fff}.btn-green:hover{background:var(--secondary-hover)}
+.btn-red{background:var(--danger);color:#fff}.btn-red:hover{background:var(--danger-hover)}
+.btn-ghost{background:transparent;color:var(--on-surface2);border:1px solid var(--outline)}.btn-ghost:hover{background:rgba(255,255,255,.05)}
+.btn-sm{padding:6px 12px;font-size:11px}
+
+/* Progress */
+.progress{display:none;margin-top:12px;grid-column:1/-1}
+.progress.show{display:block}
+.progress-track{height:4px;background:var(--surface);border-radius:2px;overflow:hidden}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--primary),var(--secondary));transition:width .3s;width:0;border-radius:2px}
+.progress-label{font-size:11px;color:var(--on-surface3);margin-top:6px;display:flex;justify-content:space-between}
+
+/* Table */
+.table-wrap{overflow-x:auto;margin-top:12px}
+.table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px}
+.table th{text-align:left;padding:8px 12px;background:var(--surface);color:var(--on-surface3);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--outline)}
+.table td{padding:8px 12px;border-bottom:1px solid var(--outline)}
+.table tr:last-child td{border-bottom:none}
+.table tr:hover td{background:rgba(59,130,246,.04)}
+.lat{font-family:"JetBrains Mono",Consolas,monospace;font-weight:500}
+.lat.g{color:var(--secondary)}.lat.y{color:var(--warning)}.lat.r{color:var(--danger)}
+
+/* Tags */
+.tag{font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+.tag-ss{background:rgba(16,185,129,.12);color:var(--secondary)}
+.tag-vmess{background:rgba(59,130,246,.12);color:var(--primary)}
+.tag-trojan{background:rgba(168,85,247,.12);color:#a855f7}
+.tag-http{background:rgba(245,158,11,.12);color:var(--warning)}
+
+/* Node list */
+.node-list{max-height:360px;overflow-y:auto}
+.node-row{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--outline);font-size:12px;transition:background .1s}
+.node-row:hover{background:rgba(59,130,246,.04)}
+.node-row:last-child{border-bottom:none}
+.node-name{flex:1;color:var(--on-surface);font-weight:500}
+
+/* Output */
+.output-panel{background:var(--surface);border:1px solid var(--outline);border-radius:var(--radius-sm);padding:12px;font-family:"JetBrains Mono",Consolas,monospace;font-size:11px;max-height:240px;overflow-y:auto;white-space:pre-wrap;color:var(--secondary);display:none;line-height:1.7}
+.output-panel.show{display:block}
+.output-panel.err{color:var(--danger)}
+
+/* Toast */
+.toast-box{position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{padding:10px 16px;border-radius:var(--radius-sm);font-size:12px;font-weight:500;color:#fff;animation:toastIn .3s ease;box-shadow:var(--shadow-lg)}
+.toast.ok{background:#059669}.toast.err{background:#dc2626}.toast.info{background:#2563eb}
+@keyframes toastIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* Empty */
+.empty{text-align:center;padding:48px 24px;color:var(--on-surface3)}
+.empty-icon{font-size:36px;margin-bottom:12px;opacity:.4}
+.empty p{font-size:13px}
+
+/* Status bar */
+.statusbar{grid-column:2;background:var(--surface2);border-top:1px solid var(--outline);padding:0 16px;display:flex;align-items:center;gap:16px;font-size:11px;color:var(--on-surface3)}
+.statusbar .sep{width:1px;height:16px;background:var(--outline)}
+
+/* Spinner */
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--outline);border-top-color:var(--primary);border-radius:50%;animation:sp .6s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--outline);border-radius:3px}::-webkit-scrollbar-thumb:hover{background:var(--on-surface3)}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+  <div class="sidebar-brand">
+    <h1>ghboost</h1>
+    <span class="ver">v0.2.0</span>
+  </div>
+  <div class="sidebar-nav">
+    <div class="nav-item active" data-nav="boost"><span class="nav-icon">Z</span><span class="nav-label">Hosts Accelerate</span></div>
+    <div class="nav-item" data-nav="scan"><span class="nav-icon">:</span><span class="nav-label">Node Scan</span></div>
+    <div class="nav-item" data-nav="test"><span class="nav-icon">.</span><span class="nav-label">Speed Test</span></div>
+    <div class="nav-item" data-nav="add"><span class="nav-icon">/</span><span class="nav-label">Export / Inject</span></div>
+    <div class="nav-item" data-nav="proxy"><span class="nav-icon">></span><span class="nav-label">System Proxy</span></div>
+  </div>
+  <div class="sidebar-footer">
+    <div class="sidebar-status">
+      <span class="status-dot" id="sideDot"></span>
+      <span id="sideStatus">Ready</span>
+    </div>
+  </div>
+</div>
+
+<!-- Main -->
+<div class="main">
+  <div class="main-header">
+    <h2 id="pageTitle">Hosts Accelerate</h2>
+    <span class="badge" id="pageBadge">active</span>
+  </div>
+  <div class="main-content">
+
+    <!-- Boost -->
+    <div class="panel active" id="p-boost">
+      <div class="card">
+        <div class="card-title">GitHub Hosts Optimization</div>
+        <div class="form-grid">
+          <div class="form-group"><span class="form-label">Timeout (ms)</span><input class="form-input" type="number" id="boost-timeout" value="3000" min="200" max="15000"></div>
+          <div class="form-group"><span class="form-label">Concurrency</span><input class="form-input" type="number" id="boost-concurrency" value="16" min="1" max="64"></div>
+          <div class="form-group"><span class="form-label">Top IPs</span><input class="form-input" type="number" id="boost-top" value="1" min="1" max="5"></div>
+          <div class="form-full form-check"><input type="checkbox" id="boost-apply"><label for="boost-apply">Write to system hosts</label></div>
+          <div class="form-full form-check"><input type="checkbox" id="boost-clean"><label for="boost-clean">Clean old entries</label></div>
+          <div class="btn-group">
+            <button class="btn btn-fill" id="btn-boost" onclick="run_cmd('boost')">Run</button>
+            <button class="btn btn-ghost" onclick="copy_cmd('boost')">Copy CLI</button>
+          </div>
+          <div class="progress" id="prog-boost"><div class="progress-track"><div class="progress-bar" id="bar-boost"></div></div><div class="progress-label"><span id="txt-boost"></span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scan -->
+    <div class="panel" id="p-scan">
+      <div class="card">
+        <div class="card-title">Auto Node Discovery</div>
+        <div class="form-grid">
+          <div class="form-group"><span class="form-label">Max Sources</span><input class="form-input" type="number" id="scan-max_sources" value="60" min="1" max="200"></div>
+          <div class="form-group"><span class="form-label">Concurrency</span><input class="form-input" type="number" id="scan-concurrency" value="16" min="1" max="64"></div>
+          <div class="form-group"><span class="form-label">Per Source Limit</span><input class="form-input" type="number" id="scan-per_limit" value="500" min="1" max="5000"></div>
+          <div class="form-group"><span class="form-label">Output Dir</span><input class="form-input" type="text" id="scan-output" value="nodes_data"></div>
+          <div class="btn-group">
+            <button class="btn btn-fill" id="btn-scan" onclick="run_cmd('scan')">Run</button>
+            <button class="btn btn-ghost" onclick="copy_cmd('scan')">Copy CLI</button>
+          </div>
+          <div class="progress" id="prog-scan"><div class="progress-track"><div class="progress-bar" id="bar-scan"></div></div><div class="progress-label"><span id="txt-scan"></span></div></div>
+        </div>
+      </div>
+      <div class="card" id="scan-results" style="display:none">
+        <div class="card-title">Discovered Nodes</div>
+        <div class="node-list" id="scan-nodes"></div>
+      </div>
+    </div>
+
+    <!-- Test -->
+    <div class="panel" id="p-test">
+      <div class="card">
+        <div class="card-title">Mihomo Latency Test</div>
+        <div class="form-grid">
+          <div class="form-group"><span class="form-label">Data Directory</span><input class="form-input" type="text" id="test-input" value="nodes_data"></div>
+          <div class="form-group"><span class="form-label">Max Nodes</span><input class="form-input" type="number" id="test-top" value="300" min="10" max="3000"></div>
+          <div class="form-group"><span class="form-label">Concurrency</span><input class="form-input" type="number" id="test-concurrency" value="32" min="1" max="128"></div>
+          <div class="form-group"><span class="form-label">Timeout (ms)</span><input class="form-input" type="number" id="test-timeout_ms" value="8000" min="1000" max="30000"></div>
+          <div class="btn-group">
+            <button class="btn btn-fill" id="btn-test" onclick="run_cmd('test')">Run</button>
+            <button class="btn btn-ghost" onclick="copy_cmd('test')">Copy CLI</button>
+          </div>
+          <div class="progress" id="prog-test"><div class="progress-track"><div class="progress-bar" id="bar-test"></div></div><div class="progress-label"><span id="txt-test"></span></div></div>
+        </div>
+      </div>
+      <div class="card" id="test-results" style="display:none">
+        <div class="card-title">Test Results <span id="test-summary" style="font-weight:400;font-size:11px;color:var(--on-surface3);margin-left:8px"></span></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Name</th><th>Type</th><th>Latency</th><th>Result</th></tr></thead><tbody id="test-tbody"></tbody></table></div>
+        <div class="empty" id="test-empty"><div class="empty-icon">.</div><p>Click Run to start testing</p></div>
+      </div>
+    </div>
+
+    <!-- Add -->
+    <div class="panel" id="p-add">
+      <div class="card">
+        <div class="card-title">Export & Inject</div>
+        <div class="form-grid">
+          <div class="form-group"><span class="form-label">Data Directory</span><input class="form-input" type="text" id="add-input" value="nodes_data"></div>
+          <div class="form-group"><span class="form-label">Keep Count</span><input class="form-input" type="number" id="add-keep" value="20" min="1" max="1000"></div>
+          <div class="form-group"><span class="form-label">Max Latency (ms)</span><input class="form-input" type="number" id="add-max_ms" value="0" min="0" max="60000"></div>
+          <div class="form-full form-check"><input type="checkbox" id="add-apply"><label for="add-apply">Inject to Clash Verge</label></div>
+          <div class="btn-group">
+            <button class="btn btn-fill" id="btn-add" onclick="run_cmd('add')">Run</button>
+            <button class="btn btn-ghost" onclick="copy_cmd('add')">Copy CLI</button>
+          </div>
+          <div class="progress" id="prog-add"><div class="progress-track"><div class="progress-bar" id="bar-add"></div></div><div class="progress-label"><span id="txt-add"></span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Proxy -->
+    <div class="panel" id="p-proxy">
+      <div class="card">
+        <div class="card-title">System Proxy Control</div>
+        <div class="form-grid">
+          <div class="form-group form-full" style="flex-direction:row;align-items:center;gap:8px">
+            <span class="form-label" style="min-width:80px">Status</span>
+            <span class="status-dot" id="proxy-dot"></span>
+            <span id="proxy-status-text" style="font-size:12px;color:var(--on-surface2)">Checking...</span>
+          </div>
+          <div class="form-group"><span class="form-label">Host</span><input class="form-input" type="text" id="proxy-host" value="127.0.0.1"></div>
+          <div class="form-group"><span class="form-label">HTTP Port</span><input class="form-input" type="number" id="proxy-port" value="7890" min="1" max="65535"></div>
+          <div class="form-group"><span class="form-label">SOCKS5 Port</span><input class="form-input" type="number" id="proxy-socks" value="7891" min="1" max="65535"></div>
+          <div class="form-group form-full"><span class="form-label">Bypass List</span><input class="form-input" type="text" id="proxy-bypass" value="localhost,127.0.0.1,::1,<local>"></div>
+          <div class="btn-group">
+            <button class="btn btn-green" onclick="do_set_proxy()">Enable</button>
+            <button class="btn btn-red" onclick="do_unset_proxy()">Disable</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Status bar -->
+<div class="statusbar">
+  <span id="sbProxy">Proxy: --</span>
+  <span class="sep"></span>
+  <span id="sbNodes">Nodes: --</span>
+  <span class="sep"></span>
+  <span id="sbTime"></span>
+  <span style="flex:1"></span>
+  <span>ghboost v0.2.0</span>
+</div>
+
+<!-- Toast -->
+<div class="toast-box" id="toasts"></div>
+
+<!-- Output (collapsed, toggle with status bar click) -->
+<div id="outputWrap" style="display:none;position:fixed;bottom:40px;left:240px;right:0;max-height:300px;background:var(--surface2);border-top:1px solid var(--outline);padding:12px 24px;z-index:100">
+  <div class="output-panel show" id="output"></div>
+</div>
+
+<script>
+var running={};
+var titles={boost:'Hosts Accelerate',scan:'Node Scan',test:'Speed Test',add:'Export / Inject',proxy:'System Proxy'};
+
+// Nav
+document.querySelectorAll('.nav-item').forEach(function(el){
+  el.addEventListener('click',function(){
+    document.querySelectorAll('.nav-item').forEach(function(n){n.classList.remove('active')});
+    document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active')});
+    el.classList.add('active');
+    var id=el.dataset.nav;
+    document.getElementById('p-'+id).classList.add('active');
+    document.getElementById('pageTitle').textContent=titles[id]||id;
+  });
+});
+
+// Toast
+function toast(msg,type,ms){
+  type=type||'info';ms=ms||3000;
+  var el=document.createElement('div');el.className='toast '+type;el.textContent=msg;
+  document.getElementById('toasts').appendChild(el);setTimeout(function(){el.remove()},ms);
+}
+
+// Args
+function collectArgs(cmd){
+  var a={};
+  if(cmd==='boost'){a.timeout_ms=+document.getElementById('boost-timeout').value;a.concurrency=+document.getElementById('boost-concurrency').value;a.top=+document.getElementById('boost-top').value;a.apply=document.getElementById('boost-apply').checked;a.clean=document.getElementById('boost-clean').checked;}
+  if(cmd==='scan'){a.max_sources=+document.getElementById('scan-max_sources').value;a.concurrency=+document.getElementById('scan-concurrency').value;a.per_limit=+document.getElementById('scan-per_limit').value;a.output=document.getElementById('scan-output').value;}
+  if(cmd==='test'){a.input=document.getElementById('test-input').value;a.top=+document.getElementById('test-top').value;a.concurrency=+document.getElementById('test-concurrency').value;a.timeout_ms=+document.getElementById('test-timeout_ms').value;}
+  if(cmd==='add'){a.input=document.getElementById('add-input').value;a.keep=+document.getElementById('add-keep').value;a.max_ms=+document.getElementById('add-max_ms').value;a.apply=document.getElementById('add-apply').checked;}
+  return a;
+}
+
+var outputEl=document.getElementById('output');
+var outputWrap=document.getElementById('outputWrap');
+function showOutput(t,err){outputEl.textContent=t;outputEl.className='output-panel show'+(err?' err':'');outputWrap.style.display='block';outputEl.scrollTop=outputEl.scrollHeight;}
+
+function setLoading(cmd,on){
+  running[cmd]=on;
+  var btn=document.getElementById('btn-'+cmd);
+  if(btn){btn.disabled=on;btn.innerHTML=on?'<span class="spin"></span> Running...':'Run';}
+  var pw=document.getElementById('prog-'+cmd);
+  if(pw){pw.classList.toggle('show',on);if(!on){var b=document.getElementById('bar-'+cmd);if(b)b.style.width='0%';}}
+}
+
+function updateProgress(cmd,cur,tot,msg){
+  var b=document.getElementById('bar-'+cmd),t=document.getElementById('txt-'+cmd);
+  if(b&&tot>0)b.style.width=Math.round(cur/tot*100)+'%';
+  if(t)t.textContent=msg||(cur+'/'+tot);
+}
+
+function run_cmd(cmd){
+  if(running[cmd])return;
+  setLoading(cmd,true);outputEl.textContent='';outputEl.className='output-panel';
+  if(cmd==='test'){document.getElementById('test-tbody').innerHTML='';document.getElementById('test-results').style.display='none';document.getElementById('test-empty').style.display='';}
+  if(cmd==='scan'){document.getElementById('scan-nodes').innerHTML='';document.getElementById('scan-results').style.display='none';}
+  try{window.run_command(JSON.stringify({cmd:cmd,args:collectArgs(cmd)}));}
+  catch(e){setLoading(cmd,false);showOutput('Error: '+e.message,true);toast(e.message,'err');}
+}
+
+function copy_cmd(cmd){
+  var a=collectArgs(cmd),p=['ghboost',cmd];
+  Object.keys(a).forEach(function(k){var v=a[k];if(typeof v==='boolean'){if(v)p.push('--'+k.replace(/_/g,'-'));}else if(v!==''&&v!=null)p.push('--'+k.replace(/_/g,'-')+' '+v);});
+  navigator.clipboard.writeText(p.join(' '));toast('Copied','ok');
+}
+
+// Rust callbacks
+function push_log(lv,msg){
+  var px={info:'[INFO]',warn:'[WARN]',error:'[ERROR]'}[lv]||'';
+  outputEl.textContent+=px+' '+msg+'\n';outputEl.className='output-panel show';outputWrap.style.display='block';outputEl.scrollTop=outputEl.scrollHeight;
+}
+function push_progress(cur,tot,msg){
+  outputEl.textContent+='['+cur+'/'+tot+'] '+msg+'\n';outputEl.className='output-panel show';outputWrap.style.display='block';outputEl.scrollTop=outputEl.scrollHeight;
+  ['boost','scan','test','add'].forEach(function(c){if(running[c])updateProgress(c,cur,tot,msg);});
+}
+function push_done(result,elapsed_ms){
+  var parsed;try{parsed=JSON.parse(result)}catch(e){parsed=null}
+  var cmd=null;['boost','scan','test','add'].forEach(function(c){if(running[c])cmd=c});
+  if(cmd)setLoading(cmd,false);
+  if(cmd==='test'&&parsed)renderTest(parsed,elapsed_ms);
+  if(cmd==='scan'&&parsed)renderScan(parsed);
+  outputEl.textContent+='\nDone ('+elapsed_ms+'ms)\n'+(typeof result==='string'?result:JSON.stringify(result,null,2));
+  outputEl.className='output-panel show';outputWrap.style.display='block';outputEl.scrollTop=outputEl.scrollHeight;
+  toast('Done in '+elapsed_ms+'ms','ok');
+  document.getElementById('sbTime').textContent='Last: '+elapsed_ms+'ms';
+}
+function push_error(msg){
+  ['boost','scan','test','add'].forEach(function(c){if(running[c])setLoading(c,false)});
+  outputEl.textContent+='\nERROR: '+msg+'\n';outputEl.className='output-panel show err';outputWrap.style.display='block';
+  toast(msg,'err',5000);
+}
+
+// Render test
+function renderTest(data,elapsed_ms){
+  var tbody=document.getElementById('test-tbody'),empty=document.getElementById('test-empty'),summary=document.getElementById('test-summary'),container=document.getElementById('test-results');
+  var nodes=[];
+  if(Array.isArray(data))nodes=data;else if(data&&data.nodes)nodes=data.nodes;else if(data&&typeof data==='object'){var key=Object.keys(data).find(function(k){return Array.isArray(data[k])});if(key)nodes=data[key];}
+  if(!nodes.length){empty.style.display='';container.style.display='';summary.textContent='No results';return;}
+  empty.style.display='none';container.style.display='';
+  nodes.sort(function(a,b){return(a.latency||a.ping||99999)-(b.latency||b.ping||99999)});
+  var avg=nodes.reduce(function(s,n){return s+(n.latency||n.ping||0)},0)/nodes.length;
+  summary.textContent=nodes.length+' nodes / avg '+Math.round(avg)+'ms / '+elapsed_ms+'ms';
+  document.getElementById('sbNodes').textContent='Nodes: '+nodes.length;
+  tbody.innerHTML=nodes.map(function(n,i){
+    var lat=n.latency||n.ping||n.delay||0,name=n.name||n.remark||n.server||('Node '+(i+1));
+    var type=(n.type||n.protocol||'').toLowerCase();
+    var lc=lat<200?'g':lat<500?'y':'r';
+    var tc=['ss','ssr'].indexOf(type)>=0?'tag-ss':['vmess','vless'].indexOf(type)>=0?'tag-vmess':type==='trojan'?'tag-trojan':'tag-http';
+    return '<tr><td>'+(i+1)+'</td><td>'+esc(name)+'</td><td><span class="tag '+tc+'">'+(type||'-')+'</span></td><td class="lat '+lc+'">'+(lat>0?lat+'ms':'-')+'</td><td>'+(lat>0?'PASS':'FAIL')+'</td></tr>';
+  }).join('');
+}
+
+// Render scan
+function renderScan(data){
+  var container=document.getElementById('scan-results'),list=document.getElementById('scan-nodes');
+  var nodes=[];
+  if(Array.isArray(data))nodes=data;else if(data&&data.nodes)nodes=data.nodes;else if(data&&typeof data==='object'){var key=Object.keys(data).find(function(k){return Array.isArray(data[k])});if(key)nodes=data[key];}
+  if(!nodes.length){container.style.display='none';return;}
+  container.style.display='';
+  document.getElementById('sbNodes').textContent='Nodes: '+nodes.length;
+  list.innerHTML=nodes.slice(0,100).map(function(n){
+    var name=n.name||n.remark||n.server||'Unknown',type=(n.type||n.protocol||'').toLowerCase();
+    var tc=['ss','ssr'].indexOf(type)>=0?'tag-ss':['vmess','vless'].indexOf(type)>=0?'tag-vmess':type==='trojan'?'tag-trojan':'tag-http';
+    return '<div class="node-row"><span class="node-name">'+esc(name)+'</span><span class="tag '+tc+'">'+(type||'?')+'</span></div>';
+  }).join('');
+  if(nodes.length>100)list.innerHTML+='<div class="node-row" style="justify-content:center;color:var(--on-surface3)">... and '+(nodes.length-100)+' more</div>';
+}
+
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// Proxy
+function do_set_proxy(){
+  var config={host:document.getElementById('proxy-host').value||'127.0.0.1',port:+document.getElementById('proxy-port').value||7890,socks_port:+document.getElementById('proxy-socks').value||null,bypass:document.getElementById('proxy-bypass').value||'localhost,127.0.0.1,::1,<local>'};
+  showOutput('Enabling proxy...',false);
+  try{window.set_proxy(JSON.stringify(config));}catch(e){showOutput('Error: '+e.message,true);}
+}
+function do_unset_proxy(){showOutput('Disabling proxy...',false);try{window.unset_proxy();}catch(e){showOutput('Error: '+e.message,true);}}
+function proxy_set_result(res){
+  if(res.ok){showOutput('Proxy: '+res.state,false);refresh_proxy_status();}else showOutput('Proxy error: '+res.error,true);
+}
+function proxy_status_result(res){
+  var el=document.getElementById('proxy-status-text'),dot=document.getElementById('proxy-dot'),sb=document.getElementById('sbProxy');
+  if(res.state&&res.state.indexOf('Enabled')>=0){el.textContent='Enabled';el.style.color='var(--secondary)';dot.className='status-dot on';sb.textContent='Proxy: ON';}
+  else if(res.state&&res.state.indexOf('Disabled')>=0){el.textContent='Disabled';el.style.color='var(--danger)';dot.className='status-dot';sb.textContent='Proxy: OFF';}
+  else{el.textContent=res.state||'Unknown';el.style.color='var(--on-surface3)';dot.className='status-dot';sb.textContent='Proxy: --';}
+}
+function refresh_proxy_status(){try{window.get_proxy_status();}catch(e){}}
+setTimeout(refresh_proxy_status,500);
+
+// Status bar time
+document.getElementById('sbTime').textContent=new Date().toLocaleTimeString();
+setInterval(function(){document.getElementById('sbTime').textContent=new Date().toLocaleTimeString()},60000);
+</script>
+</body>
+</html>
