@@ -28,7 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # 钉死到本地格式化所用的同一版本，避免 rustfmt 跨版本格式化差异导致
+      # `cargo fmt --check` 在 CI 上飘红（本地用 1.98.1 格式化，故此处同版本）。
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
       - name: Format check

@@ -229,11 +229,9 @@ fn yaml_proxy_to_uri(p: &serde_yaml::Value) -> Option<String> {
         "ss" => {
             let method = p.get("cipher").or_else(|| p.get("method"))?.as_str()?;
             let pass = p.get("password")?.as_str()?;
-            let userinfo = base64::engine::general_purpose::STANDARD
-                .encode(format!("{method}:{pass}"));
-            Some(format!(
-                "ss://{userinfo}@{server}:{port}#{enc_name}"
-            ))
+            let userinfo =
+                base64::engine::general_purpose::STANDARD.encode(format!("{method}:{pass}"));
+            Some(format!("ss://{userinfo}@{server}:{port}#{enc_name}"))
         }
         "trojan" => {
             let pass = p.get("password")?.as_str()?;
@@ -276,7 +274,11 @@ fn yaml_proxy_to_uri(p: &serde_yaml::Value) -> Option<String> {
                     }
                 }
             }
-            if let Some(sni) = p.get("servername").or_else(|| p.get("sni")).and_then(|v| v.as_str()) {
+            if let Some(sni) = p
+                .get("servername")
+                .or_else(|| p.get("sni"))
+                .and_then(|v| v.as_str())
+            {
                 q.push(format!("sni={sni}"));
             }
             if let Some(fp) = p.get("client-fingerprint").and_then(|v| v.as_str()) {
@@ -290,8 +292,17 @@ fn yaml_proxy_to_uri(p: &serde_yaml::Value) -> Option<String> {
         "vmess" => {
             let id = p.get("uuid").or_else(|| p.get("id"))?.as_str()?;
             let aid = p.get("alterId").and_then(|v| v.as_u64()).unwrap_or(0);
-            let scy = p.get("cipher").unwrap_or(&serde_yaml::Value::from("auto")).as_str().unwrap_or("auto").to_string();
-            let net = p.get("network").and_then(|v| v.as_str()).unwrap_or("tcp").to_string();
+            let scy = p
+                .get("cipher")
+                .unwrap_or(&serde_yaml::Value::from("auto"))
+                .as_str()
+                .unwrap_or("auto")
+                .to_string();
+            let net = p
+                .get("network")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tcp")
+                .to_string();
             let tls = if p.get("tls").and_then(|v| v.as_bool()) == Some(true) {
                 "tls"
             } else {
@@ -336,8 +347,8 @@ fn yaml_proxy_to_uri(p: &serde_yaml::Value) -> Option<String> {
                 "tls": tls,
                 "sni": sni,
             });
-            let b64 = base64::engine::general_purpose::STANDARD
-                .encode(serde_json::to_string(&obj).ok()?);
+            let b64 =
+                base64::engine::general_purpose::STANDARD.encode(serde_json::to_string(&obj).ok()?);
             Some(format!("vmess://{b64}#{enc_name}"))
         }
         "socks5" | "socks" => {
@@ -348,9 +359,7 @@ fn yaml_proxy_to_uri(p: &serde_yaml::Value) -> Option<String> {
             } else {
                 String::new()
             };
-            Some(format!(
-                "socks5://{auth}{server}:{port}#{enc_name}"
-            ))
+            Some(format!("socks5://{auth}{server}:{port}#{enc_name}"))
         }
         "http" | "https" => {
             let user = p.get("username").and_then(|v| v.as_str()).unwrap_or("");
@@ -360,9 +369,7 @@ fn yaml_proxy_to_uri(p: &serde_yaml::Value) -> Option<String> {
             } else {
                 String::new()
             };
-            Some(format!(
-                "{ty}://{auth}{server}:{port}#{enc_name}"
-            ))
+            Some(format!("{ty}://{auth}{server}:{port}#{enc_name}"))
         }
         _ => None,
     }
@@ -377,10 +384,15 @@ fn try_base64(text: &str) -> Option<String> {
     // 去掉可能的空白与换行
     let compact: String = t.chars().filter(|c| !c.is_whitespace()).collect();
     // base64 标准字母表
-    if compact.chars().any(|c| !c.is_ascii_alphanumeric() && c != '+' && c != '/' && c != '=') {
+    if compact
+        .chars()
+        .any(|c| !c.is_ascii_alphanumeric() && c != '+' && c != '/' && c != '=')
+    {
         return None;
     }
-    let decoded = base64::engine::general_purpose::STANDARD.decode(&compact).ok()?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&compact)
+        .ok()?;
     String::from_utf8(decoded).ok()
 }
 
@@ -483,7 +495,8 @@ pub fn node_to_clash_yaml_block(node: &Node) -> Option<String> {
             let q = query_of(hp);
             let sni = q.get("sni").cloned().unwrap_or_default();
             let allow = q.contains_key("allowInsecure") || q.contains_key("allowInsecureCrt");
-            let mut s = format!(
+            let mut s =
+                format!(
                 "  - name: {}\n    type: trojan\n    server: {}\n    port: {}\n    password: {}\n",
                 yaml_str(&node.name), server, port, yaml_str(pass)
             );
@@ -532,7 +545,11 @@ pub fn node_to_clash_yaml_block(node: &Node) -> Option<String> {
             let b64 = split_tag(after).0;
             let json = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
             let v: serde_json::Value = serde_json::from_slice(&json).ok()?;
-            let ps = v.get("ps").and_then(|x| x.as_str()).unwrap_or(&node.name).to_string();
+            let ps = v
+                .get("ps")
+                .and_then(|x| x.as_str())
+                .unwrap_or(&node.name)
+                .to_string();
             let add = v.get("add").and_then(|x| x.as_str())?;
             let port = v.get("port").and_then(|x| x.as_u64())? as u16;
             let id = v.get("id").and_then(|x| x.as_str())?;
@@ -557,7 +574,9 @@ pub fn node_to_clash_yaml_block(node: &Node) -> Option<String> {
             Some(s)
         }
         "socks5" | "socks" => {
-            let after = raw.strip_prefix(node.proto.as_str()).and_then(|s| s.strip_prefix("://"))?;
+            let after = raw
+                .strip_prefix(node.proto.as_str())
+                .and_then(|s| s.strip_prefix("://"))?;
             let (hp, _tag) = split_tag(after);
             let (auth, hostport) = match hp.rsplit_once('@') {
                 Some((a, h)) => (a, h),
@@ -566,16 +585,24 @@ pub fn node_to_clash_yaml_block(node: &Node) -> Option<String> {
             let (server, port) = host_port(hostport)?;
             let mut s = format!(
                 "  - name: {}\n    type: socks5\n    server: {}\n    port: {}\n",
-                yaml_str(&node.name), server, port
+                yaml_str(&node.name),
+                server,
+                port
             );
             if !auth.is_empty() {
                 let (u, p) = auth.split_once(':').unwrap_or((auth, ""));
-                s.push_str(&format!("    username: {}\n    password: {}\n", yaml_str(u), yaml_str(p)));
+                s.push_str(&format!(
+                    "    username: {}\n    password: {}\n",
+                    yaml_str(u),
+                    yaml_str(p)
+                ));
             }
             Some(s)
         }
         "http" | "https" => {
-            let after = raw.strip_prefix(node.proto.as_str()).and_then(|s| s.strip_prefix("://"))?;
+            let after = raw
+                .strip_prefix(node.proto.as_str())
+                .and_then(|s| s.strip_prefix("://"))?;
             let (hp, _tag) = split_tag(after);
             let (auth, hostport) = match hp.rsplit_once('@') {
                 Some((a, h)) => (a, h),
@@ -584,11 +611,18 @@ pub fn node_to_clash_yaml_block(node: &Node) -> Option<String> {
             let (server, port) = host_port(hostport)?;
             let mut s = format!(
                 "  - name: {}\n    type: {}\n    server: {}\n    port: {}\n",
-                yaml_str(&node.name), node.proto, server, port
+                yaml_str(&node.name),
+                node.proto,
+                server,
+                port
             );
             if !auth.is_empty() {
                 let (u, p) = auth.split_once(':').unwrap_or((auth, ""));
-                s.push_str(&format!("    username: {}\n    password: {}\n", yaml_str(u), yaml_str(p)));
+                s.push_str(&format!(
+                    "    username: {}\n    password: {}\n",
+                    yaml_str(u),
+                    yaml_str(p)
+                ));
             }
             Some(s)
         }
@@ -610,13 +644,21 @@ pub fn node_to_clash_yaml_block(node: &Node) -> Option<String> {
                 s.push_str(&format!("    sni: {}\n", yaml_str(&sni)));
             }
             if !alpn.is_empty() {
-                s.push_str(&format!("    alpn: [{}]\n", alpn.split(',').map(|a| format!("\"{}\"", a.trim())).collect::<Vec<_>>().join(", ")));
+                s.push_str(&format!(
+                    "    alpn: [{}]\n",
+                    alpn.split(',')
+                        .map(|a| format!("\"{}\"", a.trim()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
             }
             Some(s)
         }
         "hysteria2" | "hysteria" => {
             // hysteria2://password@host:port?sni=&insecure=
-            let after = raw.strip_prefix(node.proto.as_str()).and_then(|s| s.strip_prefix("://"))?;
+            let after = raw
+                .strip_prefix(node.proto.as_str())
+                .and_then(|s| s.strip_prefix("://"))?;
             let (hp, _tag) = split_tag(after);
             let (pass, hostport) = hp.rsplit_once('@')?;
             let (server, port) = host_port(hostport)?;
@@ -750,7 +792,13 @@ fn emit(sink: &dyn Fn(&Event), e: Event) {
 }
 
 fn log(sink: &dyn Fn(&Event), level: Level, msg: String) {
-    emit(sink, Event::Log { level, message: msg });
+    emit(
+        sink,
+        Event::Log {
+            level,
+            message: msg,
+        },
+    );
 }
 
 /// 扫描 free-VPN 索引 + 额外源，抓订阅解析去重，落库 nodes.json
@@ -770,12 +818,20 @@ pub async fn scan_core(sp: ScanParams, sink: &dyn Fn(&Event)) -> Result<serde_js
         match fetch_text(&client, FREE_VPN_README).await {
             Ok(t) => {
                 let extracted = extract_source_urls(&t);
-                log(sink, Level::Info, format!("free-VPN 索引解析出 {} 个订阅源", extracted.len()));
+                log(
+                    sink,
+                    Level::Info,
+                    format!("free-VPN 索引解析出 {} 个订阅源", extracted.len()),
+                );
                 urls.extend(extracted);
             }
             Err(e) => {
                 repo_err = Some(e.clone());
-                log(sink, Level::Warn, format!("free-VPN README 抓取失败: {e}，跳过仓库索引"));
+                log(
+                    sink,
+                    Level::Warn,
+                    format!("free-VPN README 抓取失败: {e}，跳过仓库索引"),
+                );
             }
         }
     }
@@ -797,7 +853,13 @@ pub async fn scan_core(sp: ScanParams, sink: &dyn Fn(&Event)) -> Result<serde_js
     urls.truncate(sp.max_sources as usize);
     let n_src = urls.len();
 
-    emit(sink, Event::Started { total: Some(n_src as u64), message: Some("扫描订阅源".into()) });
+    emit(
+        sink,
+        Event::Started {
+            total: Some(n_src as u64),
+            message: Some("扫描订阅源".into()),
+        },
+    );
 
     // 2) 并发抓源 + 解析
     let sem = Arc::new(Semaphore::new(sp.concurrency.max(1) as usize));
@@ -812,7 +874,10 @@ pub async fn scan_core(sp: ScanParams, sink: &dyn Fn(&Event)) -> Result<serde_js
             let text = fetch_text(&client, &u).await.unwrap_or_default();
             // per_limit：URI 列表源截断行数（base64 源通常不大，不截断）
             let limited = if text.lines().count() as u64 > per {
-                text.lines().take(per as usize).collect::<Vec<_>>().join("\n")
+                text.lines()
+                    .take(per as usize)
+                    .collect::<Vec<_>>()
+                    .join("\n")
             } else {
                 text
             };
@@ -838,7 +903,14 @@ pub async fn scan_core(sp: ScanParams, sink: &dyn Fn(&Event)) -> Result<serde_js
                 log(sink, Level::Warn, format!("源无节点: {url}"));
             }
         }
-        emit(sink, Event::Tick { current: i as u64, total: Some(n_src as u64), message: format!("扫描源 {i}/{n_src}") });
+        emit(
+            sink,
+            Event::Tick {
+                current: i as u64,
+                total: Some(n_src as u64),
+                message: format!("扫描源 {i}/{n_src}"),
+            },
+        );
     }
 
     // 3) 落库
@@ -848,8 +920,11 @@ pub async fn scan_core(sp: ScanParams, sink: &dyn Fn(&Event)) -> Result<serde_js
     }
     db.updated_at = chrono_now();
     db.sources = urls.clone();
-    std::fs::write(&db_path, serde_json::to_string_pretty(&db).map_err(|e| format!("序列化失败: {e}"))?)
-        .map_err(|e| format!("写库失败: {e}"))?;
+    std::fs::write(
+        &db_path,
+        serde_json::to_string_pretty(&db).map_err(|e| format!("序列化失败: {e}"))?,
+    )
+    .map_err(|e| format!("写库失败: {e}"))?;
 
     // 协议分布
     let mut dist: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -865,8 +940,18 @@ pub async fn scan_core(sp: ScanParams, sink: &dyn Fn(&Event)) -> Result<serde_js
         "db_path": db_path.to_string_lossy(),
         "elapsed_ms": start.elapsed().as_millis() as u64,
     });
-    log(sink, Level::Info, format!("扫描完成：{} 源 / {} 节点", n_src, db.nodes.len()));
-    emit(sink, Event::Done { output: out.clone(), elapsed_ms: start.elapsed().as_millis() as u64 });
+    log(
+        sink,
+        Level::Info,
+        format!("扫描完成：{} 源 / {} 节点", n_src, db.nodes.len()),
+    );
+    emit(
+        sink,
+        Event::Done {
+            output: out.clone(),
+            elapsed_ms: start.elapsed().as_millis() as u64,
+        },
+    );
     Ok(out)
 }
 
@@ -883,17 +968,31 @@ pub async fn test_core(tp: TestParams, sink: &dyn Fn(&Event)) -> Result<serde_js
     }
 
     // 取前 top 个（按库顺序）
-    let top = if tp.top == 0 { db.nodes.len() as u64 } else { tp.top };
+    let top = if tp.top == 0 {
+        db.nodes.len() as u64
+    } else {
+        tp.top
+    };
     let batch_nodes: Vec<Node> = db.nodes.iter().take(top as usize).cloned().collect();
     let n = batch_nodes.len();
 
-    emit(sink, Event::Started { total: Some(n as u64), message: Some("启动 Mihomo 测速".into()) });
+    emit(
+        sink,
+        Event::Started {
+            total: Some(n as u64),
+            message: Some("启动 Mihomo 测速".into()),
+        },
+    );
 
     // 单次全量加载（独立实例，按节点名 n{index} 路由）
     // 注意：Mihomo::start 内含阻塞式等待（轮询 controller 端口），必须放进
     // spawn_blocking 的专用阻塞线程，否则会在 lilyco 已有的 tokio runtime 内
     // 触发 "Cannot drop a runtime in a context where blocking is not allowed"。
-    log(sink, Level::Info, format!("启动独立 Mihomo 实例，加载 {} 个节点…", n));
+    log(
+        sink,
+        Level::Info,
+        format!("启动独立 Mihomo 实例，加载 {} 个节点…", n),
+    );
     let mh = {
         let batch = batch_nodes.clone();
         let bin = tp.mihomo.clone();
@@ -905,7 +1004,9 @@ pub async fn test_core(tp: TestParams, sink: &dyn Fn(&Event)) -> Result<serde_js
     };
 
     log(sink, Level::Info, "并发测速中…".into());
-    let raw = mh.test_all(&tp.test_url, tp.timeout_ms, tp.concurrency as usize).await;
+    let raw = mh
+        .test_all(&tp.test_url, tp.timeout_ms, tp.concurrency as usize)
+        .await;
 
     // 收集可用节点（delay 命中）
     let mut results: Vec<TestResult> = Vec::new();
@@ -914,7 +1015,10 @@ pub async fn test_core(tp: TestParams, sink: &dyn Fn(&Event)) -> Result<serde_js
         match delay {
             Some(d) => {
                 if let Some(node) = batch_nodes.get(i) {
-                    results.push(TestResult { node: node.clone(), delay_ms: d });
+                    results.push(TestResult {
+                        node: node.clone(),
+                        delay_ms: d,
+                    });
                 }
             }
             None => dead += 1,
@@ -930,8 +1034,11 @@ pub async fn test_core(tp: TestParams, sink: &dyn Fn(&Event)) -> Result<serde_js
         "updated_at": chrono_now(),
         "results": results,
     });
-    std::fs::write(&tests_path, serde_json::to_string_pretty(&tests_json).map_err(|e| format!("序列化失败: {e}"))?)
-        .map_err(|e| format!("写测试结果失败: {e}"))?;
+    std::fs::write(
+        &tests_path,
+        serde_json::to_string_pretty(&tests_json).map_err(|e| format!("序列化失败: {e}"))?,
+    )
+    .map_err(|e| format!("写测试结果失败: {e}"))?;
 
     let out = serde_json::json!({
         "tested": n,
@@ -943,8 +1050,18 @@ pub async fn test_core(tp: TestParams, sink: &dyn Fn(&Event)) -> Result<serde_js
         "elapsed_ms": start.elapsed().as_millis() as u64,
         "top5": results.iter().take(5).map(|r| serde_json::json!({"name": r.node.name, "proto": r.node.proto, "delay_ms": r.delay_ms})).collect::<Vec<_>>(),
     });
-    log(sink, Level::Info, format!("测速完成：{} 测 / {} 可用 / {} 死", n, results.len(), dead));
-    emit(sink, Event::Done { output: out.clone(), elapsed_ms: start.elapsed().as_millis() as u64 });
+    log(
+        sink,
+        Level::Info,
+        format!("测速完成：{} 测 / {} 可用 / {} 死", n, results.len(), dead),
+    );
+    emit(
+        sink,
+        Event::Done {
+            output: out.clone(),
+            elapsed_ms: start.elapsed().as_millis() as u64,
+        },
+    );
     Ok(out)
 }
 
@@ -954,10 +1071,19 @@ pub async fn add_core(ap: AddParams, sink: &dyn Fn(&Event)) -> Result<serde_json
     let tests_path = ap.input.join("tests.json");
     let raw: serde_json::Value = match std::fs::read_to_string(&tests_path) {
         Ok(s) => serde_json::from_str(&s).map_err(|e| format!("读测试结果失败: {e}"))?,
-        Err(_) => return Err(format!("未找到测试结果 {}，请先运行 test", tests_path.display())),
+        Err(_) => {
+            return Err(format!(
+                "未找到测试结果 {}，请先运行 test",
+                tests_path.display()
+            ))
+        }
     };
-    let mut results: Vec<TestResult> = serde_json::from_value(raw.get("results").cloned().unwrap_or(serde_json::Value::Null))
-        .map_err(|e| format!("解析结果失败: {e}"))?;
+    let mut results: Vec<TestResult> = serde_json::from_value(
+        raw.get("results")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
+    .map_err(|e| format!("解析结果失败: {e}"))?;
     // 按延迟升序，过滤上限
     results.sort_by_key(|r| r.delay_ms);
     if ap.max_ms > 0 {
@@ -968,13 +1094,20 @@ pub async fn add_core(ap: AddParams, sink: &dyn Fn(&Event)) -> Result<serde_json
         return Err("没有满足延迟条件的可用节点".into());
     }
 
-    emit(sink, Event::Started { total: Some(results.len() as u64), message: Some("导出节点".into()) });
+    emit(
+        sink,
+        Event::Started {
+            total: Some(results.len() as u64),
+            message: Some("导出节点".into()),
+        },
+    );
 
     if ap.apply {
         // 写入 Clash Verge 当前激活的 local profile（带备份）
         let profile = match &ap.profile {
             Some(p) => p.clone(),
-            None => clash_verge_active_profile().ok_or_else(|| "无法定位 Clash Verge 配置目录".to_string())?,
+            None => clash_verge_active_profile()
+                .ok_or_else(|| "无法定位 Clash Verge 配置目录".to_string())?,
         };
         let mut blocks = Vec::new();
         let mut failed = 0usize;
@@ -1002,8 +1135,18 @@ pub async fn add_core(ap: AddParams, sink: &dyn Fn(&Event)) -> Result<serde_json
             "backup": backup.to_string_lossy(),
             "note": "已追加到 Clash Verge 当前 profile 的 proxies，切换/重载该配置后生效",
         });
-        log(sink, Level::Info, format!("已注入 {} 个节点到 {}", blocks.len(), profile.display()));
-        emit(sink, Event::Done { output: out.clone(), elapsed_ms: start.elapsed().as_millis() as u64 });
+        log(
+            sink,
+            Level::Info,
+            format!("已注入 {} 个节点到 {}", blocks.len(), profile.display()),
+        );
+        emit(
+            sink,
+            Event::Done {
+                output: out.clone(),
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            },
+        );
         Ok(out)
     } else {
         // 默认：导出订阅文件（URI 列表 + base64）
@@ -1021,8 +1164,18 @@ pub async fn add_core(ap: AddParams, sink: &dyn Fn(&Event)) -> Result<serde_json
             "top": results.iter().take(5).map(|r| serde_json::json!({"name": r.node.name, "delay_ms": r.delay_ms})).collect::<Vec<_>>(),
             "note": "已导出订阅文件，在 Clash Verge / v2rayN 等客户端「订阅」里导入即可",
         });
-        log(sink, Level::Info, format!("已导出 {} 个优质节点订阅", results.len()));
-        emit(sink, Event::Done { output: out.clone(), elapsed_ms: start.elapsed().as_millis() as u64 });
+        log(
+            sink,
+            Level::Info,
+            format!("已导出 {} 个优质节点订阅", results.len()),
+        );
+        emit(
+            sink,
+            Event::Done {
+                output: out.clone(),
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            },
+        );
         Ok(out)
     }
 }
@@ -1047,7 +1200,11 @@ fn clash_verge_active_profile() -> Option<PathBuf> {
     let current = v.get("current")?.as_str()?;
     // current 指向 profiles/<uid>.yaml
     let p = dir.join("profiles").join(format!("{current}.yaml"));
-    if p.exists() { Some(p) } else { None }
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 /// 把新增 proxies 合并进已有 clash yaml（保留其它段，proxies 追加去重）

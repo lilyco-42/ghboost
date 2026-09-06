@@ -69,7 +69,11 @@ fn mihomo_bin(bin_override: &Option<PathBuf>) -> Option<PathBuf> {
 /// 裸 `mihomo` / `mihomo.exe`，或按目标三元组的 `mihomo-<triple>` /
 /// `mihomo-<triple>.exe`。
 fn bundled_in(dir: &Path) -> Option<PathBuf> {
-    let plain = dir.join(if cfg!(windows) { "mihomo.exe" } else { "mihomo" });
+    let plain = dir.join(if cfg!(windows) {
+        "mihomo.exe"
+    } else {
+        "mihomo"
+    });
     if plain.is_file() {
         return Some(plain);
     }
@@ -96,9 +100,15 @@ fn system_paths() -> Vec<PathBuf> {
         v.push(PathBuf::from("/opt/homebrew/bin/mihomo"));
         v.push(PathBuf::from("/usr/local/bin/mihomo"));
     } else if cfg!(target_os = "windows") {
-        v.push(PathBuf::from(r"C:\Program Files\Clash Verge\verge-mihomo.exe"));
-        v.push(PathBuf::from(r"C:\Program Files\Clash Verge\verge-mihomo-alpha.exe"));
-        v.push(PathBuf::from(r"C:\Program Files (x86)\Clash Verge\verge-mihomo.exe"));
+        v.push(PathBuf::from(
+            r"C:\Program Files\Clash Verge\verge-mihomo.exe",
+        ));
+        v.push(PathBuf::from(
+            r"C:\Program Files\Clash Verge\verge-mihomo-alpha.exe",
+        ));
+        v.push(PathBuf::from(
+            r"C:\Program Files (x86)\Clash Verge\verge-mihomo.exe",
+        ));
     } else {
         v.push(PathBuf::from("/usr/local/bin/mihomo"));
         v.push(PathBuf::from("/usr/bin/mihomo"));
@@ -113,7 +123,9 @@ fn free_port() -> u16 {
 
 fn rand_secret() -> String {
     let mut rng = rand::thread_rng();
-    (0..24).map(|_| rng.sample(rand::distributions::Alphanumeric) as char).collect()
+    (0..24)
+        .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
+        .collect()
 }
 
 /// 把节点 URI 的 #tag 改写成 `n{index}`，保证 mihomo 节点名无特殊字符
@@ -141,10 +153,12 @@ impl Mihomo {
     /// 内部按 `n{index}` 生成 mihomo 节点名（保证路径段路由安全）。
     pub fn start(batch: &[Node], bin_override: &Option<PathBuf>) -> Result<Mihomo, String> {
         let bin = mihomo_bin(bin_override).ok_or_else(|| {
-            "找不到 mihomo 二进制（Clash Verge 的 verge-mihomo.exe 或 PATH 里的 mihomo）".to_string()
+            "找不到 mihomo 二进制（Clash Verge 的 verge-mihomo.exe 或 PATH 里的 mihomo）"
+                .to_string()
         })?;
 
-        let dir = std::env::temp_dir().join(format!("ghboost_mh_{}", rand::thread_rng().gen::<u32>()));
+        let dir =
+            std::env::temp_dir().join(format!("ghboost_mh_{}", rand::thread_rng().gen::<u32>()));
         fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
         let nodes_file = dir.join("nodes.txt");
@@ -276,9 +290,7 @@ impl Mihomo {
             let nm = name.clone();
             set.spawn(async move {
                 let _permit = sem.acquire().await;
-                let url = format!(
-                    "{base}/proxies/{nm}/delay?url={tu}&timeout={timeout_ms}"
-                );
+                let url = format!("{base}/proxies/{nm}/delay?url={tu}&timeout={timeout_ms}");
                 let res = client
                     .get(&url)
                     .header("Authorization", auth)
