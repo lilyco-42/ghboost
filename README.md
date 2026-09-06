@@ -11,6 +11,21 @@ GitHub 访问加速 + 免费代理节点扫描 / 测速 / 注入工具，基于 
 - **MCP 服务器**：`--mcp` 暴露为 AI Agent 可直接调用的工具；`--schema` 打印 JSON Schema。
 - **免费节点库**：`scan` 扫描公开订阅源 → `test` 用独立 Mihomo 内核做真实延迟测速 → `add` 把最优节点注入 Clash/Mihomo 配置（自动备份）。
 
+## 双击即用（Web UI）
+
+**下载 exe 后直接双击** —— 自动启动本机 Web 控制台并打开浏览器，零命令行知识要求：
+
+```
+ghboost.exe（双击）
+  → http://localhost:8619 自动在浏览器打开
+  → 页头下拉切换 boost / scan / test / test 结果注入（add）
+  → 表单填参数 → ▶ Run → 实时进度（SSE）→ 结果 JSON
+```
+
+- 只监听本机回环（127.0.0.1），不暴露局域网；端口可用环境变量 `LILYCO_PORT` 改
+- 关闭：回到那个控制台窗口按 `Ctrl-C`（或直接关窗口）
+- 命令行依旧全功能：`ghboost boost --apply`（CLI 子命令）/ `--tui`（终端表单）/ `--mcp`（Agent 调用）/ `--schema`
+
 ## 安装
 
 ### 预编译二进制（推荐）
