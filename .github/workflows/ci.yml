@@ -1,0 +1,297 @@
+name: CI
+
+# 跨平台构建 ghboost：
+#   - cargo-zigbuild（单 ubuntu runner）：Linux(x86_64/aarch64, gnu+musl) + Windows(x86_64/aarch64, gnu)
+#   - macOS runner：apple-darwin（Apple Silicon + Intel）
+#   - Android：NDK + cargo-ndk → aarch64-linux-android
+# 打 v* tag 时把全部产物发布为 GitHub Release。
+#
+# 参考：lilyco/build-release.yml、cute_box/build-all.yml（macOS/Android 走原生 runner + NDK）
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------
+  # 测试 + 静态检查（离线单元测试，无需网络）
+  # ---------------------------------------------------------------
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets
+      - name: Run tests
+        run: cargo test
+
+  # ---------------------------------------------------------------
+  # cargo-zigbuild：Linux + Windows（单 runner 出全部二进制）
+  # ---------------------------------------------------------------
+  zigbuild:
+    name: zigbuild (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+          # 注：aarch64-pc-windows-gnu 在 Rust stable 上不存在（Windows on ARM64
+          # 只有 msvc ABI），无法用 zig 从 Linux 交叉编译；改由下方 windows job
+          # 用 aarch64-pc-windows-msvc 在 Windows runner 上原生构建。
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install zig
+        run: |
+          set -e
+          ZIG_VER=0.13.0
+          for URL in \
+            "https://ziglang.org/download/${ZIG_VER}/zig-linux-x86_64-${ZIG_VER}.tar.xz" \
+            "https://github.com/ziglang/zig/releases/download/${ZIG_VER}/zig-linux-x86_64-${ZIG_VER}.tar.xz" ; do
+            if curl -fsSL "$URL" -o zig.tar.xz; then break; fi
+          done
+          tar -xf zig.tar.xz
+          echo "$PWD/zig-linux-x86_64-${ZIG_VER}" >> "$GITHUB_PATH"
+      - name: Verify zig
+        run: zig version
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+      - name: Build (zigbuild)
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist
+          TRIPLE="${{ matrix.target }}"
+          BIN="target/${TRIPLE}/release/ghboost"
+          if [ -f "$BIN.exe" ]; then cp "$BIN.exe" "dist/ghboost-${TRIPLE}.exe"; else cp "$BIN" "dist/ghboost-${TRIPLE}"; fi
+          # cdylib（C ABI 库）
+          case "$TRIPLE" in
+            *windows*) LIB="ghboost.dll";      EXT="dll" ;;
+            *apple*)   LIB="libghboost.dylib"; EXT="dylib" ;;
+            *)         LIB="libghboost.so";    EXT="so" ;;
+          esac
+          if [ -f "target/${TRIPLE}/release/$LIB" ]; then
+            cp "target/${TRIPLE}/release/$LIB" "dist/libghboost-${TRIPLE}.${EXT}"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # macOS：原生 runner（apple-darwin 需要 macOS SDK）
+  # ---------------------------------------------------------------
+  macos:
+    name: macos (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Stage artifact
+        run: |
+          set -e
+          mkdir -p dist
+          TRIPLE="${{ matrix.target }}"
+          cp "target/${TRIPLE}/release/ghboost" "dist/ghboost-${TRIPLE}"
+          # cdylib（C ABI 库）
+          case "$TRIPLE" in
+            *windows*) LIB="ghboost.dll";      EXT="dll" ;;
+            *apple*)   LIB="libghboost.dylib"; EXT="dylib" ;;
+            *)         LIB="libghboost.so";    EXT="so" ;;
+          esac
+          if [ -f "target/${TRIPLE}/release/$LIB" ]; then
+            cp "target/${TRIPLE}/release/$LIB" "dist/libghboost-${TRIPLE}.${EXT}"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Android：NDK + cargo-ndk → aarch64-linux-android（Termux）
+  # ---------------------------------------------------------------
+  android:
+    name: android (aarch64-linux-android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install NDK
+        run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973" --sdk_root=$ANDROID_HOME
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build (aarch64-linux-android)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: cargo ndk --platform 24 -t arm64-v8a build --release
+      - name: Stage artifact
+        run: |
+          set -e
+          mkdir -p dist
+          cp target/aarch64-linux-android/release/ghboost dist/ghboost-aarch64-linux-android
+          if [ -f target/aarch64-linux-android/release/libghboost.so ]; then
+            cp target/aarch64-linux-android/release/libghboost.so dist/libghboost-aarch64-linux-android.so
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-aarch64-linux-android
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # Windows aarch64：aarch64-pc-windows-gnu 在 Rust stable 上不存在
+  # （Windows on ARM64 仅提供 msvc ABI），必须用 Windows runner 原生构建。
+  # （x86_64 Windows 走上面的 zigbuild gnu 目标。）
+  # ---------------------------------------------------------------
+  windows:
+    name: windows (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist
+          TRIPLE="${{ matrix.target }}"
+          cp "target/${TRIPLE}/release/ghboost.exe" "dist/ghboost-${TRIPLE}.exe"
+          # cdylib（C ABI 库）
+          if [ -f "target/${TRIPLE}/release/ghboost.dll" ]; then
+            cp "target/${TRIPLE}/release/ghboost.dll" "dist/libghboost-${TRIPLE}.dll"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # 随 ghboost 分发的 mihomo 内核（MetaCubeX/mihomo 官方预编译二进制）
+  # 一个 job 在 ubuntu 上把全部目标的内核下载、重命名后作为 Release 资产。
+  # ghboost 运行 `test` 时会优先找与可执行文件同目录的 mihomo-<triple>，
+  # 从而在任意平台「自带内核」、无需用户另装 Clash Verge。
+  # 注：mihomo 内核为 GPL-3.0，作为独立可执行文件随 ghboost（MIT）分发，
+  # 属「mere aggregation」，内核自身的 GPL 许可不受影响。
+  # ---------------------------------------------------------------
+  mihomo:
+    name: mihomo kernels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download & repackage mihomo kernels
+        run: |
+          set -e
+          MH=v1.19.30
+          BASE="https://github.com/MetaCubeX/mihomo/releases/download/${MH}"
+          mkdir -p dist
+          fetch_gz() {
+            local triple="$1" asset="$2"
+            echo "=> $triple ($asset)"
+            curl -fsSL "$BASE/$asset" -o packed.gz
+            gunzip -f packed.gz
+            chmod +x packed
+            mv packed "dist/mihomo-${triple}"
+          }
+          fetch_zip() {
+            local triple="$1" asset="$2"
+            echo "=> $triple ($asset)"
+            curl -fsSL "$BASE/$asset" -o packed.zip
+            mkdir -p _ex && unzip -o -q packed.zip -d _ex
+            found=$(find _ex -maxdepth 2 -iname 'mihomo*.exe' | head -1)
+            test -n "$found" || { echo "::error::no mihomo.exe in $asset"; exit 1; }
+            mv "$found" "dist/mihomo-${triple}.exe"
+            rm -rf _ex packed.zip
+          }
+          # linux：静态 Go 二进制，gnu 与 musl 共用同一资产
+          fetch_gz  x86_64-unknown-linux-gnu        "mihomo-linux-amd64-compatible-${MH}.gz"
+          fetch_gz  x86_64-unknown-linux-musl        "mihomo-linux-amd64-compatible-${MH}.gz"
+          fetch_gz  aarch64-unknown-linux-gnu       "mihomo-linux-arm64-${MH}.gz"
+          fetch_gz  aarch64-unknown-linux-musl      "mihomo-linux-arm64-${MH}.gz"
+          fetch_gz  aarch64-apple-darwin            "mihomo-darwin-arm64-${MH}.gz"
+          fetch_gz  x86_64-apple-darwin             "mihomo-darwin-amd64-compatible-${MH}.gz"
+          fetch_gz  aarch64-linux-android           "mihomo-android-arm64-v8-${MH}.gz"
+          fetch_zip x86_64-pc-windows-gnu           "mihomo-windows-amd64-compatible-${MH}.zip"
+          fetch_zip aarch64-pc-windows-msvc         "mihomo-windows-arm64-${MH}.zip"
+          ls -la dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mihomo-kernels
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # 发布 GitHub Release（版本 tag 时）
+  # ---------------------------------------------------------------
+  release:
+    name: Publish Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, zigbuild, macos, android, windows, mihomo]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Include C ABI header
+        run: cp ghboost.h artifacts/
+      - name: Show artifacts
+        run: find artifacts -type f | sort
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

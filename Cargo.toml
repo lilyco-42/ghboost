@@ -1,0 +1,29 @@
+[package]
+name = "lilyco-ghboost"
+version = "0.2.1"
+edition = "2021"
+description = "GitHub 访问加速 + 免费节点扫描/测速/注入（lilyco 框架）；核心逻辑导出 C ABI 供多语言/多设备集成"
+license = "MIT"
+
+[lib]
+name = "ghboost"
+# rlib 供 bin 复用；cdylib 导出 C ABI（.so/.dll/.dylib）
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "ghboost"
+path = "src/main.rs"
+
+[dependencies]
+lilyco = { path = "../lilyco/lilyco" }
+lilyco-core = { path = "../lilyco/lilyco-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
+which = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+base64 = "0.22"
+percent-encoding = "2"
+rand = "0.8"
+sha1 = "0.10"
