@@ -401,19 +401,23 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build static lib
-        run: cargo build --release --target ${{ matrix.target }} -p ghboost-ffi
+        run: cargo build --release --target ${{ matrix.target }}
       - name: Stage artifact
         run: |
           set -e
           mkdir -p dist
           TRIPLE="${{ matrix.target }}"
-          LIB="target/${TRIPLE}/release/libghboost_ffi.a"
+          # Try the cdylib first, then staticlib
+          LIB="target/${TRIPLE}/release/libghboost.dylib"
+          if [ ! -f "$LIB" ]; then
+            LIB="target/${TRIPLE}/release/libghboost.a"
+          fi
           if [ -f "$LIB" ]; then
-            cp "$LIB" "dist/libghboost_ffi-${TRIPLE}.a"
-            echo "✅ Built: $(ls -lh "$LIB" | awk '{print $5}')"
+            cp "$LIB" dist/
+            echo "Built: $(ls -lh "$LIB" | awk '{print $5}')"
           else
-            echo "⚠️  Static lib not found"
-            find target -name "libghboost_ffi.a" -type f 2>/dev/null
+            echo "Static lib not found"
+            find target -name "libghboost*" -type f 2>/dev/null
           fi
       - uses: actions/upload-artifact@v4
         with:

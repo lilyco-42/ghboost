@@ -22,21 +22,8 @@ fn main() {
                 println!("cargo:rustc-link-lib={lib}");
             }
 
-            // 嵌入 Windows 图标
-            let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-            let ico_path = format!("{manifest_dir}\\assets\\ghboost.ico");
-            if std::path::Path::new(&ico_path).exists() {
-                let mut res = winres::WindowsResource::new();
-                res.set_icon(&ico_path);
-                res.set("ProductName", "ghboost");
-                res.set("FileDescription", "GitHub Access Accelerator");
-                res.set("CompanyName", "lilyco");
-                res.set("FileVersion", &std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
-                res.set("ProductVersion", &std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
-                if let Err(e) = res.compile() {
-                    eprintln!("warning: failed to compile resource: {e}");
-                }
-            }
+            // 嵌入 Windows 图标（winres 仅在 Windows 宿主机可用）
+            embed_windows_icon();
         }
         "macos" => {
             println!("cargo:rustc-link-lib=framework=WebKit");
@@ -52,3 +39,26 @@ fn main() {
         }
     }
 }
+
+/// 嵌入 .ico 图标 + 文件版本信息到 Windows exe
+/// 仅在 Windows 宿主机上编译（winres 是 cfg(windows) build-dependency）
+#[cfg(windows)]
+fn embed_windows_icon() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let ico_path = format!("{manifest_dir}\\assets\\ghboost.ico");
+    if std::path::Path::new(&ico_path).exists() {
+        let mut res = winres::WindowsResource::new();
+        res.set_icon(&ico_path);
+        res.set("ProductName", "ghboost");
+        res.set("FileDescription", "GitHub Access Accelerator");
+        res.set("CompanyName", "lilyco");
+        res.set("FileVersion", &std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
+        res.set("ProductVersion", &std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
+        if let Err(e) = res.compile() {
+            eprintln!("warning: failed to compile resource: {e}");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_windows_icon() {}
