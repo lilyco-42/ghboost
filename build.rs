@@ -1,6 +1,6 @@
-//! build.rs — 链接 webview-capi 预编译库
+//! build.rs — 链接 webview-capi 预编译库 + 嵌入 Windows 图标
 //!
-//! Windows: 链接 webview.dll + 系统库
+//! Windows: 链接 webview.dll + 系统库 + 嵌入 .ico
 //! macOS: 链接 WebKit.framework
 //! Linux: 手动链接 webkit2gtk + gtk3
 
@@ -20,6 +20,22 @@ fn main() {
             // WebView2 运行时依赖
             for lib in ["ole32", "oleaut32", "shlwapi", "version", "user32", "shell32"] {
                 println!("cargo:rustc-link-lib={lib}");
+            }
+
+            // 嵌入 Windows 图标
+            let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+            let ico_path = format!("{manifest_dir}\\assets\\ghboost.ico");
+            if std::path::Path::new(&ico_path).exists() {
+                let mut res = winres::WindowsResource::new();
+                res.set_icon(&ico_path);
+                res.set("ProductName", "ghboost");
+                res.set("FileDescription", "GitHub Access Accelerator");
+                res.set("CompanyName", "lilyco");
+                res.set("FileVersion", &std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
+                res.set("ProductVersion", &std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
+                if let Err(e) = res.compile() {
+                    eprintln!("warning: failed to compile resource: {e}");
+                }
             }
         }
         "macos" => {

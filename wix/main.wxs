@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="windows-1252"?>
+<!--
+  ghboost MSI installer template for cargo-wix
+  Features: Desktop shortcut, Start Menu, Uninstaller
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+    Id="*"
+    Name="ghboost"
+    UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
+    Language="1033"
+    Codepage="1252"
+    Version="$(var.Version)">
+
+    <Package
+      InstallerVersion="200"
+      Compressed="yes"
+      InstallScope="perMachine"
+      Description="ghboost - GitHub Access Accelerator"
+      Manufacturer="lilyco"
+      Comments="GitHub access acceleration with proxy nodes" />
+
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit."
+      AllowSameVersionUpgrades="yes" />
+
+    <Media Id="1" Cabinet="ghboost.cab" EmbedCab="yes" DiskPrompt="CD-ROM #1" />
+    <Property Id="DiskPrompt" Value="ghboost Installation" />
+
+    <!-- Directory structure -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder" Name="PFiles">
+        <Directory Id="APPLICATIONFOLDER" Name="ghboost" />
+      </Directory>
+      <Directory Id="DesktopFolder" Name="Desktop" />
+      <Directory Id="ProgramMenuFolder" Name="Programs">
+        <Directory Id="ApplicationProgramsFolder" Name="ghboost" />
+      </Directory>
+    </Directory>
+
+    <!-- Start Menu folder -->
+    <Fragment>
+      <DirectoryRef Id="ApplicationProgramsFolder">
+        <Component Id="ApplicationShortcut" Guid="B5C6D7E8-F901-2345-6789-ABCDEF012345" Win64="yes">
+          <Shortcut
+            Id="ApplicationStartMenuShortcut"
+            Name="ghboost"
+            Description="GitHub Access Accelerator"
+            Target="[APPLICATIONFOLDER]ghboost.exe"
+            WorkingDirectory="APPLICATIONFOLDER"
+            Icon="ghboost.exe" />
+          <RemoveFolder Id="CleanUpShortcutFolder" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\lilyco\ghboost" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </DirectoryRef>
+    </Fragment>
+
+    <!-- Features -->
+    <Feature Id="Complete" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="ApplicationShortcut" />
+    </Feature>
+
+    <!-- Icon -->
+    <Icon Id="ghboost.exe" SourceFile="$(var.CargoTargetBinDir)\ghboost.exe" />
+
+    <!-- UI -->
+    <UIRef Id="WixUI_InstallDir" />
+    <Property Id="WIXUI_INSTALLDIR" Value="APPLICATIONFOLDER" />
+
+    <!-- License -->
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+  </Product>
+
+  <!-- Components -->
+  <Fragment>
+    <DirectoryRef Id="APPLICATIONFOLDER">
+      <Component Id="MainExecutable" Guid="C4D5E6F7-0123-4567-89AB-CDEF01234567" Win64="yes">
+        <File
+          Id="exe"
+          Name="ghboost.exe"
+          DiskId="1"
+          Source="$(var.CargoTargetBinDir)\ghboost.exe"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>
