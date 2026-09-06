@@ -55,10 +55,27 @@
       </DirectoryRef>
     </Fragment>
 
+    <!-- Desktop shortcut -->
+    <Fragment>
+      <DirectoryRef Id="DesktopFolder">
+        <Component Id="DesktopShortcut" Guid="D7E8F901-2345-6789-ABCD-EF0123456789" Win64="yes">
+          <Shortcut
+            Id="ApplicationDesktopShortcut"
+            Name="ghboost"
+            Description="GitHub Access Accelerator"
+            Target="[APPLICATIONFOLDER]ghboost.exe"
+            WorkingDirectory="APPLICATIONFOLDER"
+            Icon="ghboost.exe" />
+          <RegistryValue Root="HKCU" Key="Software\lilyco\ghboost" Name="desktop_shortcut" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </DirectoryRef>
+    </Fragment>
+
     <!-- Features -->
     <Feature Id="Complete" Level="1">
       <ComponentRef Id="MainExecutable" />
       <ComponentRef Id="ApplicationShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
     </Feature>
 
     <!-- Icon -->
