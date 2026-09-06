@@ -81,11 +81,9 @@
     <!-- Icon -->
     <Icon Id="ghboost.exe" SourceFile="$(var.CargoTargetBinDir)\ghboost.exe" />
 
-    <!-- UI -->
-    <UIRef Id="WixUI_InstallDir" />
+    <!-- UI: WixUI_Minimal = Welcome → Install dir → Progress → Finish (no license page) -->
+    <UIRef Id="WixUI_Minimal" />
     <Property Id="WIXUI_INSTALLDIR" Value="APPLICATIONFOLDER" />
-
-    <!-- No license file - using default WiX license dialog -->
   </Product>
 
   <!-- Components -->

@@ -208,15 +208,19 @@ struct Deploy {
 }
 
 fn run_deploy(app: &Deploy, ctx: &Context) -> Result<serde_json::Value, AppError> {
-    let protocol = match app.protocol.as_str() {
-        "vless-reality" => deploy::Protocol::VlessReality,
-        "vless-ws" => deploy::Protocol::VlessWs,
-        "trojan" => deploy::Protocol::Trojan,
-        "shadowsocks" => deploy::Protocol::Shadowsocks,
-        "hysteria2" => deploy::Protocol::Hysteria2,
-        _ => return Err(AppError::Runtime(format!("不支持的协议: {}。支持: vless-reality, vless-ws, trojan, shadowsocks, hysteria2", app.protocol))),
-    };
-    
+    let protocol =
+        match app.protocol.as_str() {
+            "vless-reality" => deploy::Protocol::VlessReality,
+            "vless-ws" => deploy::Protocol::VlessWs,
+            "trojan" => deploy::Protocol::Trojan,
+            "shadowsocks" => deploy::Protocol::Shadowsocks,
+            "hysteria2" => deploy::Protocol::Hysteria2,
+            _ => return Err(AppError::Runtime(format!(
+                "不支持的协议: {}。支持: vless-reality, vless-ws, trojan, shadowsocks, hysteria2",
+                app.protocol
+            ))),
+        };
+
     let dp = deploy::DeployParams {
         host: app.host.clone(),
         port: app.port,
@@ -229,7 +233,7 @@ fn run_deploy(app: &Deploy, ctx: &Context) -> Result<serde_json::Value, AppError
         install_bbr: !app.no_bbr,
         configure_firewall: !app.no_firewall,
     };
-    
+
     run_blocking(deploy::deploy_core(dp))
         .map(|r| serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
         .map_err(AppError::Runtime)
@@ -281,8 +285,8 @@ fn launch_gui(_registry: Registry) {
     // JS 调用: window.run_command(JSON.stringify({cmd:"boost", args:{...}}))
     wv.bind("run_command", |_id: String, req: String| {
         // req 是 JSON 数组包裹的字符串参数，解析第一个元素
-        let payload: serde_json::Value = serde_json::from_str(&req)
-            .unwrap_or(serde_json::Value::Null);
+        let payload: serde_json::Value =
+            serde_json::from_str(&req).unwrap_or(serde_json::Value::Null);
         // webview_bind 的 req 格式是 JSON 数组 ["string"]，取第一个
         let cmd_json = payload
             .as_array()
@@ -290,8 +294,8 @@ fn launch_gui(_registry: Registry) {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let parsed: serde_json::Value = serde_json::from_str(cmd_json)
-            .unwrap_or(serde_json::Value::Null);
+        let parsed: serde_json::Value =
+            serde_json::from_str(cmd_json).unwrap_or(serde_json::Value::Null);
         let cmd = parsed["cmd"].as_str().unwrap_or("").to_string();
         let args = parsed["args"].clone();
 
@@ -309,10 +313,7 @@ fn launch_gui(_registry: Registry) {
                     ));
                 }
                 Err(e) => {
-                    let _ = webview::eval_global(&format!(
-                        "push_error({})",
-                        serde_json::json!(e)
-                    ));
+                    let _ = webview::eval_global(&format!("push_error({})", serde_json::json!(e)));
                 }
             }
         });
@@ -324,8 +325,8 @@ fn launch_gui(_registry: Registry) {
 
     // 绑定 set_proxy / unset_proxy：JS → Rust 系统代理控制
     wv.bind("set_proxy", |_id: String, req: String| {
-        let payload: serde_json::Value = serde_json::from_str(&req)
-            .unwrap_or(serde_json::Value::Null);
+        let payload: serde_json::Value =
+            serde_json::from_str(&req).unwrap_or(serde_json::Value::Null);
         let params = payload
             .as_array()
             .and_then(|a| a.first())
@@ -397,9 +398,16 @@ fn execute_command(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Va
             Event::Started { total, message } => {
                 let t = total.unwrap_or(0);
                 let m = message.as_deref().unwrap_or("...");
-                format!("push_log(\"info\",\"{}\")", escape_js(&format!("started ({t} total): {m}")))
+                format!(
+                    "push_log(\"info\",\"{}\")",
+                    escape_js(&format!("started ({t} total): {m}"))
+                )
             }
-            Event::Tick { current, total, message } => {
+            Event::Tick {
+                current,
+                total,
+                message,
+            } => {
                 format!(
                     "push_progress({},{},{})",
                     current,

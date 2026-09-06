@@ -18,7 +18,9 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=webview");
 
             // WebView2 运行时依赖
-            for lib in ["ole32", "oleaut32", "shlwapi", "version", "user32", "shell32"] {
+            for lib in [
+                "ole32", "oleaut32", "shlwapi", "version", "user32", "shell32",
+            ] {
                 println!("cargo:rustc-link-lib={lib}");
             }
 
@@ -52,8 +54,14 @@ fn embed_windows_icon() {
         res.set("ProductName", "ghboost");
         res.set("FileDescription", "GitHub Access Accelerator");
         res.set("CompanyName", "lilyco");
-        res.set("FileVersion", &std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
-        res.set("ProductVersion", &std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
+        res.set(
+            "FileVersion",
+            &std::env::var("CARGO_PKG_VERSION").unwrap_or_default(),
+        );
+        res.set(
+            "ProductVersion",
+            &std::env::var("CARGO_PKG_VERSION").unwrap_or_default(),
+        );
         if let Err(e) = res.compile() {
             eprintln!("warning: failed to compile resource: {e}");
         }

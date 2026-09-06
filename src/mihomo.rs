@@ -83,15 +83,15 @@ pub struct MihomoManager {
 impl MihomoManager {
     /// 创建新的 Mihomo 管理器
     pub fn new(config: MihomoConfig) -> Self {
-        let config_dir = config
-            .config_dir
-            .clone()
-            .unwrap_or_else(|| {
-                let home = std::env::var("USERPROFILE")
-                    .or_else(|_| std::env::var("HOME"))
-                    .unwrap_or_default();
-                PathBuf::from(home).join(".config").join("ghboost").join("mihomo")
-            });
+        let config_dir = config.config_dir.clone().unwrap_or_else(|| {
+            let home = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .unwrap_or_default();
+            PathBuf::from(home)
+                .join(".config")
+                .join("ghboost")
+                .join("mihomo")
+        });
 
         // 确保配置目录存在
         std::fs::create_dir_all(&config_dir).ok();
@@ -240,18 +240,14 @@ rules:
         // 等待一下确认启动成功
         std::thread::sleep(Duration::from_millis(500));
         match child.try_wait() {
-            Ok(Some(status)) => {
-                Err(format!("Mihomo 启动后立即退出，状态码: {}", status))
-            }
+            Ok(Some(status)) => Err(format!("Mihomo 启动后立即退出，状态码: {}", status)),
             Ok(None) => {
                 // 启动成功
                 let mut process = self.process.lock().map_err(|e| e.to_string())?;
                 *process = Some(child);
                 self.get_status()
             }
-            Err(e) => {
-                Err(format!("检查进程状态失败: {e}"))
-            }
+            Err(e) => Err(format!("检查进程状态失败: {e}")),
         }
     }
 
@@ -282,12 +278,11 @@ rules:
         let pid = process.as_ref().map(|c| c.id());
 
         // 尝试从 API 获取详细状态
-        let (upload_speed, download_speed, total_upload, total_download, connections) =
-            if running {
-                self.fetch_api_stats().unwrap_or((0, 0, 0, 0, 0))
-            } else {
-                (0, 0, 0, 0, 0)
-            };
+        let (upload_speed, download_speed, total_upload, total_download, connections) = if running {
+            self.fetch_api_stats().unwrap_or((0, 0, 0, 0, 0))
+        } else {
+            (0, 0, 0, 0, 0)
+        };
 
         Ok(MihomoStatus {
             running,
@@ -318,18 +313,15 @@ rules:
 
         // 简化的解析，实际应该解析 JSON 数组
         let _text = resp.text().map_err(|e| format!("读取响应失败: {e}"))?;
-        
+
         // 返回基本统计
         Ok((0, 0, 0, 0, 0))
     }
 
     /// 重载配置文件
     pub fn reload_config(&self) -> Result<(), String> {
-        let url = format!(
-            "http://127.0.0.1:{}/configs",
-            self.config.api_port
-        );
-        
+        let url = format!("http://127.0.0.1:{}/configs", self.config.api_port);
+
         let config_content = std::fs::read_to_string(&self.config_path)
             .map_err(|e| format!("读取配置文件失败: {e}"))?;
 
@@ -358,16 +350,20 @@ rules:
         let mut proxies_content = String::new();
 
         if nodes_data_dir.exists() {
-            for entry in std::fs::read_dir(nodes_data_dir)
-                .map_err(|e| format!("读取节点目录失败: {e}"))?
+            for entry in
+                std::fs::read_dir(nodes_data_dir).map_err(|e| format!("读取节点目录失败: {e}"))?
             {
                 let entry = entry.map_err(|e| format!("读取目录项失败: {e}"))?;
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "yaml" || ext == "yml") {
+                if path
+                    .extension()
+                    .map_or(false, |ext| ext == "yaml" || ext == "yml")
+                {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         // 简单解析：找到 proxies 和 proxy-groups 段
                         if let Some(start) = content.find("proxies:") {
-                            if let Some(end) = content[start..].find("\nproxy-groups:")
+                            if let Some(end) = content[start..]
+                                .find("\nproxy-groups:")
                                 .or_else(|| content[start..].find("\n\n"))
                             {
                                 let proxies_str = &content[start + 9..start + end];

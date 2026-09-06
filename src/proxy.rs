@@ -127,7 +127,10 @@ mod windows_impl {
         r#"Software\Microsoft\Windows\CurrentVersion\Internet Settings"#;
 
     pub fn set_proxy(config: &ProxyConfig) -> Result<ProxyState, String> {
-        let proxy_server = format!("http={}:{};https={}:{}", config.host, config.port, config.host, config.port);
+        let proxy_server = format!(
+            "http={}:{};https={}:{}",
+            config.host, config.port, config.host, config.port
+        );
 
         // 设置代理服务器
         let output = Command::new("reg")
@@ -230,13 +233,7 @@ mod windows_impl {
 
     pub fn get_proxy_status() -> ProxyState {
         let output = Command::new("reg")
-            .args([
-                "query",
-                "HKCU",
-                INTERNET_SETTINGS_KEY,
-                "/v",
-                "ProxyEnable",
-            ])
+            .args(["query", "HKCU", INTERNET_SETTINGS_KEY, "/v", "ProxyEnable"])
             .output();
 
         match output {
@@ -405,12 +402,7 @@ mod linux_impl {
     pub fn set_proxy(config: &ProxyConfig) -> Result<ProxyState, String> {
         // 设置模式为手动
         let output = Command::new("gsettings")
-            .args([
-                "set",
-                "org.gnome.system.proxy",
-                "mode",
-                "'manual'",
-            ])
+            .args(["set", "org.gnome.system.proxy", "mode", "'manual'"])
             .output()
             .map_err(|e| format!("gsettings set mode 失败: {e}"))?;
 
@@ -507,12 +499,7 @@ mod linux_impl {
         let bypass_str = format!("[{}]", bypass_list.join(","));
 
         let output = Command::new("gsettings")
-            .args([
-                "set",
-                "org.gnome.system.proxy",
-                "ignore-hosts",
-                &bypass_str,
-            ])
+            .args(["set", "org.gnome.system.proxy", "ignore-hosts", &bypass_str])
             .output()
             .map_err(|e| format!("gsettings set ignore-hosts 失败: {e}"))?;
 
@@ -596,12 +583,7 @@ mod linux_impl {
     pub fn unset_proxy() -> Result<ProxyState, String> {
         // GNOME
         let output = Command::new("gsettings")
-            .args([
-                "set",
-                "org.gnome.system.proxy",
-                "mode",
-                "'none'",
-            ])
+            .args(["set", "org.gnome.system.proxy", "mode", "'none'"])
             .output();
 
         if output.is_ok() {
@@ -626,11 +608,7 @@ mod linux_impl {
 
     pub fn get_proxy_status() -> ProxyState {
         let output = Command::new("gsettings")
-            .args([
-                "get",
-                "org.gnome.system.proxy",
-                "mode",
-            ])
+            .args(["get", "org.gnome.system.proxy", "mode"])
             .output();
 
         match output {
@@ -748,9 +726,14 @@ pub fn set_env_proxy(config: &ProxyConfig) {
 /// 清除进程级代理环境变量
 pub fn unset_env_proxy() {
     for key in [
-        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-        "http_proxy", "https_proxy", "all_proxy",
-        "NO_PROXY", "no_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
     ] {
         std::env::remove_var(key);
     }

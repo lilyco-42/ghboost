@@ -50,8 +50,7 @@ pub const HINT_FIXED: c_int = 3;
 
 /// 全局回调注册表：`webview_bind` 通过 raw pointer 传给 C 回调，
 /// C 回调再通过此表查找 Rust 闭包。
-static BINDINGS: Mutex<Option<Arc<Mutex<HashMap<String, Arc<BindCallback>>>>>> =
-    Mutex::new(None);
+static BINDINGS: Mutex<Option<Arc<Mutex<HashMap<String, Arc<BindCallback>>>>>> = Mutex::new(None);
 
 /// 当前绑定的 webview 指针（供 trampoline 调用 webview_return）
 static mut CURRENT_WEBVIEW: WebviewT = std::ptr::null_mut();
@@ -203,7 +202,12 @@ impl WebView {
         self._binding_args.push(c_arg);
 
         let rc = unsafe {
-            webview_bind(self.ptr, c_name.as_ptr(), Some(bind_trampoline), arg_ptr as *mut c_void)
+            webview_bind(
+                self.ptr,
+                c_name.as_ptr(),
+                Some(bind_trampoline),
+                arg_ptr as *mut c_void,
+            )
         };
 
         check(rc)

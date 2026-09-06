@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
-use serde::{Deserialize, Serialize};
 
 /// 支持的协议类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -113,15 +113,26 @@ fn generate_password(length: usize) -> String {
 }
 
 /// SSH 执行命令
-fn ssh_exec(host: &str, port: u16, user: &str, password: Option<&str>, key_path: Option<&PathBuf>, cmd: &str) -> Result<String, String> {
+fn ssh_exec(
+    host: &str,
+    port: u16,
+    user: &str,
+    password: Option<&str>,
+    key_path: Option<&PathBuf>,
+    cmd: &str,
+) -> Result<String, String> {
     let ssh_host = format!("{}@{}", user, host);
     let port_str = port.to_string();
     let key_str;
     let mut args: Vec<&str> = vec![
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=10",
-        "-p", &port_str,
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ConnectTimeout=10",
+        "-p",
+        &port_str,
     ];
 
     if let Some(key) = key_path {
@@ -138,7 +149,12 @@ fn ssh_exec(host: &str, port: u16, user: &str, password: Option<&str>, key_path:
         Command::new("sshpass")
             .args(&sshpass_args)
             .output()
-            .map_err(|e| format!("sshpass 执行失败: {}。请安装 sshpass: apt-get install sshpass", e))?
+            .map_err(|e| {
+                format!(
+                    "sshpass 执行失败: {}。请安装 sshpass: apt-get install sshpass",
+                    e
+                )
+            })?
     } else {
         Command::new("ssh")
             .args(&args)
@@ -155,15 +171,26 @@ fn ssh_exec(host: &str, port: u16, user: &str, password: Option<&str>, key_path:
 }
 
 /// 上传文件到服务器
-fn scp_upload(host: &str, port: u16, user: &str, password: Option<&str>, key_path: Option<&PathBuf>, local_path: &PathBuf, remote_path: &str) -> Result<(), String> {
+fn scp_upload(
+    host: &str,
+    port: u16,
+    user: &str,
+    password: Option<&str>,
+    key_path: Option<&PathBuf>,
+    local_path: &PathBuf,
+    remote_path: &str,
+) -> Result<(), String> {
     let remote = format!("{}@{}:{}", user, host, remote_path);
     let port_str = port.to_string();
     let key_str;
     let local_str;
     let mut args: Vec<&str> = vec![
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-P", &port_str,
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-P",
+        &port_str,
     ];
 
     if let Some(key) = key_path {
@@ -191,32 +218,44 @@ fn scp_upload(host: &str, port: u16, user: &str, password: Option<&str>, key_pat
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!("上传失败: {}", String::from_utf8_lossy(&output.stderr)))
+        Err(format!(
+            "上传失败: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
 /// 部署 VLESS + Reality
-fn deploy_vless_reality(params: &DeployParams, logs: &mut Vec<String>) -> Result<DeployResult, String> {
+fn deploy_vless_reality(
+    params: &DeployParams,
+    logs: &mut Vec<String>,
+) -> Result<DeployResult, String> {
     let port = params.port_out.unwrap_or(443);
     let uuid = generate_uuid();
     let short_id = generate_password(16);
     let server_name = params.domain.as_deref().unwrap_or("www.microsoft.com");
-    
+
     logs.push(format!("部署 VLESS + Reality 到 {}:{}", params.host, port));
     logs.push(format!("UUID: {}", uuid));
     logs.push(format!("Short ID: {}", short_id));
     logs.push(format!("Server Name: {}", server_name));
-    
+
     // 1. 更新系统
     logs.push("更新系统包...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(), 
-        "apt-get update && apt-get upgrade -y")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "apt-get update && apt-get upgrade -y",
+    )?;
+
     // 2. 安装 Xray
     logs.push("安装 Xray-core...".to_string());
     ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
         "bash -c \"curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh | bash\"")?;
-    
+
     // 3. 生成配置
     let config = serde_json::json!({
         "log": {
@@ -264,41 +303,61 @@ fn deploy_vless_reality(params: &DeployParams, logs: &mut Vec<String>) -> Result
             }]
         }
     });
-    
+
     // 4. 上传配置
-    let config_str = serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
+    let config_str =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
     let config_path = std::env::temp_dir().join("xray_config.json");
     std::fs::write(&config_path, &config_str).map_err(|e| format!("写入临时配置失败: {}", e))?;
-    
-    scp_upload(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        &config_path, "/usr/local/etc/xray/config.json")?;
-    
+
+    scp_upload(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        &config_path,
+        "/usr/local/etc/xray/config.json",
+    )?;
+
     // 5. 重启服务
     logs.push("重启 Xray 服务...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "systemctl restart xray && systemctl enable xray")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "systemctl restart xray && systemctl enable xray",
+    )?;
+
     // 6. 配置防火墙
     if params.configure_firewall {
         logs.push("配置防火墙...".to_string());
-        let _ = ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-            &format!("ufw allow {}/tcp", port));
+        let _ = ssh_exec(
+            &params.host,
+            params.port,
+            &params.user,
+            params.password.as_deref(),
+            params.key_path.as_ref(),
+            &format!("ufw allow {}/tcp", port),
+        );
     }
-    
+
     // 7. 安装 BBR
     if params.install_bbr {
         logs.push("安装 BBR 加速...".to_string());
         let _ = ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
             "bash -c \"echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf && echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf && sysctl -p\"");
     }
-    
+
     // 生成连接 URI
     let uri = format!("vless://{}@{}:{}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={}&fp=chrome&pbk=&sid={}&type=tcp#GHBoost-Reality", 
         uuid, params.host, port, server_name, short_id);
-    
+
     // 清理临时文件
     let _ = std::fs::remove_file(&config_path);
-    
+
     let out_logs = logs.to_vec();
     Ok(DeployResult {
         success: true,
@@ -317,21 +376,30 @@ fn deploy_vless_ws(params: &DeployParams, logs: &mut Vec<String>) -> Result<Depl
     let port = params.port_out.unwrap_or(443);
     let uuid = generate_uuid();
     let path = format!("/{}", generate_password(8));
-    
-    logs.push(format!("部署 VLESS + WebSocket 到 {}:{}", params.host, port));
+
+    logs.push(format!(
+        "部署 VLESS + WebSocket 到 {}:{}",
+        params.host, port
+    ));
     logs.push(format!("UUID: {}", uuid));
     logs.push(format!("Path: {}", path));
-    
+
     // 1. 更新系统
     logs.push("更新系统包...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "apt-get update && apt-get upgrade -y")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "apt-get update && apt-get upgrade -y",
+    )?;
+
     // 2. 安装 Xray
     logs.push("安装 Xray-core...".to_string());
     ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
         "bash -c \"curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh | bash\"")?;
-    
+
     // 3. 生成配置
     let config = serde_json::json!({
         "log": {
@@ -368,35 +436,57 @@ fn deploy_vless_ws(params: &DeployParams, logs: &mut Vec<String>) -> Result<Depl
             "tag": "block"
         }]
     });
-    
+
     // 4. 上传配置
-    let config_str = serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
+    let config_str =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
     let config_path = std::env::temp_dir().join("xray_config.json");
     std::fs::write(&config_path, &config_str).map_err(|e| format!("写入临时配置失败: {}", e))?;
-    
-    scp_upload(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        &config_path, "/usr/local/etc/xray/config.json")?;
-    
+
+    scp_upload(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        &config_path,
+        "/usr/local/etc/xray/config.json",
+    )?;
+
     // 5. 重启服务
     logs.push("重启 Xray 服务...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "systemctl restart xray && systemctl enable xray")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "systemctl restart xray && systemctl enable xray",
+    )?;
+
     // 6. 配置防火墙
     if params.configure_firewall {
         logs.push("配置防火墙...".to_string());
-        let _ = ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-            &format!("ufw allow {}/tcp", port));
+        let _ = ssh_exec(
+            &params.host,
+            params.port,
+            &params.user,
+            params.password.as_deref(),
+            params.key_path.as_ref(),
+            &format!("ufw allow {}/tcp", port),
+        );
     }
-    
+
     // 生成连接 URI
     let domain = params.domain.as_deref().unwrap_or(&params.host);
-    let uri = format!("vless://{}@{}:{}?encryption=none&security=none&type=ws&path={}#GHBoost-WS", 
-        uuid, params.host, port, path);
-    
+    let uri = format!(
+        "vless://{}@{}:{}?encryption=none&security=none&type=ws&path={}#GHBoost-WS",
+        uuid, params.host, port, path
+    );
+
     // 清理临时文件
     let _ = std::fs::remove_file(&config_path);
-    
+
     let out_logs = logs.to_vec();
     Ok(DeployResult {
         success: true,
@@ -414,20 +504,26 @@ fn deploy_vless_ws(params: &DeployParams, logs: &mut Vec<String>) -> Result<Depl
 fn deploy_trojan(params: &DeployParams, logs: &mut Vec<String>) -> Result<DeployResult, String> {
     let port = params.port_out.unwrap_or(443);
     let password = generate_password(16);
-    
+
     logs.push(format!("部署 Trojan 到 {}:{}", params.host, port));
     logs.push(format!("Password: {}", password));
-    
+
     // 1. 更新系统
     logs.push("更新系统包...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "apt-get update && apt-get upgrade -y")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "apt-get update && apt-get upgrade -y",
+    )?;
+
     // 2. 安装 Xray
     logs.push("安装 Xray-core...".to_string());
     ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
         "bash -c \"curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh | bash\"")?;
-    
+
     // 3. 生成配置
     let config = serde_json::json!({
         "log": {
@@ -458,34 +554,56 @@ fn deploy_trojan(params: &DeployParams, logs: &mut Vec<String>) -> Result<Deploy
             "tag": "block"
         }]
     });
-    
+
     // 4. 上传配置
-    let config_str = serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
+    let config_str =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
     let config_path = std::env::temp_dir().join("xray_config.json");
     std::fs::write(&config_path, &config_str).map_err(|e| format!("写入临时配置失败: {}", e))?;
-    
-    scp_upload(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        &config_path, "/usr/local/etc/xray/config.json")?;
-    
+
+    scp_upload(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        &config_path,
+        "/usr/local/etc/xray/config.json",
+    )?;
+
     // 5. 重启服务
     logs.push("重启 Xray 服务...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "systemctl restart xray && systemctl enable xray")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "systemctl restart xray && systemctl enable xray",
+    )?;
+
     // 6. 配置防火墙
     if params.configure_firewall {
         logs.push("配置防火墙...".to_string());
-        let _ = ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-            &format!("ufw allow {}/tcp", port));
+        let _ = ssh_exec(
+            &params.host,
+            params.port,
+            &params.user,
+            params.password.as_deref(),
+            params.key_path.as_ref(),
+            &format!("ufw allow {}/tcp", port),
+        );
     }
-    
+
     // 生成连接 URI
-    let uri = format!("trojan://{}@{}:{}?security=none&type=tcp#GHBoost-Trojan", 
-        password, params.host, port);
-    
+    let uri = format!(
+        "trojan://{}@{}:{}?security=none&type=tcp#GHBoost-Trojan",
+        password, params.host, port
+    );
+
     // 清理临时文件
     let _ = std::fs::remove_file(&config_path);
-    
+
     let out_logs = logs.to_vec();
     Ok(DeployResult {
         success: true,
@@ -500,25 +618,34 @@ fn deploy_trojan(params: &DeployParams, logs: &mut Vec<String>) -> Result<Deploy
 }
 
 /// 部署 Shadowsocks
-fn deploy_shadowsocks(params: &DeployParams, logs: &mut Vec<String>) -> Result<DeployResult, String> {
+fn deploy_shadowsocks(
+    params: &DeployParams,
+    logs: &mut Vec<String>,
+) -> Result<DeployResult, String> {
     let port = params.port_out.unwrap_or(8388);
     let password = generate_password(16);
     let method = "aes-256-gcm";
-    
+
     logs.push(format!("部署 Shadowsocks 到 {}:{}", params.host, port));
     logs.push(format!("Password: {}", password));
     logs.push(format!("Method: {}", method));
-    
+
     // 1. 更新系统
     logs.push("更新系统包...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "apt-get update && apt-get upgrade -y")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "apt-get update && apt-get upgrade -y",
+    )?;
+
     // 2. 安装 Shadowsocks-rust
     logs.push("安装 Shadowsocks-rust...".to_string());
     ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
         "bash -c \"curl -fsSL https://github.com/shadowsocks/shadowsocks-rust/releases/latest/download/shadowsocks-v1.21.2.x86_64-unknown-linux-gnu.tar.gz | tar xz -C /usr/local/bin\"")?;
-    
+
     // 3. 生成配置
     let config = serde_json::json!({
         "server": "0.0.0.0",
@@ -530,43 +657,73 @@ fn deploy_shadowsocks(params: &DeployParams, logs: &mut Vec<String>) -> Result<D
         "mode": "tcp_and_udp",
         "no_delay": true
     });
-    
+
     // 4. 上传配置
-    let config_str = serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
+    let config_str =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
     let config_path = std::env::temp_dir().join("ss_config.json");
     std::fs::write(&config_path, &config_str).map_err(|e| format!("写入临时配置失败: {}", e))?;
-    
-    scp_upload(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        &config_path, "/etc/shadowsocks-rust/config.json")?;
-    
+
+    scp_upload(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        &config_path,
+        "/etc/shadowsocks-rust/config.json",
+    )?;
+
     // 5. 创建 systemd 服务
     let service = "[Unit]\nDescription=Shadowsocks-rust Server\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/config.json\nRestart=on-failure\nRestartSec=5s\n\n[Install]\nWantedBy=multi-user.target\n";
     let service_path = std::env::temp_dir().join("shadowsocks.service");
     std::fs::write(&service_path, service).map_err(|e| format!("写入服务文件失败: {}", e))?;
-    
-    scp_upload(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        &service_path, "/etc/systemd/system/shadowsocks.service")?;
-    
+
+    scp_upload(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        &service_path,
+        "/etc/systemd/system/shadowsocks.service",
+    )?;
+
     // 6. 启动服务
     logs.push("启动 Shadowsocks 服务...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "systemctl daemon-reload && systemctl restart shadowsocks && systemctl enable shadowsocks")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "systemctl daemon-reload && systemctl restart shadowsocks && systemctl enable shadowsocks",
+    )?;
+
     // 7. 配置防火墙
     if params.configure_firewall {
         logs.push("配置防火墙...".to_string());
-        let _ = ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-            &format!("ufw allow {}/tcp && ufw allow {} udp", port, port));
+        let _ = ssh_exec(
+            &params.host,
+            params.port,
+            &params.user,
+            params.password.as_deref(),
+            params.key_path.as_ref(),
+            &format!("ufw allow {}/tcp && ufw allow {} udp", port, port),
+        );
     }
-    
+
     // 生成连接 URI
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("{}:{}", method, password).as_bytes());
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        format!("{}:{}", method, password).as_bytes(),
+    );
     let uri = format!("ss://{}@{}:{}#GHBoost-SS", encoded, params.host, port);
-    
+
     // 清理临时文件
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_file(&service_path);
-    
+
     let out_logs = logs.to_vec();
     Ok(DeployResult {
         success: true,
@@ -584,20 +741,32 @@ fn deploy_shadowsocks(params: &DeployParams, logs: &mut Vec<String>) -> Result<D
 fn deploy_hysteria2(params: &DeployParams, logs: &mut Vec<String>) -> Result<DeployResult, String> {
     let port = params.port_out.unwrap_or(8443);
     let password = generate_password(16);
-    
+
     logs.push(format!("部署 Hysteria2 到 {}:{}", params.host, port));
     logs.push(format!("Password: {}", password));
-    
+
     // 1. 更新系统
     logs.push("更新系统包...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "apt-get update && apt-get upgrade -y")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "apt-get update && apt-get upgrade -y",
+    )?;
+
     // 2. 安装 Hysteria2
     logs.push("安装 Hysteria2...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "bash -c \"curl -fsSL https://get.hy2.sh/ | bash\"")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "bash -c \"curl -fsSL https://get.hy2.sh/ | bash\"",
+    )?;
+
     // 3. 生成配置
     let listen = format!(":{}", port);
     let config = serde_json::json!({
@@ -626,41 +795,63 @@ fn deploy_hysteria2(params: &DeployParams, logs: &mut Vec<String>) -> Result<Dep
             }
         }
     });
-    
+
     // 4. 上传配置
-    let config_str = serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
+    let config_str =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("配置序列化失败: {}", e))?;
     let config_path = std::env::temp_dir().join("hysteria2_config.yaml");
     std::fs::write(&config_path, &config_str).map_err(|e| format!("写入临时配置失败: {}", e))?;
-    
-    scp_upload(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        &config_path, "/etc/hysteria2/config.yaml")?;
-    
+
+    scp_upload(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        &config_path,
+        "/etc/hysteria2/config.yaml",
+    )?;
+
     // 5. 启动服务
     logs.push("启动 Hysteria2 服务...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-        "systemctl restart hysteria2 && systemctl enable hysteria2")?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "systemctl restart hysteria2 && systemctl enable hysteria2",
+    )?;
+
     // 6. 配置防火墙
     if params.configure_firewall {
         logs.push("配置防火墙...".to_string());
-        let _ = ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
-            &format!("ufw allow {}udp", port));
+        let _ = ssh_exec(
+            &params.host,
+            params.port,
+            &params.user,
+            params.password.as_deref(),
+            params.key_path.as_ref(),
+            &format!("ufw allow {}udp", port),
+        );
     }
-    
+
     // 安装 BBR
     if params.install_bbr {
         logs.push("安装 BBR 加速...".to_string());
         let _ = ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(),
             "bash -c \"echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf && echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf && sysctl -p\"");
     }
-    
+
     // 生成连接 URI
-    let uri = format!("hysteria2://{}@{}:{}?insecure=1#GHBoost-Hy2", 
-        password, params.host, port);
-    
+    let uri = format!(
+        "hysteria2://{}@{}:{}?insecure=1#GHBoost-Hy2",
+        password, params.host, port
+    );
+
     // 清理临时文件
     let _ = std::fs::remove_file(&config_path);
-    
+
     let out_logs = logs.to_vec();
     Ok(DeployResult {
         success: true,
@@ -677,14 +868,24 @@ fn deploy_hysteria2(params: &DeployParams, logs: &mut Vec<String>) -> Result<Dep
 /// 一键部署入口
 pub async fn deploy_core(params: DeployParams) -> Result<DeployResult, String> {
     let mut logs: Vec<String> = Vec::new();
-    
-    logs.push(format!("开始部署 {} 到 {}:{}", params.protocol, params.host, params.port));
-    
+
+    logs.push(format!(
+        "开始部署 {} 到 {}:{}",
+        params.protocol, params.host, params.port
+    ));
+
     // 测试 SSH 连接
     logs.push("测试 SSH 连接...".to_string());
-    ssh_exec(&params.host, params.port, &params.user, params.password.as_deref(), params.key_path.as_ref(), "echo ok")
-        .map_err(|e| format!("SSH 连接失败: {}", e))?;
-    
+    ssh_exec(
+        &params.host,
+        params.port,
+        &params.user,
+        params.password.as_deref(),
+        params.key_path.as_ref(),
+        "echo ok",
+    )
+    .map_err(|e| format!("SSH 连接失败: {}", e))?;
+
     // 根据协议分发
     match params.protocol {
         Protocol::VlessReality => deploy_vless_reality(&params, &mut logs),
