@@ -230,7 +230,8 @@ jobs:
       - name: Install cargo-wix
         run: cargo install cargo-wix --locked
       - name: Build MSI
-        run: cargo wix --target x86_64-pc-windows-msvc
+        run: cargo wix --target x86_64-pc-windows-msvc -v
+        shell: bash
       - name: Stage artifact
         shell: bash
         run: |
