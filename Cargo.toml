@@ -15,8 +15,8 @@ name = "ghboost"
 path = "src/main.rs"
 
 [dependencies]
-lilyco = { path = "../lilyco/lilyco" }
-lilyco-core = { path = "../lilyco/lilyco-core" }
+lilyco = { git = "https://github.com/lilyco-42/lilyco" }
+lilyco-core = { git = "https://github.com/lilyco-42/lilyco" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
 which = "6"
