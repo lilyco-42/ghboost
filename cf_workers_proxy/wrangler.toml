@@ -1,0 +1,7 @@
+name = "ghboost-vless-proxy"
+main = "../edgetunnel/src/worker-vless.js"
+compatibility_date = "2024-04-15"
+
+[vars]
+UUID = "25934eef-2683-4954-a7c3-57a2621c4a9e"
+PROXYIP = ""
