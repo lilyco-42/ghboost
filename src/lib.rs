@@ -9,6 +9,7 @@
 //! - 进度 / 日志通过 `sink: &dyn Fn(&Event)` 回调回传，宿主可忽略（FFI 用 `NO_SINK`）；
 //! - 入参为纯数据结构（`BoostParams` / `ScanParams` / ...），FFI 层用 JSON 反序列化得到。
 
+pub mod deploy;
 pub mod hosts;
 pub mod mihomo;
 pub mod nodes;

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use lilyco::prelude::*;
 
+use ghboost::deploy;
 use ghboost::hosts;
 use ghboost::nodes;
 use ghboost::proxy;
@@ -171,6 +172,67 @@ fn run_add(app: &Add, ctx: &Context) -> Result<serde_json::Value, AppError> {
     };
     let sink = make_sink(ctx);
     run_blocking(nodes::add_core(ap, &sink)).map_err(AppError::Runtime)
+}
+
+/// 一键部署服务器（支持多种协议）
+#[derive(App)]
+#[app(
+    name = "deploy",
+    about = "一键部署代理服务器（VLESS-Reality / VLESS-WS / Trojan / Shadowsocks / Hysteria2）",
+    run = "run_deploy"
+)]
+struct Deploy {
+    /// 服务器 IP 地址
+    host: String,
+    /// SSH 端口（默认 22）
+    #[arg(default = 22)]
+    port: u16,
+    /// SSH 用户名（默认 root）
+    #[arg(default = "root")]
+    user: String,
+    /// SSH 密码（可选，优先使用密钥）
+    password: Option<String>,
+    /// SSH 私钥路径（可选）
+    key_path: Option<PathBuf>,
+    /// 协议类型：vless-reality, vless-ws, trojan, shadowsocks, hysteria2
+    #[arg(default = "vless-reality")]
+    protocol: String,
+    /// 服务端口（不填则自动分配）
+    port_out: Option<u16>,
+    /// 域名（Reality/TLS 需要，默认 www.microsoft.com）
+    domain: Option<String>,
+    /// 不安装 BBR 加速
+    no_bbr: bool,
+    /// 不配置防火墙
+    no_firewall: bool,
+}
+
+fn run_deploy(app: &Deploy, ctx: &Context) -> Result<serde_json::Value, AppError> {
+    let protocol = match app.protocol.as_str() {
+        "vless-reality" => deploy::Protocol::VlessReality,
+        "vless-ws" => deploy::Protocol::VlessWs,
+        "trojan" => deploy::Protocol::Trojan,
+        "shadowsocks" => deploy::Protocol::Shadowsocks,
+        "hysteria2" => deploy::Protocol::Hysteria2,
+        _ => return Err(AppError::Runtime(format!("不支持的协议: {}。支持: vless-reality, vless-ws, trojan, shadowsocks, hysteria2", app.protocol))),
+    };
+    
+    let dp = deploy::DeployParams {
+        host: app.host.clone(),
+        port: app.port,
+        user: app.user.clone(),
+        password: app.password.clone(),
+        key_path: app.key_path.clone(),
+        protocol,
+        port_out: app.port_out,
+        domain: app.domain.clone(),
+        install_bbr: !app.no_bbr,
+        configure_firewall: !app.no_firewall,
+    };
+    
+    run_blocking(deploy::deploy_core(dp))
+        .map(|r| serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
+        .map_err(AppError::Runtime)
 }
 
 /// 把 lib 的 `Event` 映射回 lilyco 的进度/日志
@@ -409,6 +471,30 @@ fn execute_command(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Va
             };
             run_blocking(nodes::add_core(ap, &sink))
         }
+        "deploy" => {
+            let protocol = match args["protocol"].as_str().unwrap_or("vless-reality") {
+                "vless-reality" => deploy::Protocol::VlessReality,
+                "vless-ws" => deploy::Protocol::VlessWs,
+                "trojan" => deploy::Protocol::Trojan,
+                "shadowsocks" => deploy::Protocol::Shadowsocks,
+                "hysteria2" => deploy::Protocol::Hysteria2,
+                _ => return Err("不支持的协议".to_string()),
+            };
+            let dp = deploy::DeployParams {
+                host: args["host"].as_str().unwrap_or("").to_string(),
+                port: args["port"].as_u64().unwrap_or(22) as u16,
+                user: args["user"].as_str().unwrap_or("root").to_string(),
+                password: args["password"].as_str().map(|s| s.to_string()),
+                key_path: args["key_path"].as_str().map(|s| PathBuf::from(s)),
+                protocol,
+                port_out: args["port_out"].as_u64().map(|p| p as u16),
+                domain: args["domain"].as_str().map(|s| s.to_string()),
+                install_bbr: args["install_bbr"].as_bool().unwrap_or(true),
+                configure_firewall: args["configure_firewall"].as_bool().unwrap_or(true),
+            };
+            run_blocking(deploy::deploy_core(dp))
+                .map(|r| serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
+        }
         _ => Err(format!("unknown command: {cmd}")),
     }
 }
@@ -456,6 +542,9 @@ fn main() {
     registry
         .register(RegisteredCommand::from_app::<Add>())
         .expect("注册 add 失败");
+    registry
+        .register(RegisteredCommand::from_app::<Deploy>())
+        .expect("注册 deploy 失败");
 
     if args.iter().any(|a| a == "--mcp") {
         lilyco::serve_mcp(registry);
