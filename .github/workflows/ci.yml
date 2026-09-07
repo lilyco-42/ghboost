@@ -28,8 +28,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 钉死版本：rustfmt 的格式化规则会随小版本漂移，用 @stable 的话
+      # 某天 GitHub 一升级 toolchain，`cargo fmt -- --check` 就会毫无征兆地飘红
+      # （v0.2.1 时就踩过一次）。钉在当前 stable（= 1.98.1，2026-09-01）。
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.98.1
           components: rustfmt, clippy
       - name: Format check
         run: cargo fmt -- --check
