@@ -1,6 +1,6 @@
 [package]
 name = "lilyco-ghboost"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "GitHub 访问加速 + 免费节点扫描/测速/注入（lilyco 框架）；核心逻辑导出 C ABI 供多语言/多设备集成"
 license = "MIT"
@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 lilyco = { git = "https://github.com/lilyco-42/lilyco" }
 lilyco-core = { git = "https://github.com/lilyco-42/lilyco" }
+lilyco-gui = { git = "https://github.com/lilyco-42/lilyco" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
 which = "6"

@@ -910,7 +910,8 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "lilyco"
-version = "0.2.2"
+version = "0.2.3"
+source = "git+https://github.com/lilyco-42/lilyco#19e268cfe30c9f4b1d79a21ba1d6953c8179f754"
 dependencies = [
  "crossterm",
  "lilyco-cli",
@@ -926,7 +927,8 @@ dependencies = [
 
 [[package]]
 name = "lilyco-cli"
-version = "0.2.2"
+version = "0.2.3"
+source = "git+https://github.com/lilyco-42/lilyco#19e268cfe30c9f4b1d79a21ba1d6953c8179f754"
 dependencies = [
  "clap",
  "lilyco-core",
@@ -935,7 +937,8 @@ dependencies = [
 
 [[package]]
 name = "lilyco-core"
-version = "0.2.2"
+version = "0.2.4"
+source = "git+https://github.com/lilyco-42/lilyco#19e268cfe30c9f4b1d79a21ba1d6953c8179f754"
 dependencies = [
  "serde",
  "serde_json",
@@ -944,11 +947,12 @@ dependencies = [
 
 [[package]]
 name = "lilyco-ghboost"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "base64",
  "lilyco",
  "lilyco-core",
+ "lilyco-gui",
  "percent-encoding",
  "rand 0.8.8",
  "reqwest",
@@ -963,6 +967,7 @@ dependencies = [
 [[package]]
 name = "lilyco-gui"
 version = "0.2.3"
+source = "git+https://github.com/lilyco-42/lilyco#19e268cfe30c9f4b1d79a21ba1d6953c8179f754"
 dependencies = [
  "async-stream",
  "axum",
@@ -976,7 +981,8 @@ dependencies = [
 
 [[package]]
 name = "lilyco-macros"
-version = "0.2.2"
+version = "0.3.0"
+source = "git+https://github.com/lilyco-42/lilyco#19e268cfe30c9f4b1d79a21ba1d6953c8179f754"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -985,7 +991,8 @@ dependencies = [
 
 [[package]]
 name = "lilyco-mcp"
-version = "0.2.2"
+version = "0.2.3"
+source = "git+https://github.com/lilyco-42/lilyco#19e268cfe30c9f4b1d79a21ba1d6953c8179f754"
 dependencies = [
  "lilyco-core",
  "serde_json",
@@ -993,7 +1000,8 @@ dependencies = [
 
 [[package]]
 name = "lilyco-tui"
-version = "0.2.3"
+version = "0.2.4"
+source = "git+https://github.com/lilyco-42/lilyco#19e268cfe30c9f4b1d79a21ba1d6953c8179f754"
 dependencies = [
  "crossterm",
  "lilyco-core",

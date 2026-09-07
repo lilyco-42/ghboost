@@ -236,12 +236,39 @@ fn main() {
         .register(RegisteredCommand::from_app::<Add>())
         .expect("注册 add 失败");
 
+    // 双击 exe / `--gui`：启动 Web 控制台并自动打开浏览器（零参数即用的主路径）
+    let gui_requested = args.iter().any(|a| a == "--gui" || a == "--web");
+    if args.len() == 1 || gui_requested {
+        run_web(registry);
+        return;
+    }
     if args.iter().any(|a| a == "--mcp") {
         lilyco::serve_mcp(registry);
     } else if args.iter().any(|a| a == "--schema") {
         let schemas: Vec<_> = registry.visible().map(|c| &c.schema).collect();
         println!("{}", serde_json::to_string_pretty(&schemas).unwrap());
+    } else if args.iter().any(|a| a == "--tui") {
+        // 终端表单形态（多命令选择页）
+        lilyco::run_tui_registry("ghboost", registry);
     } else {
         lilyco::run_cli_registry("ghboost", registry);
     }
+}
+
+/// Web 控制台：多命令 `?cmd=` 切换 + SSE 进度；监听回环，浏览器自动打开。
+fn run_web(registry: Registry) {
+    let port: u16 = std::env::var("LILYCO_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8619);
+    println!("ghboost Web 控制台即将启动：http://localhost:{port}");
+    println!("（浏览器将自动打开；在本机回环监听，Ctrl-C 退出）");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    rt.block_on(async {
+        let gui = lilyco_gui::GuiRenderer::new(port);
+        gui.serve_registry(registry).await;
+    });
 }
