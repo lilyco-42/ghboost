@@ -14,6 +14,7 @@ pub mod hosts;
 pub mod mihomo;
 pub mod nodes;
 pub mod proxy;
+#[cfg(feature = "webview")]
 pub mod webview;
 
 use std::ffi::{CStr, CString};

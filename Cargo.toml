@@ -26,6 +26,10 @@ percent-encoding = "2"
 rand = "0.8"
 libc = "0.2"
 
+[features]
+default = ["webview"]
+webview = []
+
 [build-dependencies]
 cc = "1.0"
 

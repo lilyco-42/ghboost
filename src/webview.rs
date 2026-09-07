@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 type WebviewT = *mut c_void;
 
 type BindCallback = dyn Fn(String, String) -> String + Send + Sync;
+type BindRegistry = HashMap<String, Arc<BindCallback>>;
 
 extern "C" {
     fn webview_create(debug: c_int, window: *mut c_void) -> WebviewT;
@@ -50,7 +51,7 @@ pub const HINT_FIXED: c_int = 3;
 
 /// 全局回调注册表：`webview_bind` 通过 raw pointer 传给 C 回调，
 /// C 回调再通过此表查找 Rust 闭包。
-static BINDINGS: Mutex<Option<Arc<Mutex<HashMap<String, Arc<BindCallback>>>>>> = Mutex::new(None);
+static BINDINGS: Mutex<Option<Arc<Mutex<BindRegistry>>>> = Mutex::new(None);
 
 /// 当前绑定的 webview 指针（供 trampoline 调用 webview_return）
 static mut CURRENT_WEBVIEW: WebviewT = std::ptr::null_mut();

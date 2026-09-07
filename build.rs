@@ -33,8 +33,13 @@ fn main() {
             println!("cargo:rustc-link-lib=framework=CoreGraphics");
         }
         "linux" => {
-            println!("cargo:rustc-link-lib=webkit2gtk-4.1");
-            println!("cargo:rustc-link-lib=gtk-3");
+            // Only link webkit2gtk/gtk-3 when webview feature is enabled.
+            // Cross-compilation targets (musl, aarch64) typically skip this
+            // because the host's x86_64 .so files aren't usable.
+            if std::env::var("CARGO_FEATURE_WEBVIEW").is_ok() {
+                println!("cargo:rustc-link-lib=webkit2gtk-4.1");
+                println!("cargo:rustc-link-lib=gtk-3");
+            }
         }
         _ => {
             eprintln!("warning: webview-capi not configured for target OS: {target_os}");

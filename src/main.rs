@@ -12,7 +12,9 @@ use lilyco::prelude::*;
 use ghboost::deploy;
 use ghboost::hosts;
 use ghboost::nodes;
+#[cfg(feature = "webview")]
 use ghboost::proxy;
+#[cfg(feature = "webview")]
 use ghboost::webview::{self, WebView, HINT_NONE};
 use ghboost::{run_blocking, Event, Level};
 
@@ -271,6 +273,7 @@ fn make_sink<'a>(ctx: &'a Context) -> impl Fn(&Event) + 'a {
 }
 
 /// 启动原生 WebView GUI（无外部浏览器依赖）
+#[cfg(feature = "webview")]
 fn launch_gui(_registry: Registry) {
     let mut wv = WebView::new(cfg!(debug_assertions))
         .expect("WebView 创建失败 — Windows 需安装 WebView2 运行时");
@@ -391,7 +394,8 @@ fn launch_gui(_registry: Registry) {
     wv.run().expect("WebView 运行失败");
 }
 
-/// 根据命令名分发到对应的 core 函数
+/// 根据命令名分发到对应的 core 函数（WebView GUI 专用）
+#[cfg(feature = "webview")]
 fn execute_command(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
     // 创建一个把事件推送到 WebView 的 sink
     let sink = |e: &Event| {
@@ -508,7 +512,8 @@ fn execute_command(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Va
     }
 }
 
-/// 转义字符串用于 JS 字面量
+/// 转义字符串用于 JS 字面量（WebView GUI 专用）
+#[cfg(feature = "webview")]
 fn escape_js(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
@@ -558,7 +563,10 @@ fn main() {
     if args.iter().any(|a| a == "--mcp") {
         lilyco::serve_mcp(registry);
     } else if args.iter().any(|a| a == "--gui") {
+        #[cfg(feature = "webview")]
         launch_gui(registry);
+        #[cfg(not(feature = "webview"))]
+        eprintln!("error: --gui requires the 'webview' feature (rebuild with --features webview)");
     } else if args.iter().any(|a| a == "--schema") {
         let schemas: Vec<_> = registry.visible().map(|c| &c.schema).collect();
         println!("{}", serde_json::to_string_pretty(&schemas).unwrap());
