@@ -20,12 +20,12 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::rt::sync::Semaphore;
+use crate::rt::task::JoinSet;
 use base64::Engine;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 
 use crate::{Event, Level};
 
@@ -461,9 +461,10 @@ pub async fn scan_core(
     let data_dir = &app.output;
     std::fs::create_dir_all(data_dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
 
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(30))
+    let builder = crate::http_builder();
+    #[cfg(not(target_arch = "wasm32"))]
+    let builder = builder.no_proxy().timeout(Duration::from_secs(30));
+    let client = builder
         .user_agent("ghboost/0.1")
         .build()
         .map_err(|e| format!("http 客户端失败: {e}"))?;
@@ -767,9 +768,10 @@ pub async fn test_core(
 
     let base = format!("http://127.0.0.1:{ctrl}");
     let auth = format!("Bearer {secret}");
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(600))
+    let builder = crate::http_builder();
+    #[cfg(not(target_arch = "wasm32"))]
+    let builder = builder.no_proxy().timeout(Duration::from_secs(600));
+    let client = builder
         .build()
         .map_err(|e| format!("rest 客户端失败: {e}"))?;
 
@@ -903,7 +905,7 @@ async fn wait_ready(client: &reqwest::Client, base: &str, auth: &str) -> bool {
                 return true;
             }
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        crate::rt::time::sleep(Duration::from_millis(500)).await;
     }
     false
 }
@@ -943,7 +945,7 @@ async fn get_all_members(client: &reqwest::Client, base: &str, auth: &str) -> Ve
         if !names.is_empty() {
             return names;
         }
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        crate::rt::time::sleep(Duration::from_millis(800)).await;
     }
     vec![]
 }

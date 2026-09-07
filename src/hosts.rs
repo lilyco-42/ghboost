@@ -8,15 +8,17 @@
 //! 通过 `sink` 回调回传进度/日志，宿主可忽略（FFI 用 `NO_SINK`）。
 
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
+#[cfg(not(target_arch = "wasm32"))]
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::rt::sync::Semaphore;
+use crate::rt::task::JoinSet;
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 
 use crate::{Event, Level};
 
@@ -138,8 +140,11 @@ pub async fn boost_core(
         message: Some("聚合候选 IP".to_string()),
     });
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(app.timeout_ms + 3000))
+    let builder = crate::http_builder();
+    // wasm 上 ClientBuilder 没有 timeout（浏览器自己管超时）
+    #[cfg(not(target_arch = "wasm32"))]
+    let builder = builder.timeout(Duration::from_millis(app.timeout_ms + 3000));
+    let client = builder
         .user_agent("ghboost/0.1")
         .build()
         .map_err(|e| format!("http 客户端创建失败: {e}"))?;
@@ -393,8 +398,17 @@ async fn probe_all(
     (ok, errs)
 }
 
+/// wasm 上不存在「指定 IP 直连做 TLS 握手」这回事：
+/// 浏览器的 Fetch API 不允许调用方指定解析结果（reqwest 没有 `.resolve()`），
+/// 也绕不开代理与证书策略。这里直接报错，上层当作测速失败处理。
+#[cfg(target_arch = "wasm32")]
+async fn probe(_domain: &str, _ip: IpAddr, _timeout: Duration) -> Result<u128, String> {
+    Err("ghboost/wasm: TLS 握手测速不可用（Fetch API 无法指定解析 IP）".to_string())
+}
+
 /// 对单个 IP 做真实 TLS 握手测速。
 /// reqwest 会校验证书与 SNI，因此不服务该域名的 IP 会直接失败被排除。
+#[cfg(not(target_arch = "wasm32"))]
 async fn probe(domain: &str, ip: IpAddr, timeout: Duration) -> Result<u128, String> {
     let addr = SocketAddr::new(ip, 443);
     let client = reqwest::Client::builder()
@@ -436,6 +450,8 @@ async fn probe(domain: &str, ip: IpAddr, timeout: Duration) -> Result<u128, Stri
 }
 
 /// 这些域名的根路径应当有真实内容，非 2xx 说明 IP 不匹配
+// 这两个是 `probe` 的辅助函数；wasm 上 probe 被替换成了失败桩，它们自然没人用。
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn requires_ok_status(domain: &str) -> bool {
     matches!(domain, "github.com" | "api.github.com")
 }
@@ -465,6 +481,7 @@ async fn probe_retry(
 }
 
 /// 响应头是否带 GitHub 强特征
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn looks_like_github(h: &HeaderMap) -> bool {
     // 最强：GitHub 全站请求追踪 ID
     if h.contains_key("x-github-request-id") {

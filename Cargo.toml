@@ -14,9 +14,7 @@ name = "ghboost"
 path = "src/main.rs"
 
 [dependencies]
-lilyco = { git = "https://github.com/lilyco-42/lilyco" }
 lilyco-core = { git = "https://github.com/lilyco-42/lilyco" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -25,6 +23,26 @@ base64 = "0.22"
 percent-encoding = "2"
 rand = "0.8"
 libc = "0.2"
+
+# ── 原生目标：完整 lilyco（TUI + Web GUI）+ 真 tokio ──
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+lilyco = { git = "https://github.com/lilyco-42/lilyco" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+# ── wasm32-unknown-unknown：三处必须裁剪，否则编不过 ──
+# 1) lilyco 默认 feature 含 web（= lilyco-gui → axum → hyper → tokio(full) → mio），
+#    mio 在这个 target 上有 48 个 E0432/E0433。wasm 侧只保留 CLI + MCP（纯 Rust）。
+#    注意：`--no-default-features` 只作用于本包，管不到 lilyco 的默认 feature，
+#    所以必须在这里显式关掉。
+# 2) tokio 在 wasm 上有硬编码 feature 白名单（tokio/src/lib.rs 的 compile_error!），
+#    只允许 sync/macros/io-util/rt/time，rt-multi-thread 直接编译失败。
+#    tokio_with_wasm 提供 alias：原生 = 真 tokio，web = 它自己的 JS glue。
+# 3) getrandom 0.2 在 wasm32-unknown-unknown 要求开 js feature，否则 compile_error。
+#    它是 rand 的间接依赖，靠 feature 统一在这里打开。
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+lilyco = { git = "https://github.com/lilyco-42/lilyco", default-features = false }
+tokio_with_wasm = { version = "0.10", features = ["rt", "sync", "time"] }
+getrandom = { version = "0.2", features = ["js"] }
 
 [features]
 # webview 需要本机 webview-capi 原生库：
