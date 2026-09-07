@@ -163,7 +163,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+        include:
+          # 仓库只提供 x86_64 版 lib/webview/webview.lib，只有这个目标链接得上 GUI；
+          # aarch64 没有对应导入库，强行 --features webview 会报 LNK1112（machine type 冲突）。
+          - target: x86_64-pc-windows-msvc
+            gui: true
+          - target: aarch64-pc-windows-msvc
+            gui: false
     steps:
       - uses: actions/checkout@v4
       - name: Cache cargo registry
@@ -188,7 +194,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.gui && '--features webview' || '' }}
       - name: Stage artifact
         shell: bash
         run: |
@@ -196,6 +202,10 @@ jobs:
           mkdir -p dist
           TRIPLE="${{ matrix.target }}"
           cp "target/${TRIPLE}/release/ghboost.exe" "dist/ghboost-${TRIPLE}.exe"
+          # GUI 版运行时需要 webview.dll 与 exe 同目录
+          if [ "${{ matrix.gui }}" = "true" ]; then
+            cp "lib/webview/webview.dll" "dist/"
+          fi
           if [ -f "target/${TRIPLE}/release/ghboost.dll" ]; then
             cp "target/${TRIPLE}/release/ghboost.dll" "dist/ghboost-${TRIPLE}.dll"
           fi

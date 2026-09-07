@@ -4,39 +4,53 @@
 //! macOS: 链接 WebKit.framework
 //! Linux: 手动链接 webkit2gtk + gtk3
 
+/// webview feature 是否开启（cargo 会为每个开启的 feature 注入 CARGO_FEATURE_<NAME>）
+fn webview_enabled() -> bool {
+    std::env::var("CARGO_FEATURE_WEBVIEW").is_ok()
+}
+
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
     match target_os.as_str() {
         "windows" => {
-            let webview_dir = std::env::var("WEBVIEW_LIB_DIR").unwrap_or_else(|_| {
-                let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-                format!("{manifest_dir}\\lib\\webview")
-            });
+            // 仓库只带了 x86_64 **MSVC** 版 webview.lib：给 gnu / aarch64 目标链接会
+            // 直接失败（MinGW ld 不认 MSVC 导入库；ARM64 会报 LNK1112 machine type 冲突）。
+            if webview_enabled() {
+                let webview_dir = std::env::var("WEBVIEW_LIB_DIR").unwrap_or_else(|_| {
+                    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+                    format!("{manifest_dir}\\lib\\webview")
+                });
 
-            println!("cargo:rustc-link-search=native={webview_dir}");
-            println!("cargo:rustc-link-lib=dylib=webview");
+                println!("cargo:rustc-link-search=native={webview_dir}");
+                println!("cargo:rustc-link-lib=dylib=webview");
 
-            // WebView2 运行时依赖
-            for lib in [
-                "ole32", "oleaut32", "shlwapi", "version", "user32", "shell32",
-            ] {
-                println!("cargo:rustc-link-lib={lib}");
+                // WebView2 运行时依赖
+                for lib in [
+                    "ole32", "oleaut32", "shlwapi", "version", "user32", "shell32",
+                ] {
+                    println!("cargo:rustc-link-lib={lib}");
+                }
             }
 
             // 嵌入 Windows 图标（winres 仅在 Windows 宿主机可用）
+            // 与 webview 无关，无论是否开启 feature 都执行。
             embed_windows_icon();
         }
         "macos" => {
-            println!("cargo:rustc-link-lib=framework=WebKit");
-            println!("cargo:rustc-link-lib=framework=Cocoa");
-            println!("cargo:rustc-link-lib=framework=CoreGraphics");
+            // 没有 macOS 版 webview-capi 预编译库，未开启 feature 时链接会留下
+            // 未定义的 webview_* 符号。
+            if webview_enabled() {
+                println!("cargo:rustc-link-lib=framework=WebKit");
+                println!("cargo:rustc-link-lib=framework=Cocoa");
+                println!("cargo:rustc-link-lib=framework=CoreGraphics");
+            }
         }
         "linux" => {
             // Only link webkit2gtk/gtk-3 when webview feature is enabled.
             // Cross-compilation targets (musl, aarch64) typically skip this
             // because the host's x86_64 .so files aren't usable.
-            if std::env::var("CARGO_FEATURE_WEBVIEW").is_ok() {
+            if webview_enabled() {
                 println!("cargo:rustc-link-lib=webkit2gtk-4.1");
                 println!("cargo:rustc-link-lib=gtk-3");
             }
