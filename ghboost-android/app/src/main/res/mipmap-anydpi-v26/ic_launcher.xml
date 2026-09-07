@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive launcher icon.
+  minSdk is 26, so mipmap-anydpi-v26 covers every supported device.
+  AndroidManifest.xml references @mipmap/ic_launcher and @mipmap/ic_launcher_round,
+  but no mipmap resource existed -> AAPT "resource mipmap/ic_launcher not found".
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
