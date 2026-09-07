@@ -206,23 +206,21 @@ rules:
     /// 启动 Mihomo 进程
     pub fn start(&mut self) -> Result<MihomoStatus, String> {
         // 检查是否已运行
-        {
+        // 注意：get_status() 内部会再次 lock 同一把 std::sync::Mutex（不可重入），
+        // 所以任何调用 get_status() 的地方都必须先释放 guard，否则自锁死。
+        let already_running = {
             let mut process = self.process.lock().map_err(|e| e.to_string())?;
-            if let Some(ref mut child) = *process {
-                // 检查进程是否还活着
-                match child.try_wait() {
-                    Ok(Some(_)) => {
-                        // 进程已退出，需要重启
-                    }
-                    Ok(None) => {
-                        // 进程仍在运行
-                        return self.get_status();
-                    }
-                    Err(e) => {
-                        return Err(format!("检查进程状态失败: {e}"));
-                    }
-                }
+            match process.as_mut() {
+                None => false,
+                Some(child) => match child.try_wait() {
+                    Ok(Some(_)) => false, // 进程已退出，需要重启
+                    Ok(None) => true,     // 进程仍在运行
+                    Err(e) => return Err(format!("检查进程状态失败: {e}")),
+                },
             }
+        };
+        if already_running {
+            return self.get_status();
         }
 
         // 生成配置文件
@@ -242,9 +240,11 @@ rules:
         match child.try_wait() {
             Ok(Some(status)) => Err(format!("Mihomo 启动后立即退出，状态码: {}", status)),
             Ok(None) => {
-                // 启动成功
-                let mut process = self.process.lock().map_err(|e| e.to_string())?;
-                *process = Some(child);
+                // 启动成功（先放锁再 get_status，理由同上）
+                {
+                    let mut process = self.process.lock().map_err(|e| e.to_string())?;
+                    *process = Some(child);
+                }
                 self.get_status()
             }
             Err(e) => Err(format!("检查进程状态失败: {e}")),
@@ -253,14 +253,19 @@ rules:
 
     /// 停止 Mihomo 进程
     pub fn stop(&self) -> Result<MihomoStatus, String> {
-        let mut process = self.process.lock().map_err(|e| e.to_string())?;
-        if let Some(ref mut child) = *process {
-            // 尝试优雅关闭
-            let _ = child.kill();
-            // 等待退出
-            let _ = child.wait();
+        // 先把 guard 释放掉再 get_status()：std::sync::Mutex 不可重入，
+        // 持有锁时再 lock 会直接死锁。Drop 里会调 stop()，所以这个死锁会把
+        // `cargo test` 整个挂死（CI 上曾跑满 6 小时被 cancel）。
+        {
+            let mut process = self.process.lock().map_err(|e| e.to_string())?;
+            if let Some(ref mut child) = *process {
+                // 尝试优雅关闭
+                let _ = child.kill();
+                // 等待退出
+                let _ = child.wait();
+            }
+            *process = None;
         }
-        *process = None;
         self.get_status()
     }
 

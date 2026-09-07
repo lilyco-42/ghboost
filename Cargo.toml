@@ -27,7 +27,14 @@ rand = "0.8"
 libc = "0.2"
 
 [features]
-default = ["webview"]
+# webview 需要本机 webview-capi 原生库：
+#   Windows — 仓库只带了 x86_64 **MSVC** 版的 lib/webview/webview.lib
+#   Linux   — 需要 webkit2gtk-4.1 + gtk-3
+#   macOS   — 无预编译库
+# 默认开启会让所有没有对应原生库的目标在**链接期**失败（能编译、cargo test 也挂）。
+# 故默认关闭；需要 GUI 的构建显式加 `--features webview`
+# （见 .github/workflows/build-all.yml 的 Windows x86_64 MSVC job）。
+default = []
 webview = []
 
 [build-dependencies]

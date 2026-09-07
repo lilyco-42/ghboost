@@ -260,6 +260,11 @@ use windows_impl as platform;
 #[cfg(target_os = "macos")]
 mod macos_impl {
     use super::*;
+    // 必须显式导入：windows_impl / linux_impl 各有自己的 `use std::process::Command`，
+    // 而 `use super::*` 不会带进来（proxy.rs 顶层没有导入 Command）。
+    // 缺这一行会让 macOS 目标在 cargo build 时报 9 个 E0433 "cannot find type Command"，
+    // 但因为整个模块是 #[cfg(target_os="macos")]，Linux/Windows 的 CI 永远发现不了。
+    use std::process::Command;
 
     fn default_network_service() -> Result<String, String> {
         let output = Command::new("networksetup")
