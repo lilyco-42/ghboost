@@ -99,7 +99,10 @@ char *ghboost_scan(const char *params_json);
  *   concurrency: number 并发测速数（默认 32）
  *   timeout_ms: number  单次测速超时毫秒（默认 8000）
  *   test_url  : string  测速探测地址（默认 "https://www.gstatic.com/generate_204"）
- *   mihomo    : string  可选，Mihomo 可执行文件路径（默认自动查找 PATH）
+ *   mihomo    : string  可选，Mihomo 可执行文件路径（显式指定时优先级最高）。
+ *              缺省时按下述顺序自动探测：环境变量 GHBOOST_MIHOMO → 与可执行文件
+ *              同目录的内置内核（Release 自带的 mihomo-<triple>）→ 系统标准路径
+ *              （/usr/local/bin、/opt/homebrew/bin、Clash Verge 安装目录）→ PATH 里的 mihomo。
  *
  * 出参 JSON 示例：{ "tested": 120, "results": [ {"node": {...}, "delay_ms": 88}, ... ] }
  */
