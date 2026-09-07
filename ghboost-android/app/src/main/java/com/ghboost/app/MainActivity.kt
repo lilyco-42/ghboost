@@ -84,9 +84,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVpn() {
-        vpnIntent = VpnService.prepare(this)
-        if (vpnIntent != null) {
-            startActivityForResult(vpnIntent, VPN_REQUEST_CODE)
+        // 用局部 val：直接对可变的成员属性 vpnIntent 做 null 检查后，
+        // Kotlin 无法智能转换成非空 Intent（可能被并发修改），编译会报
+        // "Smart cast to 'android.content.Intent' is impossible"。
+        val prepared = VpnService.prepare(this)
+        vpnIntent = prepared
+        if (prepared != null) {
+            startActivityForResult(prepared, VPN_REQUEST_CODE)
         } else {
             onVpnPermissionGranted()
         }

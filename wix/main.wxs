@@ -29,7 +29,8 @@
       InstallScope="perMachine"
       Description="ghboost - GitHub Access Accelerator"
       Manufacturer="lilyco"
-      Comments="GitHub access acceleration with proxy nodes" />
+      Comments="GitHub access acceleration with proxy nodes"
+      Platform="x64" />
 
     <MajorUpgrade
       DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit."
@@ -40,7 +41,11 @@
 
     <!-- Directory structure -->
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFilesFolder" Name="PFiles">
+      <!-- Must be ProgramFiles64Folder, not ProgramFilesFolder: the components are
+           Win64="yes", and installing a 64-bit component into a 32-bit directory makes
+           light fail with LGHT0204 / ICE80 "This 64BitComponent MainExecutable uses
+           32BitDirectory APPLICATIONFOLDER". Package/@Platform is set to x64 above. -->
+      <Directory Id="ProgramFiles64Folder" Name="PFiles">
         <Directory Id="APPLICATIONFOLDER" Name="ghboost" />
       </Directory>
       <Directory Id="DesktopFolder" Name="Desktop" />
