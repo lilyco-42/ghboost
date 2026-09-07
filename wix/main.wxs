@@ -3,11 +3,15 @@
   ghboost MSI installer template for cargo-wix
   Features: Desktop shortcut, Start Menu, Uninstaller
 
-  注意（WiX v3 schema）：
-  <Fragment> 的父元素**只能是 <Wix>**，不能嵌在 <Product> 里。
-  之前两个 Fragment 被写进了 <Product> 内部，candle 做 schema 校验时会直接
-  失败（cargo-wix 报 "The 'candle' application failed with exit code = 10"）。
-  正确写法：Fragment 与 Product 平级，靠 <ComponentRef> 在 Feature 里引用。
+  NOTE (WiX v3 schema):
+  <Fragment> may ONLY be a child of <Wix>, never nested inside <Product>.
+  Both shortcut fragments used to live inside <Product>, which makes candle's
+  schema validation fail (cargo-wix reports "candle failed with exit code = 10").
+  They are now siblings of <Product> and linked in via <ComponentRef>.
+
+  NOTE (encoding): this file declares windows-1252, so it MUST stay pure ASCII.
+  Non-ASCII bytes here (e.g. UTF-8 Chinese in a comment) are undefined in cp1252
+  and make the XML parser bail out with an invalid-character error.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product
@@ -55,7 +59,7 @@
     <Icon Id="ghboost.exe" SourceFile="$(var.CargoTargetBinDir)\ghboost.exe" />
     <Property Id="ARPPRODUCTICON" Value="ghboost.exe" />
 
-    <!-- No UI dialog set — uses MSI built-in UI (avoids WixUIExtension dependency) -->
+    <!-- No UI dialog set - uses MSI built-in UI (avoids WixUIExtension dependency) -->
   </Product>
 
   <!-- Start Menu folder -->
