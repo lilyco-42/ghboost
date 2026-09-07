@@ -460,14 +460,20 @@ jobs:
           if-no-files-found: warn
 
   # ============ Web (WASM) ============
-  # 暂不计入 CI 成败：tokio（依赖 mio）不支持 wasm32-unknown-unknown，
-  # 编译期就会报 crate::sys::tcp / Selector / event 一堆 E0432/E0433。
-  # 真正支持 WASM 需要把核心逻辑拆成不依赖 tokio 的独立 crate，
-  # 在那之前这个 job 注定是红的 —— 用 continue-on-error 让整体 CI 可判定。
+  # 曾经是红的（tokio→mio 不支持 wasm32-unknown-unknown），现在通过三处裁剪修好了：
+  #   1. wasm 侧 lilyco 关默认 feature（去掉 web → lilyco-gui → axum → hyper → mio）
+  #   2. tokio 换成 tokio_with_wasm 的 alias（tokio 在 wasm 上禁掉 rt-multi-thread）
+  #   3. getrandom 开 js feature
+  # 以及：deploy / mihomo / proxy 三个模块在 wasm 上整模块裁掉（要 spawn 进程、
+  # 读写文件、改系统代理，浏览器沙箱里都做不到），因此这里**只编 lib 不编 bin**。
+  #
+  # ⚠️ 能力边界：产物能被 JS 加载，但 ghboost 的核心功能（拉起 mihomo、改系统
+  # 代理、ssh 部署）在浏览器里一律不可用，相关接口返回明确错误。真正可用的只有
+  # 纯计算 + 走 Fetch 的部分。想做完整的 Web 端，正确形态是 lilyco-gui 那种
+  # axum 服务端 + 浏览器调用，而不是把 CLI 编成 wasm。
   web:
     name: Web (WASM)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Cache cargo registry
@@ -484,12 +490,14 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - name: Build WASM
-        run: cargo build --target wasm32-unknown-unknown --release --no-default-features
+        # --lib：bin 依赖被裁掉的 deploy/mihomo/proxy 模块，编不了也没意义
+        # （wasm32-unknown-unknown 的 bin 没有可用的入口，产物是个空壳）。
+        run: cargo build --lib --target wasm32-unknown-unknown --release --no-default-features
       - name: Stage artifact
         run: |
           set -e
           mkdir -p dist
-          cp target/wasm32-unknown-unknown/release/ghboost.wasm dist/ghboost-wasm.wasm 2>/dev/null || true
+          cp target/wasm32-unknown-unknown/release/ghboost.wasm dist/ghboost-wasm.wasm
           ls -lh dist/
       - uses: actions/upload-artifact@v4
         with:
