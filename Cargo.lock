@@ -904,6 +904,7 @@ dependencies = [
  "libc",
  "lilyco",
  "lilyco-core",
+ "lilyco-gui",
  "percent-encoding",
  "rand 0.8.8",
  "reqwest",

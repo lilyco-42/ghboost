@@ -27,6 +27,10 @@ libc = "0.2"
 # ── 原生目标：完整 lilyco（TUI + Web GUI）+ 真 tokio ──
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lilyco = { git = "https://github.com/lilyco-42/lilyco" }
+# lilyco-gui 直接依赖：`GuiRenderer::serve_registry` 内置 axum 服务 + 自动开浏览器
+# （`webbrowser 1.2.4` 已被 lilyco-gui 间接拉入，无需再声明）。
+# 仅在原生目标开 —— wasm 上 axum/tokio full/mio 会让编译挂掉。
+lilyco-gui = { git = "https://github.com/lilyco-42/lilyco" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 
 # ── wasm32-unknown-unknown：三处必须裁剪，否则编不过 ──

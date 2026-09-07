@@ -560,17 +560,76 @@ fn main() {
         .register(RegisteredCommand::from_app::<Deploy>())
         .expect("注册 deploy 失败");
 
+    // 分发优先级：--mcp / --schema / --gui（原生 WebView）/ --web 或无参（Web 控制台）/ CLI
     if args.iter().any(|a| a == "--mcp") {
         lilyco::serve_mcp(registry);
+    } else if args.iter().any(|a| a == "--schema") {
+        let schemas: Vec<_> = registry.visible().map(|c| &c.schema).collect();
+        println!("{}", serde_json::to_string_pretty(&schemas).unwrap());
     } else if args.iter().any(|a| a == "--gui") {
+        // 原生 WebView GUI（Windows MSVC / macOS / Linux gtk）—— 零依赖，零网络，
+        // 但要求本机有 WebView2（Win）/ WKWebView（macOS）/ webkit2gtk（Linux）
         #[cfg(feature = "webview")]
         launch_gui(registry);
         #[cfg(not(feature = "webview"))]
         eprintln!("error: --gui requires the 'webview' feature (rebuild with --features webview)");
-    } else if args.iter().any(|a| a == "--schema") {
-        let schemas: Vec<_> = registry.visible().map(|c| &c.schema).collect();
-        println!("{}", serde_json::to_string_pretty(&schemas).unwrap());
+    } else if args.len() == 1 || args.iter().any(|a| a == "--web" || a == "--gui-web") {
+        // 跨平台 Web 控制台：axum 监听 127.0.0.1 + webbrowser 打开默认浏览器。
+        // 双击 exe（无参）也走这里——这是真正的"双击即用"主路径。
+        // 端口：LILYCO_PORT 环境变量可改（默认 8619），冲突则 +1 试到 8629。
+        #[cfg(not(target_arch = "wasm32"))]
+        run_web_console(registry);
+        #[cfg(target_arch = "wasm32")]
+        eprintln!(
+            "error: ghboost 的 web 控制台 wasm 不可用——在浏览器里加载本 crate 的 wasm 产物即可"
+        );
     } else {
         lilyco::run_cli_registry("ghboost", registry);
     }
+}
+
+/// 跨平台 Web 控制台：axum 监听回环 + 自动打开默认浏览器（webbrowser crate）。
+///
+/// 设计要点：
+/// 1. 监听 127.0.0.1——只为本机浏览器服务，不暴露到局域网
+/// 2. 端口冲突时静默 +1 重试，最多 10 次；失败再报错
+/// 3. webbrowser::open 失败时（非图形环境、SSH 远程、Windows Server Core），
+///    仍然把 URL 打印到 stderr——用户可以复制到本地浏览器打开
+/// 4. tokio multi-thread runtime——axum 0.8 + webbrowser 都依赖它
+#[cfg(not(target_arch = "wasm32"))]
+fn run_web_console(registry: Registry) {
+    use std::net::TcpListener;
+    let preferred: u16 = std::env::var("LILYCO_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8619);
+    let mut port = preferred;
+    let listener = loop {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => break l,
+            Err(_) if port < preferred + 10 => {
+                port += 1;
+            }
+            Err(e) => {
+                eprintln!(
+                    "error: 无法绑定 127.0.0.1:{preferred}..{} (LILYCO_PORT): {e}",
+                    port - 1
+                );
+                std::process::exit(1);
+            }
+        }
+    };
+    drop(listener); // 关掉——axum 内部会重新 bind 同端口
+    let url = format!("http://localhost:{port}");
+    eprintln!("ghboost Web 控制台：{url}");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    rt.block_on(async {
+        let gui = lilyco_gui::GuiRenderer::new(port);
+        // serve_registry 内部已经做 webbrowser::open(&url) + axum.serve，
+        // 浏览器打开失败时会 eprintln，不会让进程退出
+        gui.serve_registry(registry).await;
+    });
 }
