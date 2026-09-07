@@ -91,22 +91,27 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: |
-          cargo ndk --platform 24 -t ${{ matrix.abi }} build --release -p ghboost-ffi
+          # 注意：ghboost-ffi 有自己的 Cargo.lock，**不是**根 workspace 的成员，
+          # 所以在仓库根目录用 `-p ghboost-ffi` 会让 cargo-ndk 直接 panic
+          # "unknown package: ghboost-ffi"。必须用 --manifest-path 指进去。
+          cargo ndk --platform 24 -t ${{ matrix.abi }} build --release \
+            --manifest-path ghboost-ffi/Cargo.toml
       - name: Verify JNI symbols
         run: |
-          SO="target/aarch64-linux-android/release/libghboost_ffi.so"
+          # 用 --manifest-path 构建时，产物落在 ghboost-ffi/target 下
+          SO="ghboost-ffi/target/aarch64-linux-android/release/libghboost_ffi.so"
           if [ -f "$SO" ]; then
             echo "✅ .so built: $(ls -lh "$SO" | awk '{print $5}')"
             nm -D "$SO" | grep "Java_com_ghboost" | head -5
           else
             echo "⚠️  .so not found, trying alternate path"
-            find target -name "libghboost_ffi.so" -type f 2>/dev/null
+            find . -name "libghboost_ffi.so" -type f 2>/dev/null
           fi
       - name: Stage artifact
         run: |
           set -e
           mkdir -p dist
-          SO=$(find target -path "*/release/libghboost_ffi.so" -type f | head -1)
+          SO=$(find . -path "*/release/libghboost_ffi.so" -type f | head -1)
           if [ -n "$SO" ]; then
             cp "$SO" "dist/libghboost_ffi-${{ matrix.abi }}.so"
           fi
@@ -248,7 +253,9 @@ jobs:
       - name: Install cargo-wix
         run: cargo install cargo-wix --locked
       - name: Build MSI
-        run: cargo wix --target x86_64-pc-windows-msvc -v
+        # --nocapture：不加的话 candle 的真实报错会被 cargo-wix 吞掉，
+        # 只剩一句 "The 'candle' application failed with exit code = 10"，无法排障。
+        run: cargo wix --target x86_64-pc-windows-msvc -v --nocapture
         shell: bash
       - name: Stage artifact
         shell: bash
