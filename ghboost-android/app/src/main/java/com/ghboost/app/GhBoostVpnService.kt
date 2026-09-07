@@ -17,8 +17,9 @@ import java.io.File
  *
  * Flow:
  *   1. Builder.establish() → TUN fd
- *   2. GhBoostCore.StartTun2Socks(fd, "127.0.0.1:1080")
+ *   2. GhBoostCore.nativeStartTun2Socks(this, fd, DNS_PORT)
  *   3. Rust stack reads/writes the TUN fd, proxies via SOCKS5
+ *      （第 3 步目前还是占位实现，见 DNS_PORT 的注释）
  */
 class GhBoostVpnService : VpnService() {
 
@@ -26,7 +27,15 @@ class GhBoostVpnService : VpnService() {
         private const val TAG = "GhBoostVPN"
         private const val CHANNEL_ID = "ghboost_vpn"
         private const val NOTIFICATION_ID = 1
-        private const val SOCKS_ADDR = "127.0.0.1:1080"
+
+        /**
+         * tun2socks 本地监听的 DNS 端口。
+         *
+         * 注意：Rust 侧的 `tun2socks::start` 目前还是**占位实现**（只置了个 RUNNING
+         * 标志，没有真正的 lwip 协议栈），所以这个值暂时不会影响实际行为。
+         * 等真接上 lwip 时，这里要和 `.addDnsServer()` 配成对。
+         */
+        private const val DNS_PORT = 5353
     }
 
     private var tunFd: ParcelFileDescriptor? = null
@@ -70,9 +79,11 @@ class GhBoostVpnService : VpnService() {
             // Hand fd to Rust tun2socks
             val fd = tunFd!!.fd
             Log.i(TAG, "TUN fd=$fd, starting tun2socks...")
-            val ok = GhBoostCore.StartTun2Socks(fd, SOCKS_ADDR)
-            if (!ok) {
-                Log.e(TAG, "StartTun2Socks returned false")
+            // 必须把 this（VpnService）交给 Rust：它要回调 protect(fd) 让本 App
+            // 自己的 socket 绕过 TUN，否则流量会被路由规则卷回隧道形成死循环。
+            val rc = GhBoostCore.nativeStartTun2Socks(this@GhBoostVpnService, fd, DNS_PORT)
+            if (rc != 0) {
+                Log.e(TAG, "nativeStartTun2Socks failed, rc=$rc")
                 stopVpn()
                 return
             }
@@ -89,7 +100,7 @@ class GhBoostVpnService : VpnService() {
     private fun stopVpn() {
         isRunning = false
         try {
-            GhBoostCore.StopTun2Socks()
+            GhBoostCore.nativeStopTun2Socks()
         } catch (e: Exception) {
             Log.w(TAG, "StopTun2Socks error: ${e.message}")
         }

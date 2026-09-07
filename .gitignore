@@ -4,3 +4,6 @@
 /mihomo.zip
 *.ps1
 nodes_data/
+
+# Android: Rust .so 由 CI 构建后注入 jniLibs/，不进仓库
+ghboost-android/app/src/main/jniLibs/
