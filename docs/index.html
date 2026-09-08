@@ -194,28 +194,30 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
 <section>
   <div class="wrap">
     <h2>價格</h2>
-    <p class="lead">核心功能永久免費；Pro 用來支撐節點與簽章憑證的成本。</p>
+    <p class="lead">軟體本身永遠免費、永遠開源。我們不打算為功能收費。</p>
     <div class="prices">
       <div class="price">
-        <h3>免費版</h3>
+        <span class="tag">現在就能用</span>
+        <h3>完整版</h3>
         <div class="amt">NT$0</div>
         <ul>
           <li>一鍵加速、三個站點偵測</li>
           <li>訂閱匯入 / 用現成代理</li>
-          <li>台灣網站自動直連</li>
+          <li>台灣網站自動直連（不繞遠路）</li>
+          <li>開機自動啟動</li>
           <li>完整移除（含還原 hosts 與系統代理）</li>
         </ul>
         <a class="btn btn-s" href="https://github.com/lilyco-42/ghboost/releases/latest">立即下載</a>
       </div>
       <div class="price hi">
-        <span class="tag">開發中</span>
-        <h3>Pro</h3>
-        <div class="amt">NT$90 <small>/ 月</small></div>
+        <span class="tag">規劃中</span>
+        <h3>節點訂閱服務</h3>
+        <div class="amt">價格未定</div>
         <ul>
-          <li>多組訂閱、自動挑最快節點</li>
-          <li>開機自動加速，不用手動開</li>
-          <li>分流規則自訂（哪些網直連、哪些加速）</li>
-          <li>優先技術支援</li>
+          <li>幫你把節點這件事整個搞定，不用自己找</li>
+          <li>仍會保留「用你自己的訂閱」的選項</li>
+          <li>客戶端不會因為它而少任何功能</li>
+          <li>開跑前會先在這裡與 GitHub 公告</li>
         </ul>
         <a class="btn btn-s" href="https://github.com/lilyco-42/ghboost/issues">許願 / 追蹤進度</a>
       </div>
@@ -251,6 +253,16 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
       <summary>怎麼完整移除？</summary>
       <p>點兩下 <code>uninstall.bat</code>。它會先通知程式正常退出，再還原 hosts 與系統代理、
       移除開機啟動與桌面捷徑。加 <code>-RemoveData</code> 會連設定檔一起清掉。</p>
+    </details>
+
+    <details>
+      <summary>為什麼不賣軟體，而是賣節點？</summary>
+      <p>因為我們的目標用戶是「不想學設定」的人，而 Pro 版能賣的恰恰是
+      「更進階的設定」—— 賣給不想學的人更多功能，賣不出去。
+      況且自動挑最快節點是核心本身就有的能力，開機啟動也已經內建，
+      拿這些收費並不誠實。<br>
+      所以客戶端維持免費開源，只做獲客；如果將來要收費，收的是
+      「幫你搞定節點」這件事。在那之前不會對軟體功能設付費牆。</p>
     </details>
 
     <details>
