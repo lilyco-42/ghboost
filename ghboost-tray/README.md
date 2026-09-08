@@ -77,6 +77,18 @@
 规则库用 `GEOIP` 而不是 `RULE-SET`：后者要额外联网拉取，多一个失败点，
 对"打开就能用"这个目标是负收益。
 
+### 安装与卸载：必须能双击
+
+Windows 双击 `.ps1` **默认是用记事本打开**，根本不会执行；就算改成执行，
+默认的执行策略也会拦。所以发行包里带 `.bat` 包装器：
+
+- **安装**：双击 `install.bat`（加 `-WithKernel` 才会顺带下载内核）
+- **卸载**：双击 `uninstall.bat`（自动提权 → 还原 hosts 与系统代理 →
+  删开机自启与桌面快捷方式；`-RemoveData` 连数据目录一起删）
+
+命令行等价写法：`install.ps1 -WithKernel -NoAutostart` / `uninstall.ps1 -RemoveData`。
+`.bat` 一律 ASCII：cmd.exe 走 OEM codepage，写了中文会变乱码。
+
 ---
 
 ## 三、已经修掉的坑（都写进注释了，看代码能找到）

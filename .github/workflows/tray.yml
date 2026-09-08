@@ -50,6 +50,8 @@ jobs:
           Copy-Item $Exe dist/
           Copy-Item ghboost-tray/tools/install.ps1 dist/
           Copy-Item ghboost-tray/tools/uninstall.ps1 dist/
+          Copy-Item ghboost-tray/tools/install.bat dist/
+          Copy-Item ghboost-tray/tools/uninstall.bat dist/
           Copy-Item ghboost-tray/README.md dist/
           Copy-Item ghboost-tray/THIRD-PARTY-NOTICES.md dist/
           (Get-FileHash dist/ghboost-tray.exe -Algorithm SHA256).Hash |
