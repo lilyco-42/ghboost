@@ -104,6 +104,44 @@ jobs:
           name: ghboost-tray-windows-x64
           path: ghboost-tray-windows-x64.zip
 
+      # 真的把 install.ps1 跑一遍 —— 这是整条流水线里唯一验证
+      # 「装完之后用户在自己机器上到底拿得到什么」的一步。
+      #
+      # 为什么非加不可：内核档名不符那个 bug（发行包里有核心、程式却找不到）
+      # 恰好就发生在这里，而在此之前没有任何一环执行过安装脚本 ——
+      # CI 只验证了「zip 里有 kernel\bin\mihomo.exe」，没验证「装完之后
+      # <InstallDir>\bin\mihomo.exe 存在」。中间隔着一整段 PowerShell。
+      #
+      # 用 Windows PowerShell 5.1（不是 pwsh）执行，跟用户实际拿到的一致；
+      # -NoLaunch 让脚本装完就退出，不会在 runner 上把托盘程式挂起来。
+      - name: Install smoke test (actually run install.ps1)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Tmp = Join-Path $env:TEMP "ghboost-itest"
+          $InstallDir = Join-Path $env:TEMP "ghboost-installed"
+          Remove-Item $Tmp, $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
+
+          Expand-Archive -Path ghboost-tray-windows-x64.zip -DestinationPath $Tmp -Force
+
+          $Script = Join-Path $Tmp "install.ps1"
+          Write-Host "Running: $Script"
+          & powershell -NoProfile -ExecutionPolicy Bypass -File $Script `
+              -InstallDir $InstallDir -NoShortcut -NoAutostart -NoLaunch
+          if ($LASTEXITCODE -ne 0) {
+            throw "install.ps1 exited with $LASTEXITCODE"
+          }
+
+          # 断言装完之后的实际布局 —— 这才是用户真正会得到的东西
+          foreach ($rel in @("ghboost-tray.exe", "bin\mihomo.exe",
+                             "mihomo\country.mmdb", "mihomo\geosite.dat")) {
+            $f = Join-Path $InstallDir $rel
+            if (-not (Test-Path $f)) { throw "missing after install: $f" }
+            Write-Host ("  ok  {0,-24} {1}" -f $rel, (Get-Item $f).Length)
+          }
+          Write-Host "Install smoke test passed."
+
       # 打 tag 时挂到 Release 上，作为对外下载地址。
       # 注意：此时 exe 还是未签名的，首次下载会遇到 SmartScreen 警告 ——
       # 这是所有新发布者的必经阶段（见 ghboost-tray/README.md 的签名章节）。
