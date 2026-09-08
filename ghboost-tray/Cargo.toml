@@ -2,7 +2,8 @@
 name = "ghboost-tray"
 version = "0.1.0"
 edition = "2021"
-description = "ghboost 桌面托盘原型 —— 最小化验证：托盘状态灯 + 一键加速（无 WebView 依赖）"
+description = "ghboost 桌面托盘版 —— 状态灯 + 傻瓜式面板 + 台湾代理设定，免命令行"
+license = "MIT"
 
 # 注意：ghboost 的 package 名是 lilyco-ghboost，但 [lib] name 是 ghboost。
 # 依赖键即 extern crate 名，用 package= 指向真实包名。

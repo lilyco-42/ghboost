@@ -6,6 +6,11 @@
 
 GitHub 访问加速 + 免费节点扫描/测速/注入 + 一键部署服务器工具
 
+> **只想「按一下就能开 Google / YouTube / GitHub」？**
+> Windows 使用者直接看 [产品页](https://lilyco-42.github.io/ghboost/)
+> 或 [下载桌面版](https://github.com/lilyco-42/ghboost/releases/latest)
+> —— 免设定、免指令列，详见 [`ghboost-tray/`](ghboost-tray/)。
+
 ## 功能特性
 
 - **GitHub 加速**：修改 hosts 文件加速 GitHub 访问
@@ -276,4 +281,9 @@ ghboost/
 
 ## 许可证
 
-MIT License
+本项目（ghboost 本体）以 **MIT** 授权，见 [LICENSE](LICENSE)。
+
+执行期以**独立子进程**调用的 mihomo 内核遵循 **GPL-3.0**。两者构成聚合体
+（aggregate）—— mihomo 未被链接进本项目的二进制文件，因此不影响本项目的
+MIT 授权，但分发其二进制时仍需履行 GPL 义务（提供源码或书面索取途径、
+附许可证全文）。详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
