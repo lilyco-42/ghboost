@@ -9,7 +9,7 @@
 //! ## 三个必须记住的坑（都是实测出来的）
 //! 1. **Windows 必须有 Win32 消息泵**，且要和创建托盘图标的线程是同一个。
 //!    没有泵 → 托盘窗口的 WndProc 永远不被调用 → 菜单点击（包括"退出"）
-//!    根本不会送达 → 表现就是"托盘关不掉"。见 [`win::drain`]。
+//!    根本不会送达 → 表现就是"託盤關不掉"。见 [`win::drain`]。
 //! 2. **退出必须 `std::process::exit`**：控制台跑在另一个线程里 `block_on`，
 //!    `main` 返回后它不一定会被收掉，进程会吊着。
 //! 3. **命令必须跑在裸 `std::thread` 上**，不能用 `tokio::spawn_blocking`
@@ -49,10 +49,10 @@ impl State {
     }
     fn label(self) -> &'static str {
         match self {
-            State::Idle => "待机",
-            State::Working => "处理中",
+            State::Idle => "待機",
+            State::Working => "處理中",
             State::Ok => "已加速",
-            State::Err => "失败",
+            State::Err => "失敗",
         }
     }
 }
@@ -80,7 +80,7 @@ fn make_icon(s: State) -> Icon {
             }
         }
     }
-    Icon::from_rgba(rgba, S as u32, S as u32).expect("生成图标失败")
+    Icon::from_rgba(rgba, S as u32, S as u32).expect("生成圖標失敗")
 }
 
 enum Msg {
@@ -171,7 +171,7 @@ static CONSOLE_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
 /// 这里 `src/panel.html` 是给小白看的。
 /// 保证控制台在跑，返回它的 URL。已经在跑就直接返回。
 ///
-/// 注意 `--no-browser` 只影响"弹不弹窗口"，**服务永远要起**：
+/// 注意 `--no-browser` 只影响"彈不彈窗口"，**服务永远要起**：
 /// 开机自启的场景下，用户点托盘『打开面板』时希望是秒开的，
 /// 而不是现起一个服务再等它绑定端口。
 pub fn ensure_console() -> Result<String, String> {
@@ -191,12 +191,12 @@ pub fn ensure_console() -> Result<String, String> {
                     &serde_json::to_string(&PUBLIC_DOMAINS).unwrap_or_else(|_| "null".into()),
                 );
                 if let Err(e) = run_blocking(ghboost::web::serve_at(p, &html)) {
-                    eprintln!("控制台启动失败: {e}");
+                    eprintln!("控制臺啟動失敗: {e}");
                 }
             });
             Ok(url)
         }
-        Err(e) => Err(format!("无法绑定端口: {e}")),
+        Err(e) => Err(format!("無法綁定埠: {e}")),
     }
 }
 
@@ -206,9 +206,9 @@ fn open_panel() -> String {
         Err(e) => e,
         Ok(url) => {
             if webbrowser::open(&url).is_ok() {
-                format!("控制台已启动: {url}")
+                format!("控制臺已啟動: {url}")
             } else {
-                format!("控制台在 {url}（自动打开失败，请手动访问）")
+                format!("控制臺在 {url}（自動打開失敗，請手動訪問）")
             }
         }
     }
@@ -224,7 +224,7 @@ fn spawn_job(job: hosts::BoostParams, tx: Arc<Mutex<Sender<Msg>>>) {
             let v = dispatch::event_to_json(e);
             let line = match v["type"].as_str().unwrap_or("") {
                 "log" => v["message"].as_str().unwrap_or("").to_string(),
-                "tick" => format!("测速 {}/{}", v["current"], v["total"].as_u64().unwrap_or(0)),
+                "tick" => format!("測速 {}/{}", v["current"], v["total"].as_u64().unwrap_or(0)),
                 _ => String::new(),
             };
             if !line.is_empty() {
@@ -237,7 +237,7 @@ fn spawn_job(job: hosts::BoostParams, tx: Arc<Mutex<Sender<Msg>>>) {
         let msg = match outcome {
             Ok(Ok(v)) => Msg::Done(Ok(v.to_string())),
             Ok(Err(e)) => Msg::Done(Err(e)),
-            Err(_) => Msg::Done(Err("内部错误（线程 panic）".to_string())),
+            Err(_) => Msg::Done(Err("內部錯誤（線程 panic）".to_string())),
         };
         let _ = tx.lock().unwrap().send(msg);
     });
@@ -246,7 +246,7 @@ fn spawn_job(job: hosts::BoostParams, tx: Arc<Mutex<Sender<Msg>>>) {
 /// 公开版要加速的域名。
 ///
 /// 前 9 个是 `ghboost::hosts::DOMAINS`（开源仓的核心场景：GitHub）。
-/// 后面这组是小白最常报"打不开"的：
+/// 后面这组是小白最常报"打不開"的：
 ///   - `google.com` / `www.google.com` / `google.hk` —— 搜索与跳转
 ///   - `youtube.com` / `www.youtube.com` —— 主页与播放页
 ///   - `fonts.googleapis.com` / `ajax.googleapis.com` —— 国内网页引用最多、
@@ -336,19 +336,19 @@ const TICK: Duration = Duration::from_millis(0);
 
 /// 无头自检：跑一遍完整的「加速」链路并打印结果。
 fn selftest() {
-    println!("[权限] 可写 hosts: {}", hosts::is_admin());
+    println!("[權限] 可寫 hosts: {}", hosts::is_admin());
     let (tx, rx) = channel::<Msg>();
     let tx = Arc::new(Mutex::new(tx));
     spawn_job(boost_params(true, false), tx.clone());
     loop {
         match rx.recv() {
-            Ok(Msg::Progress(line)) => println!("[进度] {line}"),
+            Ok(Msg::Progress(line)) => println!("[進度] {line}"),
             Ok(Msg::Done(Ok(v))) => {
                 println!("[成功] {v}");
                 break;
             }
             Ok(Msg::Done(Err(e))) => {
-                println!("[失败] {e}");
+                println!("[失敗] {e}");
                 break;
             }
             Err(_) => break,
@@ -375,12 +375,12 @@ fn main() {
         trace(&format!("PANIC: {info}"));
     }));
 
-    // `--quit`：给"托盘点不动"留的命令行后门，也方便安装脚本 uninstall 前收尾
+    // `--quit`：给"託盤點不動"留的命令行后门，也方便安装脚本 uninstall 前收尾
     if has("--quit") {
         match running_port() {
-            Some(p) if post_local(p, "/api/quit") => println!("已请求退出（端口 {p}）"),
-            Some(p) => println!("端口 {p} 有响应但退出失败"),
-            None => println!("没有检测到运行中的 ghboost"),
+            Some(p) if post_local(p, "/api/quit") => println!("已請求退出（埠 {p}）"),
+            Some(p) => println!("埠 {p} 有響應但退出失敗"),
+            None => println!("沒有偵測到運行中的 ghboost"),
         }
         return;
     }
@@ -395,32 +395,32 @@ fn main() {
     if has("--restore") {
         let mut failed = false;
         match ghboost::proxy::unset_proxy() {
-            Ok(_) => println!("[OK]   系统代理已关闭"),
-            Err(e) => println!("[WARN] 系统代理关闭失败：{e}（若本就没开过可忽略）"),
+            Ok(_) => println!("[OK]   系統代理已關閉"),
+            Err(e) => println!("[WARN] 系統代理關閉失敗：{e}（若本就沒開過可忽略）"),
         }
         let (tx, rx) = channel::<Msg>();
         spawn_job(boost_params(false, true), Arc::new(Mutex::new(tx)));
         loop {
             match rx.recv() {
                 Ok(Msg::Done(Ok(v))) => {
-                    println!("[OK]   hosts 已还原：{v}");
+                    println!("[OK]   hosts 已還原：{v}");
                     break;
                 }
                 Ok(Msg::Done(Err(e))) => {
-                    println!("[FAIL] hosts 还原失败：{e}");
+                    println!("[FAIL] hosts 還原失敗：{e}");
                     failed = true;
                     break;
                 }
                 Ok(_) => continue, // Progress 行，还原很快，不必打印
                 Err(e) => {
-                    println!("[FAIL] 还原过程异常终止：{e}");
+                    println!("[FAIL] 還原過程異常終止：{e}");
                     failed = true;
                     break;
                 }
             }
         }
         if failed {
-            println!("提示：改 hosts 需要管理员权限，请以管理员身份重跑一次。");
+            println!("提示：改 hosts 需要管理員權限，請以管理員身分重跑一次。");
         }
         std::process::exit(if failed { 1 } else { 0 });
     }
@@ -442,11 +442,11 @@ fn main() {
     trace(&format!("admin={admin}"));
 
     let menu = Menu::new();
-    let it_boost = MenuItem::with_id("boost", "一键加速", true, None);
-    let it_clean = MenuItem::with_id("clean", "还原 hosts", true, None);
+    let it_boost = MenuItem::with_id("boost", "一鍵加速", true, None);
+    let it_clean = MenuItem::with_id("clean", "還原 hosts", true, None);
     let sep1 = PredefinedMenuItem::separator();
-    let it_panel = MenuItem::with_id("panel", "打开面板", true, None);
-    let it_admin = MenuItem::with_id("admin", "以管理员身份重启", true, None);
+    let it_panel = MenuItem::with_id("panel", "打開面板", true, None);
+    let it_admin = MenuItem::with_id("admin", "以管理員身分重啟", true, None);
     let sep2 = PredefinedMenuItem::separator();
     let it_quit = MenuItem::with_id("quit", "退出", true, None);
     menu.append(&it_boost).expect("append");
@@ -463,12 +463,12 @@ fn main() {
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_icon(make_icon(State::Idle))
-        .with_tooltip("ghboost · 待机")
+        .with_tooltip("ghboost · 待機")
         // 左键＝打开面板（小白的第一直觉），右键＝菜单。
-        // 默认是左键也弹菜单，那样"点一下看看是什么"会先撞出一堆选项。
+        // 默认是左键也弹菜单，那样"點一下看看是什麼"会先撞出一堆选项。
         .with_menu_on_left_click(false)
         .build()
-        .expect("托盘创建失败");
+        .expect("託盤創建失敗");
     trace("tray built");
 
     let (tx, rx): (Sender<Msg>, Receiver<Msg>) = channel();
@@ -477,7 +477,7 @@ fn main() {
     // 启动即开面板。`--no-browser` 给开机自启用：服务照起，只是不弹窗口。
     let mut detail = if has("--no-browser") {
         match ensure_console() {
-            Ok(url) => format!("待机（控制台在 {url}，点托盘『打开面板』）"),
+            Ok(url) => format!("待機（控制臺在 {url}，點託盤『打開面板』）"),
             Err(e) => e,
         }
     } else {
@@ -485,7 +485,7 @@ fn main() {
     };
     trace(&format!("console: {detail}"));
     if !admin {
-        detail = "未获得管理员权限，写入 hosts 会失败".to_string();
+        detail = "未獲得管理員權限，寫入 hosts 會失敗".to_string();
     }
 
     let mut state = State::Idle;
@@ -524,19 +524,19 @@ fn main() {
                 if let Some(p) = CONSOLE_PORT.get() {
                     // 走 /api/elevate：它会拉起提权进程，然后把自己结束掉
                     let _ = post_local(*p, "/api/elevate");
-                    detail = "正在请求提权，请在弹窗里选『是』…".to_string();
+                    detail = "正在請求提權，請在彈窗裡選『是』…".to_string();
                 }
             } else if busy {
-                detail = "正在处理，请稍候…".to_string();
+                detail = "正在處理，請稍候…".to_string();
             } else if id == it_boost.id() {
                 state = State::Working;
                 busy = true;
-                detail = "正在测速选优…".to_string();
+                detail = "正在測速選優…".to_string();
                 spawn_job(boost_params(true, true), tx.clone());
             } else if id == it_clean.id() {
                 state = State::Working;
                 busy = true;
-                detail = "正在还原 hosts…".to_string();
+                detail = "正在還原 hosts…".to_string();
                 spawn_job(boost_params(false, true), tx.clone());
             }
         }
@@ -555,11 +555,11 @@ fn main() {
                         state = State::Err;
                         // 失败必须**说出来**。小白看不到 stderr，
                         // 他唯一能看到的就是这行 tooltip。
-                        detail = if e.contains("拒绝访问")
+                        detail = if e.contains("拒絕訪問")
                             || e.to_lowercase().contains("permission")
                             || e.to_lowercase().contains("denied")
                         {
-                            format!("需要管理员权限（托盘『以管理员身份重启』）：{e}")
+                            format!("需要管理員權限（託盤『以管理員身分重啟』）：{e}")
                         } else {
                             e
                         };
