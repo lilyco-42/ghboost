@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-本仓库（ghboost 本体）以 MIT 授权。
-
-执行期以**独立子进程**方式调用的 mihomo 内核遵循 GPL-3.0。
-两者构成聚合体（aggregate）：mihomo 未被链接进本项目的二进制文件，
-只是被调用。mihomo 的源码与许可证见 THIRD-PARTY-NOTICES.md
-与 ghboost-tray/THIRD-PARTY-NOTICES.md。
-
-子目录 ghboost-tray/ 亦为 MIT（内含自己的 LICENSE 文件）。
