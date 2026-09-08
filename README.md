@@ -2,6 +2,14 @@
   <img src="docs/banner.svg" width="720" alt="banner">
 </div>
 
+<p align="center">
+  <a href="https://github.com/lilyco-42/ghboost/actions/workflows/tray.yml"><img src="https://img.shields.io/github/actions/workflow-status/lilyco-42/ghboost/tray.yml?branch=main&label=tray%20windows&logo=windows" alt="tray workflow"></a>
+  <a href="https://github.com/lilyco-42/ghboost/actions/workflows/build-all.yml"><img src="https://img.shields.io/github/actions/workflow-status/lilyco-42/ghboost/build-all.yml?branch=main&label=build%20all&logo=github" alt="build all platforms"></a>
+  <a href="https://github.com/lilyco-42/ghboost/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow-status/lilyco-42/ghboost/ci.yml?branch=main&label=ci&logo=rust" alt="ci workflow"></a>
+  <a href="https://github.com/lilyco-42/ghboost/releases/latest"><img src="https://img.shields.io/github/release/lilyco-42/ghboost?label=release&logo=github" alt="latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license: MIT"></a>
+</p>
+
 # ghboost
 
 GitHub 访问加速 + 免费节点扫描/测速/注入 + 一键部署服务器工具
