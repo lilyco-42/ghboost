@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::Path;
 use axum::http::{header, StatusCode};
@@ -43,6 +44,8 @@ type Sessions = Arc<Mutex<HashMap<String, std::sync::mpsc::Receiver<Value>>>>;
 
 struct State {
     sessions: Sessions,
+    /// 首页 HTML。`serve_at` 可以换成另一套皮（见该函数注释）。
+    html: String,
 }
 
 /// 找一个可用端口：从 `preferred` 开始，被占用就 +1，最多试 10 次。
@@ -65,8 +68,18 @@ pub fn pick_port(preferred: u16) -> Result<u16, String> {
 
 /// 启动 Web 控制台（阻塞，直到收到 Ctrl-C）。
 pub async fn serve(port: u16) -> Result<(), String> {
+    serve_at(port, include_str!("gui.html")).await
+}
+
+/// 用自定义首页启动控制台 —— 同一套路由，换一层皮。
+///
+/// 为什么要能换皮：`src/gui.html` 是**开发者控制台**（5 个面板、一堆参数），
+/// 公开发行版要的是"傻瓜式"单页（一个大按钮 + 三个站点灯）。路由/命令分发
+/// 完全共用，只有首页不同。
+pub async fn serve_at(port: u16, html: &str) -> Result<(), String> {
     let state = Arc::new(State {
         sessions: Arc::new(Mutex::new(HashMap::new())),
+        html: html.to_string(),
     });
 
     let app = Router::new()
@@ -76,6 +89,13 @@ pub async fn serve(port: u16) -> Result<(), String> {
         .route("/proxy/set", post(proxy_set))
         .route("/proxy/unset", post(proxy_unset))
         .route("/proxy/status", get(proxy_status))
+        .route("/api/quit", post(api_quit))
+        .route("/api/info", get(api_info))
+        .route("/api/check", get(api_check))
+        .route("/api/elevate", post(api_elevate))
+        .route("/api/proxy/subscribe", post(api_proxy_subscribe))
+        .route("/api/proxy/stop", post(api_proxy_stop))
+        .route("/api/proxy/state", get(api_proxy_state))
         .layer(axum::middleware::from_fn(guard_loopback_mw))
         .with_state(state);
 
@@ -104,10 +124,10 @@ pub async fn serve(port: u16) -> Result<(), String> {
 /// 首页：仓库自带的 gui.html，注入一行标记让页面知道走 HTTP 传输层。
 ///
 /// WebView 模式下没有这个标记，页面会退回 `window.run_command` 的 bind 调用。
-async fn index() -> Html<String> {
+async fn index(axum::extract::State(state): axum::extract::State<Arc<State>>) -> Html<String> {
     // 必须在最前面执行，早于页面内联脚本解析
     const SHIM: &str = "<script>window.__GH_HTTP__=1;</script>\n";
-    Html(format!("{SHIM}{}", include_str!("gui.html")))
+    Html(format!("{SHIM}{}", state.html))
 }
 
 /// 只允许回环访问，挡掉 DNS rebinding / 局域网扫描。
@@ -127,11 +147,36 @@ async fn guard_loopback_mw(
     let host = host.rsplit_once('@').map(|x| x.1).unwrap_or(host);
     let authority = host.rsplit_once(':').map(|x| x.0).unwrap_or(host);
     let ok = matches!(authority, "127.0.0.1" | "localhost" | "[::1]" | "::1");
-    if ok {
-        next.run(request).await
-    } else {
-        (StatusCode::FORBIDDEN, "Forbidden").into_response()
+    if !ok {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
+
+    // ── 同源问题：localhost 和 127.0.0.1 在浏览器眼里是**两个 origin** ──
+    // 页面用 localhost 打开、请求打到 127.0.0.1（或反过来）就算跨域。
+    // 简单 GET（/api/check、/api/info）不发预检，所以照常成功；
+    // 但带 `Content-Type: application/json` 的 **POST /run** 会先发
+    // OPTIONS 预检，axum 没有对应 handler → 405 → fetch 直接 reject，
+    // 前端只看到一句毫无信息量的 "Failed to fetch"。
+    // 表现就是"能检测、点加速就失败"，极难排查。这里统一放行。
+    if request.method() == axum::http::Method::OPTIONS {
+        return (
+            StatusCode::NO_CONTENT,
+            [
+                (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                (header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS"),
+                (header::ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type"),
+            ],
+        )
+            .into_response();
+    }
+
+    let mut resp = next.run(request).await;
+    // 只在回环内可达（`*` 此时是安全的：非回环 Host 上面已被 403 挡掉）
+    resp.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        axum::http::HeaderValue::from_static("*"),
+    );
+    resp
 }
 
 #[derive(serde::Deserialize)]
@@ -238,6 +283,427 @@ async fn proxy_unset() -> Json<Value> {
 
 async fn proxy_status() -> Json<Value> {
     Json(serde_json::json!({ "state": format!("{:?}", proxy::get_proxy_status()) }))
+}
+
+// ── 桌面壳（托盘）需要的三个控制面接口 ──
+//
+// 为什么要这些：托盘图标在 Win11 会被折进「^」溢出区，小白根本找不到，
+// 更别说点"退出"。浏览器里的按钮是**唯一确定能被看见**的逃生通道。
+
+/// 退出程序。
+///
+/// 先回 200 再退，否则 axum 还没把响应写回 socket 进程就没了，
+/// 前端会收到 `net::ERR_EMPTY_RESPONSE`（看起来像"点了没反应"）。
+async fn api_quit() -> Json<Value> {
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(250));
+        std::process::exit(0);
+    });
+    Json(serde_json::json!({ "ok": true }))
+}
+
+/// 以管理员/root 权限重启自己，然后退出当前进程。
+///
+/// 为什么不整包都设 `requireAdministrator`：那样每次开机自启都会弹 UAC，
+/// 小白会以为中毒。正确做法（Watt Toolkit / dev-sidecar 都这么干）是
+/// **平时按普通权限跑，只有真要写 hosts 时才提权一次**。
+///
+/// 实现上没用 ShellExecute/PowerShell 之外的 FFI：走 `Command` 不需要给
+/// 这个 crate 加 windows-sys 依赖，代价是 Windows 上会闪一下 powershell。
+async fn api_elevate() -> Json<Value> {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    };
+
+    // 提权重启后要回到同一个端口，否则浏览器里的页面会指向已死的端口。
+    // 但 `--no-browser` 必须丢掉：用户是**从页面上点的提权**，他的标签页
+    // 马上就会随着旧进程退出而失效，新进程必须再开一次浏览器，否则他会
+    // 面对一个点不动的死页面。
+    let mut args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| a != "--no-browser")
+        .collect();
+
+    let spawned = if cfg!(windows) {
+        let exe_s = exe.to_string_lossy().replace('\'', "''");
+        // 单引号里包住路径，避免空格/中文路径被拆开
+        let arg_list = args
+            .iter()
+            .map(|a| format!("'{}'", a.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let ps = if arg_list.is_empty() {
+            format!("Start-Process -FilePath '{exe_s}' -Verb RunAs")
+        } else {
+            format!("Start-Process -FilePath '{exe_s}' -ArgumentList @({arg_list}) -Verb RunAs")
+        };
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        let cmd = if args.is_empty() {
+            format!("'{}'", exe.to_string_lossy())
+        } else {
+            format!("'{}' {}", exe.to_string_lossy(), args.join(" "))
+        };
+        let script = format!("do shell script \"{cmd}\" with administrator privileges");
+        std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .spawn()
+    } else {
+        args.insert(0, exe.to_string_lossy().to_string());
+        // pkexec 有图形化授权框；没有就退回 sudo -A（需要 SUDO_ASKPASS）
+        std::process::Command::new("pkexec").args(&args).spawn()
+    };
+
+    match spawned {
+        Ok(_) => {
+            // 让新进程先起来再自杀：UAC 对话框期间旧进程还活着也无所谓，
+            // 端口冲突时它会自己顺延一个（见 tray 的 pick_port）。
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(400));
+                std::process::exit(0);
+            });
+            Json(serde_json::json!({ "ok": true }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// 运行环境信息：前端据此决定要不要弹"以管理员身份重启"。
+async fn api_info() -> Json<Value> {
+    Json(serde_json::json!({
+        "admin": crate::hosts::is_admin(),
+        "os": std::env::consts::OS,
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
+// ────────────────────────────── 代理设置 ──────────────────────────────
+//
+// 面向的是**已有节点/订阅、只差一个傻瓜式开关**的用户（台湾市场的主要形态：
+// 自建或购买节点在台湾完全合法，Clash Verge / v2rayN 之类的工具是公开商品）。
+
+/// 内置的 mihomo 内核进程。全局唯一，重启订阅时复用同一个。
+static MIHOMO: std::sync::OnceLock<std::sync::Mutex<Option<crate::mihomo::MihomoManager>>> =
+    std::sync::OnceLock::new();
+
+fn mihomo_slot() -> &'static std::sync::Mutex<Option<crate::mihomo::MihomoManager>> {
+    MIHOMO.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 内核与订阅配置的存放目录（%LOCALAPPDATA%\ghboost\mihomo）
+fn ghboost_dir() -> std::path::PathBuf {
+    #[cfg(windows)]
+    let base = std::env::var("LOCALAPPDATA").or_else(|_| std::env::var("APPDATA"));
+    #[cfg(not(windows))]
+    let base = std::env::var("XDG_DATA_HOME")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.local/share")));
+    let dir = base
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("ghboost");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// 内置内核的预期位置（`install.ps1 -WithKernel` 会把文件放到这里）
+fn kernel_path() -> std::path::PathBuf {
+    ghboost_dir().join("bin").join(if cfg!(windows) {
+        "mihomo.exe"
+    } else {
+        "mihomo"
+    })
+}
+
+/// 订阅配置 —— 关键点：**一行协议解析都不写**。
+///
+/// mihomo 原生支持 `proxy-providers` 直接吃订阅 URL，自己拉取、自己解析
+/// vless / vmess / ss / trojan / hysteria2 / tuic，还自带健康检查。
+/// 自己写解析器 = 重复造轮子 + 永远追不上新协议 + 解析错就是连不上。
+///
+/// 规则按台湾用户调过：`GEOIP,TW,DIRECT` 让 PTT / 露天 / 蝦皮 / 各家网银
+/// 走直连 —— 这些站点绕一圈出去反而更慢，有些网银还会因为异地登录被挡。
+fn subscription_config(url: &str, mixed: u16, api: u16) -> String {
+    format!(
+        r#"# ghboost 生成 · 由 mihomo 内核直接使用
+mixed-port: {mixed}
+allow-lan: false
+bind-address: '*'
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:{api}
+
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://dns.google/dns-query
+  fallback:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+  fallback-filter:
+    geoip: true
+    geoip-code: TW
+
+proxy-providers:
+  subscription:
+    type: http
+    url: "{url}"
+    interval: 86400
+    path: ./subscription.yaml
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+
+proxy-groups:
+  - name: "節點選擇"
+    type: select
+    use:
+      - subscription
+  - name: "手動切換"
+    type: select
+    proxies:
+      - DIRECT
+      - "節點選擇"
+
+rules:
+  - GEOIP,TW,DIRECT
+  - GEOIP,LAN,DIRECT
+  - MATCH,"節點選擇"
+"#
+    )
+}
+
+#[derive(serde::Deserialize)]
+struct SubscribeRequest {
+    url: String,
+    #[serde(default = "default_mixed")]
+    mixed_port: u16,
+}
+
+fn default_mixed() -> u16 {
+    7890
+}
+
+/// 导入订阅并启动内核 + 打开系统代理。
+async fn api_proxy_subscribe(Json(req): Json<SubscribeRequest>) -> Json<Value> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(do_subscribe(&req.url, req.mixed_port));
+    });
+    Json(match rx.await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => serde_json::json!({ "ok": false, "error": e }),
+        Err(_) => serde_json::json!({ "ok": false, "error": "内核线程异常退出" }),
+    })
+}
+
+fn do_subscribe(url: &str, mixed_port: u16) -> Result<Value, String> {
+    use crate::mihomo::{MihomoConfig, MihomoManager};
+
+    let url = url.trim().to_string();
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("订阅链接必须以 http:// 或 https:// 开头".to_string());
+    }
+
+    let api_port = mixed_port + 10;
+    let cfg = MihomoConfig {
+        // 显式指定随包/随安装脚本放好的内核，别去 PATH 里碰运气。
+        // 路径固定，缺了就给一句能照抄的命令，绝不静默失败。
+        binary_path: Some(kernel_path()),
+        config_dir: Some(ghboost_dir().join("mihomo")),
+        http_port: mixed_port,
+        socks_port: mixed_port,
+        mixed_port,
+        api_port,
+        allow_lan: false,
+        log_level: "info".to_string(),
+    };
+
+    if !kernel_path().exists() {
+        return Err("找不到内置内核。请以管理员身份运行安装脚本下载它：\
+             powershell -ExecutionPolicy Bypass -File tools\\install.ps1 -WithKernel"
+            .to_string());
+    }
+
+    // 先探端口：7890 极可能被 Clash Verge / v2rayN 占着。
+    // 不先说清楚的话，用户只看到一句"Mihomo 启动后立即退出"，完全不知道该怎么办。
+    if std::net::TcpListener::bind(("127.0.0.1", mixed_port)).is_err() {
+        return Err(format!(
+            "端口 {mixed_port} 已被占用。\n\
+             如果你已经在跑 Clash Verge / v2rayN，直接用「用现成代理」填它的端口即可；\n\
+             想用内置内核就换一个端口（比如 {}）重试。",
+            mixed_port + 100
+        ));
+    }
+
+    let mut slot = mihomo_slot().lock().map_err(|e| e.to_string())?;
+    if slot.is_none() {
+        *slot = Some(MihomoManager::new(cfg));
+    }
+    let mgr = slot.as_mut().unwrap();
+
+    // 顺序固定：start() 内部会 generate_config() 写一份默认配置，
+    // 所以必须先启动、再覆写、再 reload。
+    mgr.start()?;
+    std::fs::write(
+        mgr.config_path(),
+        subscription_config(&url, mixed_port, api_port),
+    )
+    .map_err(|e| format!("写入订阅配置失败: {e}"))?;
+    mgr.reload_config()?;
+
+    // 内核起来了就算成功 —— 系统代理是"顺手帮你开"，
+    // 它失败（比如组策略禁改代理）不该把整次订阅导入判成失败。
+    let (proxy_ok, proxy_state) = match crate::proxy::set_proxy(&crate::proxy::ProxyConfig {
+        host: "127.0.0.1".into(),
+        port: mixed_port,
+        socks_port: Some(mixed_port),
+        bypass: "localhost,127.0.0.1,::1,<local>".into(),
+    }) {
+        Ok(s) => (true, format!("{s:?}")),
+        Err(e) => (false, e),
+    };
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "mixed_port": mixed_port,
+        "api_port": api_port,
+        "proxy_ok": proxy_ok,
+        "system_proxy": proxy_state,
+    }))
+}
+
+/// 停内核 + 关系统代理
+async fn api_proxy_stop() -> Json<Value> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(do_stop());
+    });
+    Json(match rx.await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => serde_json::json!({ "ok": false, "error": e }),
+        Err(_) => serde_json::json!({ "ok": false, "error": "内核线程异常退出" }),
+    })
+}
+
+fn do_stop() -> Result<Value, String> {
+    let mut slot = mihomo_slot().lock().map_err(|e| e.to_string())?;
+    if let Some(mgr) = slot.as_mut() {
+        let _ = mgr.stop();
+    }
+    *slot = None;
+    let state = crate::proxy::unset_proxy()?;
+    Ok(serde_json::json!({ "ok": true, "system_proxy": format!("{state:?}") }))
+}
+
+/// 内核 + 系统代理的合并状态（前端据此决定按钮显示"开启"还是"关闭"）
+async fn api_proxy_state() -> Json<Value> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let (kernel, mixed) = match mihomo_slot().lock() {
+            Ok(slot) => match slot.as_ref() {
+                Some(mgr) => match mgr.get_status() {
+                    Ok(s) => (s.running, s.mixed_port),
+                    Err(_) => (false, 0),
+                },
+                None => (false, 0),
+            },
+            Err(_) => (false, 0),
+        };
+        let _ = tx.send((kernel, mixed, crate::proxy::get_proxy_status()));
+    });
+    let (kernel, mixed, system) =
+        rx.await
+            .unwrap_or((false, 0, crate::proxy::ProxyState::Disabled));
+    Json(serde_json::json!({
+        "kernel": kernel,
+        "mixed_port": mixed,
+        "system": format!("{system:?}"),
+    }))
+}
+
+/// 一键检测的默认站点 —— 用户点完"加速"最关心的三个。
+const CHECK_SITES: &[(&str, &str)] = &[
+    ("Google", "https://google.hk/"),
+    ("YouTube", "https://www.youtube.com/"),
+    ("GitHub", "https://github.com/"),
+];
+
+/// 连通性检测：DNS → TCP → HTTPS，返回状态码与耗时。
+///
+/// 放在**裸 std 线程**里跑（和 `/run` 同一个理由）：`reqwest::blocking` 会自建
+/// runtime，在带 tokio 上下文的线程里建 runtime 有踩坑风险。
+/// 用 `oneshot` 把结果传回 async，避免任何 block_on。
+async fn api_check() -> Json<Value> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(
+            CHECK_SITES
+                .iter()
+                .map(|(name, url)| check_one(name, url))
+                .collect::<Vec<_>>(),
+        );
+    });
+    let sites = rx.await.unwrap_or_default();
+    Json(serde_json::json!({ "sites": sites }))
+}
+
+fn check_one(name: &str, url: &str) -> Value {
+    use std::net::ToSocketAddrs;
+
+    let host = url
+        .split("//")
+        .nth(1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    // DNS 解析：拿到 IP 才知道加速到底生效没有（hosts 生效 = IP 变成我们写的那个）
+    let ip = (host, 443u16)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut it| it.next())
+        .map(|s| s.ip().to_string());
+
+    let t0 = Instant::now();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        // 忽略系统代理：我们要测的是**裸连**，不是经过 Clash 之后的假象
+        .no_proxy()
+        .build();
+
+    let mut out = match client {
+        Err(e) => serde_json::json!({ "site": name, "ok": false, "error": e.to_string() }),
+        Ok(c) => match c.get(url).send() {
+            Ok(r) => {
+                let status = r.status().as_u16();
+                serde_json::json!({
+                    "site": name,
+                    "ok": status < 500,
+                    "http": status,
+                    "ms": t0.elapsed().as_millis() as u64,
+                })
+            }
+            Err(e) => serde_json::json!({
+                "site": name,
+                "ok": false,
+                "error": e.to_string(),
+                "ms": t0.elapsed().as_millis() as u64,
+            }),
+        },
+    };
+    if let Some(obj) = out.as_object_mut() {
+        if let Some(ip) = ip {
+            obj.insert("ip".into(), Value::String(ip));
+        }
+    }
+    out
 }
 
 /// 会话 id，够随机即可（只在本机回环用，不是安全边界）

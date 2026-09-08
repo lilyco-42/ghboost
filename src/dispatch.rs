@@ -64,7 +64,16 @@ pub fn execute_command_with_sink(
                 concurrency: args["concurrency"].as_u64().unwrap_or(16),
                 top: args["top"].as_u64().unwrap_or(1),
                 extra_ip: None,
-                only: None,
+                // `only` 让调用方决定加速范围：CLI 默认不管（全部 GitHub 域名），
+                // 桌面版要连同 Google / YouTube 一起加速就传这个数组。
+                only: args["only"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|v| !v.is_empty()),
                 apply: args["apply"].as_bool().unwrap_or(false),
                 clean: args["clean"].as_bool().unwrap_or(false),
             };

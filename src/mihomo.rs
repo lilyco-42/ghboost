@@ -105,6 +105,14 @@ impl MihomoManager {
         }
     }
 
+    /// 配置文件路径（外部要按 mihomo 原生格式覆写配置时用它）
+    ///
+    /// 典型用法：`start()` → 写入订阅配置 → `reload_config()`。
+    /// 顺序不能反：`start()` 内部会先调 `generate_config()` 覆盖一份默认配置。
+    pub fn config_path(&self) -> &std::path::Path {
+        &self.config_path
+    }
+
     /// 查找 Mihomo 可执行文件
     pub fn find_binary(&self) -> Result<PathBuf, String> {
         // 1. 检查配置中的路径
@@ -166,7 +174,9 @@ external-controller: 127.0.0.1:{}
 
 dns:
   enable: true
-  listen: 0.0.0.0:53
+  # 刻意**不开** `listen: 0.0.0.0:53`：53 是特权端口，非管理员进程绑定即失败，
+  # 内核会直接 fatal 退出。普通代理模式用不到它（只有 TUN 模式才需要），
+  # 真要开也应该在 TUN 模式里单独开成高位端口。
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
   nameserver:
@@ -181,7 +191,14 @@ dns:
 
 proxies: []
 
-proxy-groups: []
+# 必须**先定义**规则里引用的 group，否则 mihomo 直接 fatal：
+#   "rules[1] [MATCH,🚀 节点选择] error: proxy [🚀 节点选择] not found"
+# 即默认配置（还没导入任何节点时）也必须是自洽的，否则内核一次都起不来。
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - DIRECT
 
 rules:
   - GEOIP,CN,DIRECT
@@ -325,7 +342,12 @@ rules:
 
     /// 重载配置文件
     pub fn reload_config(&self) -> Result<(), String> {
-        let url = format!("http://127.0.0.1:{}/configs", self.config.api_port);
+        // force=true 是必需的：不带这个参数时 mihomo 只接受**部分字段**热更新，
+        // 新增的 proxy-provider / rules 会被静默忽略，表现为"订阅导进去了但没节点"。
+        let url = format!(
+            "http://127.0.0.1:{}/configs?force=true",
+            self.config.api_port
+        );
 
         let config_content = std::fs::read_to_string(&self.config_path)
             .map_err(|e| format!("读取配置文件失败: {e}"))?;
