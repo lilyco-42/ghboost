@@ -97,6 +97,19 @@ if ($NoKernel) {
     Write-Host "      'Import subscription' will not work; 'Use existing proxy' will." -ForegroundColor Yellow
 }
 
+# Normalise the kernel filename. Both the release bundle and the upstream zip can
+# ship mihomo-windows-amd64-compatible.exe, but web.rs::kernel_path() looks for
+# exactly mihomo.exe - without this the kernel is present yet never found, and
+# "Import subscription" fails with a confusing "no kernel" error.
+$KernelExe = Join-Path $BinDir "mihomo.exe"
+if (-not (Test-Path $KernelExe)) {
+    $Cand = Get-ChildItem -Path $BinDir -Filter "mihomo*.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($Cand) {
+        Copy-Item $Cand.FullName $KernelExe -Force
+        Write-Host "Kernel renamed -> $KernelExe"
+    }
+}
+
 if (-not $NoShortcut) {
     $Desktop = [Environment]::GetFolderPath("Desktop")
     $Lnk = Join-Path $Desktop "ghboost.lnk"

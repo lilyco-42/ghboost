@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-TW">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ghboost · 一键加速</title>
+<title>ghboost · 一鍵加速</title>
 <style>
-/* 全部内联：本机控制台绝不能依赖公网 CDN —— 目标用户正是外网连通性差的人，
-   layui/jquery 拉不到 = 事件绑定不执行 = 按钮"点了没反应"（已在 gui.html 踩过）。 */
+/* 全部內聯：本機控制臺絕不能依賴公網 CDN —— 目標用戶正是外網連通性差的人，
+   layui/jquery 拉不到 = 事件綁定不執行 = 按鈕"點了沒反應"（已在 gui.html 踩過）。 */
 :root{
   --bg:#16181c; --card:#1e2126; --card2:#252930; --line:#31363d;
   --fg:#e6e8ea; --fg2:#9aa3ad; --fg3:#6b7480;
@@ -27,7 +27,7 @@ body{
 }
 .wrap{width:100%;max-width:520px}
 
-/* ── 顶部 ── */
+/* ── 頂部 ── */
 .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
 .brand{font-size:17px;font-weight:600;letter-spacing:.2px}
 .brand small{display:block;font-size:11px;color:var(--fg3);font-weight:400;letter-spacing:0}
@@ -36,7 +36,7 @@ body{
   border:1px solid var(--line);color:var(--fg2);background:var(--card2);white-space:nowrap;
 }
 
-/* ── 主卡片：状态灯 + 大按钮 ── */
+/* ── 主卡片：狀態燈 + 大按鈕 ── */
 .hero{
   background:var(--card);border:1px solid var(--line);border-radius:16px;
   padding:30px 24px 26px;text-align:center;
@@ -71,7 +71,7 @@ body{
 }
 .btn-sub:hover{border-color:var(--fg3);color:var(--fg)}
 
-/* ── 站点检测 ── */
+/* ── 站台偵測 ── */
 .card{
   background:var(--card);border:1px solid var(--line);border-radius:14px;
   padding:18px 20px;margin-top:16px;
@@ -93,7 +93,7 @@ body{
 .site-v{font-size:12px;color:var(--fg2);font-variant-numeric:tabular-nums}
 .site-v.g{color:var(--green)} .site-v.r{color:var(--red)} .site-v.y{color:var(--yellow)}
 
-/* ── 提示条 ── */
+/* ── 提示條 ── */
 .note{
   display:none;align-items:center;gap:10px;margin-top:16px;padding:13px 15px;
   border-radius:11px;background:color-mix(in srgb, var(--yellow) 12%, transparent);
@@ -137,42 +137,42 @@ body{
 <div class="wrap">
 
   <div class="top">
-    <div class="brand">ghboost<small>访问加速 · 一键搞定</small></div>
-    <div class="pill" id="pill">检测中…</div>
+    <div class="brand">ghboost<small>訪問加速 · 一鍵搞定</small></div>
+    <div class="pill" id="pill">偵測中…</div>
   </div>
 
   <div class="hero">
     <div class="lamp" id="lamp"></div>
-    <div class="state" id="state">待机</div>
-    <div class="sub" id="sub">点下面的按钮开始</div>
-    <button class="btn-main" id="btnMain">一键加速</button>
+    <div class="state" id="state">待機</div>
+    <div class="sub" id="sub">點下面的按鈕開始</div>
+    <button class="btn-main" id="btnMain">一鍵加速</button>
     <div class="row">
-      <button class="btn-sub" id="btnCheck">重新检测</button>
-      <button class="btn-sub" id="btnClean">还原 hosts</button>
-      <button class="btn-sub" id="btnQuit">退出程序</button>
+      <button class="btn-sub" id="btnCheck">重新偵測</button>
+      <button class="btn-sub" id="btnClean">還原 hosts</button>
+      <button class="btn-sub" id="btnQuit">退出程式</button>
     </div>
   </div>
 
   <div class="card">
     <div class="card-h">
-      <div class="card-t">站点连通性 <span>加速后应该更快</span></div>
-      <button class="link" id="btnCheck2">检测</button>
+      <div class="card-t">站台連通性 <span>加速後應該更快</span></div>
+      <button class="link" id="btnCheck2">偵測</button>
     </div>
-    <div class="site"><div class="dot" id="d0"></div><div class="site-n">Google<div class="site-ip" id="i0"></div></div><div class="site-v" id="v0">未检测</div></div>
-    <div class="site"><div class="dot" id="d1"></div><div class="site-n">YouTube<div class="site-ip" id="i1"></div></div><div class="site-v" id="v1">未检测</div></div>
-    <div class="site"><div class="dot" id="d2"></div><div class="site-n">GitHub<div class="site-ip" id="i2"></div></div><div class="site-v" id="v2">未检测</div></div>
+    <div class="site"><div class="dot" id="d0"></div><div class="site-n">Google<div class="site-ip" id="i0"></div></div><div class="site-v" id="v0">未偵測</div></div>
+    <div class="site"><div class="dot" id="d1"></div><div class="site-n">YouTube<div class="site-ip" id="i1"></div></div><div class="site-v" id="v1">未偵測</div></div>
+    <div class="site"><div class="dot" id="d2"></div><div class="site-n">GitHub<div class="site-ip" id="i2"></div></div><div class="site-v" id="v2">未偵測</div></div>
   </div>
 
   <div class="card" id="cardProxy">
     <div class="card-h">
-      <div class="card-t">代理 <span>有节点就用这个</span></div>
-      <div class="pill" id="pxPill">未启用</div>
+      <div class="card-t">代理 <span>有節點就用這個</span></div>
+      <div class="pill" id="pxPill">未啟用</div>
     </div>
 
-    <!-- A. 已经在跑 Clash Verge / v2rayN 的人：只差一个系统代理开关 -->
+    <!-- A. 已經在跑 Clash Verge / v2rayN 的人：只差一個系統代理開關 -->
     <div class="seg" id="segMode">
-      <button class="seg-b on" data-m="port">用现成代理</button>
-      <button class="seg-b" data-m="sub">导入订阅</button>
+      <button class="seg-b on" data-m="port">用現成代理</button>
+      <button class="seg-b" data-m="sub">匯入訂閱</button>
     </div>
 
     <div id="panePort">
@@ -182,13 +182,13 @@ body{
         <div class="form-group"><span class="form-label">SOCKS5 連接埠</span>
           <input class="form-input" type="number" id="pxSocks" value="7891" min="1" max="65535"></div>
       </div>
-      <div class="hint">已有 Clash Verge / v2rayN 在跑的话，端口通常就是 7890 / 7891，直接点开启即可。</div>
+      <div class="hint">已有 Clash Verge / v2rayN 在跑的話，埠通常就是 7890 / 7891，直接點開啟即可。</div>
     </div>
 
     <div id="paneSub" style="display:none">
       <div class="form-group"><span class="form-label">訂閱連結</span>
         <input class="form-input" type="text" id="pxUrl" placeholder="https://...（vless / vmess / ss / trojan 都行）"></div>
-      <div class="hint">节点解析交给内置内核，协议不用选；台湾本地站点与区网会自动直连。</div>
+      <div class="hint">節點解析交給內置內核，協議不用選；台灣本地站台與區網會自動直連。</div>
     </div>
 
     <div class="row" style="margin-top:12px">
@@ -200,41 +200,41 @@ body{
 
   <div class="note" id="note">
     <div class="grow" id="noteTxt"></div>
-    <button id="btnElevate">以管理员身份重启</button>
+    <button id="btnElevate">以管理員身分重啟</button>
   </div>
 
   <div class="log" id="log"></div>
 
   <div class="foot">
-    只改本机 hosts，不上传任何数据<br>
-    出问题点「还原 hosts」即可恢复到系统原状
+    只改本機 hosts，不上傳任何資料<br>
+    出問題點「還原 hosts」即可恢復到系統原狀
   </div>
 </div>
 
 <script>
 var running=false, accelerated=false, el=function(id){return document.getElementById(id)};
 
-/* 公开版要加速的域名（由 Rust 端注入，见 main.rs 的 PUBLIC_DOMAINS） */
+/* 公開版要加速的域名（由 Rust 端注入，見 main.rs 的 PUBLIC_DOMAINS） */
 var ONLY="__ONLY__";
 
-/* 统一 origin：localhost 与 127.0.0.1 在浏览器眼里是两个源，
-   页面若从 localhost 打开，POST 会被预检拦掉（表现：能检测、不能加速）。
-   这里直接跳回 127.0.0.1，从根上消除歧义。 */
+/* 統一 origin：localhost 與 127.0.0.1 在瀏覽器眼裡是兩個源，
+   頁面若從 localhost 打開，POST 會被預檢攔掉（表現：能偵測、不能加速）。
+   這裡直接跳回 127.0.0.1，從根上消除歧義。 */
 if(location.hostname==='localhost'||location.hostname==='[::1]'||location.hostname==='::1'){
   location.replace('http://127.0.0.1:'+location.port+location.pathname);
 }
 
-/* fetch 包装：失败时把 origin 和 URL 一起报出来，
-   否则前端只有一句 "Failed to fetch"，等于没有错误信息。 */
+/* fetch 包裝：失敗時把 origin 和 URL 一起報出來，
+   否則前端只有一句 "Failed to fetch"，等於沒有錯誤資訊。 */
 function jfetch(url,opt){
   return fetch(url,opt).catch(function(e){
-    throw new Error('请求失败 '+location.origin+url+' → '+(e&&e.message?e.message:e));
+    throw new Error('請求失敗 '+location.origin+url+' → '+(e&&e.message?e.message:e));
   });
 }
 
 function log(s){var L=el('log');L.textContent+=(L.textContent?'\n':'')+s;L.scrollTop=L.scrollHeight;}
 
-/* ── 状态灯 ── */
+/* ── 狀態燈 ── */
 function setLamp(kind,txt,sub,pulse){
   var l=el('lamp');
   l.className='lamp'+(kind?' '+kind:'')+(pulse?' pulsing':'');
@@ -243,7 +243,7 @@ function setLamp(kind,txt,sub,pulse){
 }
 function setPill(txt){el('pill').textContent=txt;}
 
-/* ── 与 Rust 通信：HTTP 优先，WebView 兜底 ── */
+/* ── 與 Rust 通信：HTTP 優先，WebView 兜底 ── */
 function is_http(){return window.__GH_HTTP__===1;}
 
 function run(cmd,args){
@@ -251,11 +251,11 @@ function run(cmd,args){
   running=true;
   el('btnMain').disabled=true;
   if(cmd==='boost'){
-    setLamp('y','正在测速选优…','正在为 GitHub / Google 挑选最快的 IP，约 10~30 秒',true);
+    setLamp('y','正在測速選優…','正在為 GitHub / Google 挑選最快的 IP，約 10~30 秒',true);
   }else{
-    setLamp('y','正在还原…','',true);
+    setLamp('y','正在還原…','',true);
   }
-  setPill('处理中');
+  setPill('處理中');
   try{
     if(is_http())httpRun(cmd,args);
     else window.run_command(JSON.stringify({cmd:cmd,args:args}));
@@ -286,12 +286,12 @@ function finishOk(result){
   log('完成：'+txt);
   if(el('btnMain').dataset.mode==='clean'){
     accelerated=false;el('btnMain').dataset.mode='boost';
-    el('btnMain').textContent='一键加速';el('btnMain').className='btn-main';
-    setLamp('','待机','hosts 已还原');setPill('未加速');
+    el('btnMain').textContent='一鍵加速';el('btnMain').className='btn-main';
+    setLamp('','待機','hosts 已還原');setPill('未加速');
   }else{
     accelerated=true;el('btnMain').dataset.mode='stop';
     el('btnMain').textContent='停止加速';el('btnMain').className='btn-main stop';
-    setLamp('g','已加速','GitHub / Google 走最优 IP 了');setPill('已加速');
+    setLamp('g','已加速','GitHub / Google 走最優 IP 了');setPill('已加速');
   }
   setTimeout(check,600);
 }
@@ -299,18 +299,18 @@ function finishOk(result){
 function finishErr(msg){
   running=false;el('btnMain').disabled=false;
   log('ERROR: '+msg);
-  var needAdmin=/拒绝访问|denied|permission|Permission|EAccess|read-only/i.test(msg);
-  setLamp('r',needAdmin?'权限不足':'失败',msg,false);
-  setPill('失败');
-  if(needAdmin)showNote('写入 hosts 需要管理员权限。点右边按钮，Windows 会问一次“是否允许”，选“是”即可。');
+  var needAdmin=/拒絕訪問|denied|permission|Permission|EAccess|read-only/i.test(msg);
+  setLamp('r',needAdmin?'權限不足':'失敗',msg,false);
+  setPill('失敗');
+  if(needAdmin)showNote('寫入 hosts 需要管理員權限。點右邊按鈕，Windows 會問一次「是否允許」，選「是」即可。');
 }
 
-/* ── 站点检测 ── */
+/* ── 站台偵測 ── */
 function check(){
   var b=[el('btnCheck'),el('btnCheck2')];
   b.forEach(function(x){x.disabled=true});
   [0,1,2].forEach(function(i){
-    el('d'+i).className='dot';el('v'+i).className='site-v';el('v'+i).textContent='检测中…';
+    el('d'+i).className='dot';el('v'+i).className='site-v';el('v'+i).textContent='偵測中…';
   });
   fetch('/api/check').then(function(r){return r.json()}).then(function(j){
     (j.sites||[]).forEach(function(s,i){
@@ -319,18 +319,18 @@ function check(){
       var grade = !ok ? 'r' : (ms>1200?'y':'g');
       el('d'+i).className='dot '+grade;
       el('v'+i).className='site-v '+grade;
-      el('v'+i).textContent = ok ? (ms+'ms') : '不可达';
+      el('v'+i).textContent = ok ? (ms+'ms') : '不可達';
       el('i'+i).textContent = s.ip ? s.ip : (s.error||'');
     });
   }).catch(function(e){
-    [0,1,2].forEach(function(i){el('v'+i).textContent='检测失败'});
+    [0,1,2].forEach(function(i){el('v'+i).textContent='偵測失敗'});
   }).then(function(){b.forEach(function(x){x.disabled=false})});
 }
 
-/* ── 权限提示 ── */
+/* ── 權限提示 ── */
 function showNote(t){el('noteTxt').textContent=t;el('note').classList.add('show');}
 
-/* ── 事件绑定 ── */
+/* ── 事件綁定 ── */
 function boostArgs(apply){
   return {apply:apply,clean:true,timeout_ms:3000,concurrency:16,top:1,only:ONLY};
 }
@@ -338,15 +338,15 @@ function boostArgs(apply){
 el('btnMain').onclick=function(){
   var m=el('btnMain').dataset.mode||'boost';
   if(m==='elevate'){
-    /* 没有管理员权限时写不进 hosts —— 与其点完必失败，不如第一步就提权。 */
-    el('btnMain').disabled=true;el('btnMain').textContent='等待系统授权…';
-    setLamp('y','正在申请权限…','Windows 会弹出“是否允许此应用更改设备”，选“是”');
+    /* 沒有管理員權限時寫不進 hosts —— 與其點完必失敗，不如第一步就提權。 */
+    el('btnMain').disabled=true;el('btnMain').textContent='等待系統授權…';
+    setLamp('y','正在申請權限…','Windows 會彈出「是否允許此應用更改設備」，選「是」');
     jfetch('/api/elevate',{method:'POST'}).then(function(r){return r.json()}).then(function(j){
-      if(!j.ok){setLamp('r','提权失败',j.error||'未知错误');el('btnMain').disabled=false;
-        el('btnMain').textContent='以管理员身份启用加速';}
+      if(!j.ok){setLamp('r','提權失敗',j.error||'未知錯誤');el('btnMain').disabled=false;
+        el('btnMain').textContent='以管理員身分啟用加速';}
     }).catch(function(e){
-      setLamp('r','提权失败',e.message);el('btnMain').disabled=false;
-      el('btnMain').textContent='以管理员身份启用加速';
+      setLamp('r','提權失敗',e.message);el('btnMain').disabled=false;
+      el('btnMain').textContent='以管理員身分啟用加速';
     });
     return;
   }
@@ -361,7 +361,7 @@ el('btnQuit').onclick=function(){
   fetch('/api/quit',{method:'POST'}).catch(function(){});
 };
 
-/* ── 代理设置 ── */
+/* ── 代理設置 ── */
 var pxMode='port';
 [].forEach.call(document.querySelectorAll('#segMode .seg-b'),function(b){
   b.onclick=function(){
@@ -381,14 +381,14 @@ function pxMsg(t,err){
 function pxState(){
   jfetch('/api/proxy/state').then(function(r){return r.json()}).then(function(j){
     var on = /Enabled/.test(j.system||'');
-    el('pxPill').textContent = on ? '已启用' : '未启用';
+    el('pxPill').textContent = on ? '已啟用' : '未啟用';
     el('pxPill').style.color = on ? 'var(--green)' : 'var(--fg2)';
     el('pxPill').style.borderColor = on ? 'var(--green)' : 'var(--line)';
   }).catch(function(){});
 }
 
 el('btnPxOn').onclick=function(){
-  var b=el('btnPxOn');b.disabled=true;pxMsg('处理中…');
+  var b=el('btnPxOn');b.disabled=true;pxMsg('處理中…');
   var p = pxMode==='sub'
     ? jfetch('/api/proxy/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({url:el('pxUrl').value.trim(),mixed_port:+el('pxHttp').value||7890})})
@@ -397,41 +397,41 @@ el('btnPxOn').onclick=function(){
           socks_port:+el('pxSocks').value||null,bypass:'localhost,127.0.0.1,::1,<local>'})});
   p.then(function(r){return r.json()}).then(function(j){
     if(j.ok===false){
-      pxMsg(j.error||'失败',true);
-      if(/内核|mihomo|Mihomo|找不到/.test(j.error||'')){
-        pxMsg('需要内置内核：请安装完整版，或改用「用现成代理」填 Clash Verge 的端口',true);
+      pxMsg(j.error||'失敗',true);
+      if(/內核|mihomo|Mihomo|找不到/.test(j.error||'')){
+        pxMsg('需要內置內核：請安裝完整版，或改用「用現成代理」填 Clash Verge 的埠',true);
       }
     }else{
       if(j.proxy_ok===false){
-        pxMsg('内核已启动，但改不动系统代理：'+j.system_proxy+'（可手动在系统设置里填 127.0.0.1:'+(j.mixed_port||'')+'）',true);
+        pxMsg('內核已啟動，但改不動系統代理：'+j.system_proxy+'（可手動在系統設置裡填 127.0.0.1:'+(j.mixed_port||'')+'）',true);
       }else{
-        pxMsg('代理已开启（端口 '+(j.mixed_port||'')+'）');
+        pxMsg('代理已開啟（埠 '+(j.mixed_port||'')+'）');
       }
-      log('代理开启：'+JSON.stringify(j));
+      log('代理開啟：'+JSON.stringify(j));
     }
     b.disabled=false;pxState();setTimeout(check,800);
   }).catch(function(e){pxMsg(e.message,true);b.disabled=false;});
 };
 
 el('btnPxOff').onclick=function(){
-  var b=el('btnPxOff');b.disabled=true;pxMsg('处理中…');
+  var b=el('btnPxOff');b.disabled=true;pxMsg('處理中…');
   jfetch('/api/proxy/stop',{method:'POST'}).then(function(r){return r.json()})
   .then(function(j){
-    if(j.ok===false)pxMsg(j.error||'失败',true);else{pxMsg('代理已关闭');log('代理关闭');}
+    if(j.ok===false)pxMsg(j.error||'失敗',true);else{pxMsg('代理已關閉');log('代理關閉');}
     b.disabled=false;pxState();
   }).catch(function(e){pxMsg(e.message,true);b.disabled=false;});
 };
 
-/* ── 启动 ── */
+/* ── 啟動 ── */
 jfetch('/api/info').then(function(r){return r.json()}).then(function(j){
   if(!j.admin){
-    /* 关键：不要让用户点一个注定失败的大按钮。
-       第一步就引导提权，提完权回来这个按钮就是真正的一键加速。 */
+    /* 關鍵：不要讓用戶點一個註定失敗的大按鈕。
+       第一步就引導提權，提完權回來這個按鈕就是真正的一鍵加速。 */
     el('btnMain').dataset.mode='elevate';
-    el('btnMain').textContent='以管理员身份启用加速';
-    el('state').textContent='需要授权';
-    el('sub').textContent='改 hosts 需要管理员权限，点下面的按钮，Windows 会问一次“是否允许”，选“是”';
-    showNote('当前不是管理员：能测速、能看结果，但写不进 hosts。点「以管理员身份重启」或上面的大按钮都行。');
+    el('btnMain').textContent='以管理員身分啟用加速';
+    el('state').textContent='需要授權';
+    el('sub').textContent='改 hosts 需要管理員權限，點下面的按鈕，Windows 會問一次「是否允許」，選「是」';
+    showNote('當前不是管理員：能測速、能看結果，但寫不進 hosts。點「以管理員身分重啟」或上面的大按鈕都行。');
   }
 }).catch(function(){});
 el('btnMain').dataset.mode='boost';

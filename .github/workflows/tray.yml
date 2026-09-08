@@ -57,6 +57,14 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-windows-amd64-compatible-v1.19.30.zip" -OutFile $Zip -UseBasicParsing
           Expand-Archive -Path $Zip -DestinationPath "$K/bin" -Force
           Remove-Item $Zip -Force
+          # Upstream names it mihomo-windows-amd64-compatible.exe; every code path
+          # (web.rs::kernel_path) looks for exactly mihomo.exe. Without this rename
+          # a fresh install ships a kernel the app can never find.
+          $KernelExe = Get-ChildItem "$K/bin" -Filter "mihomo*.exe" -File | Select-Object -First 1
+          if ($KernelExe.Name -ne "mihomo.exe") {
+            Move-Item $KernelExe.FullName "$K/bin/mihomo.exe" -Force
+          }
+          if (-not (Test-Path "$K/bin/mihomo.exe")) { throw "staged kernel is not mihomo.exe" }
           foreach ($f in @("country.mmdb", "geosite.dat")) {
             Invoke-WebRequest -Uri "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/$f" -OutFile "$K/mihomo/$f" -UseBasicParsing
           }
