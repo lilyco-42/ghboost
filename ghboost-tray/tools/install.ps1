@@ -11,7 +11,12 @@ param(
     #   -WithKernel  force a fresh download anyway (use it to upgrade)
     #   -NoKernel    skip the kernel entirely ("use existing proxy" mode only)
     [switch]$WithKernel,
-    [switch]$NoKernel
+    [switch]$NoKernel,
+    # -NoLaunch: install everything but do not start the app.
+    # Exists so CI can actually EXECUTE this script and assert the resulting
+    # layout. Without it the single most failure-prone part of the release
+    # (kernel landing under the right name) was never exercised anywhere.
+    [switch]$NoLaunch
 )
 
 $ErrorActionPreference = "Stop"
@@ -132,6 +137,48 @@ if (-not $NoAutostart) {
     Write-Host "      panel button when you actually accelerate."
 }
 
+# Self-check: turn a silent failure into a visible one.
+#
+# Why this exists: the first thing the user sees after installing is the panel.
+# If the kernel did not land under the exact path the app looks for, the panel
+# just says "kernel not found" and the user has no idea what to do - while the
+# developer never reproduces it (the dev machine's copy was renamed by hand).
+# Now the final layout is asserted right after install and a mismatch exits
+# non-zero, which also lets CI assert it.
+$Checks = @(
+    @{ Name = "tray app";     Path = $Target },
+    @{ Name = "kernel";       Path = (Join-Path $BinDir "mihomo.exe") },
+    @{ Name = "GEOIP db";     Path = (Join-Path $CfgDir "country.mmdb") },
+    @{ Name = "geosite db";   Path = (Join-Path $CfgDir "geosite.dat") }
+)
+if ($NoKernel) { $Checks = @($Checks[0]) }
+
+$Bad = @()
 Write-Host ""
-Write-Host "Done. Launching now..." -ForegroundColor Green
-Start-Process $Target
+Write-Host "Install self-check:"
+foreach ($c in $Checks) {
+    if (Test-Path $c.Path) {
+        Write-Host ("  [OK]   {0}  {1}" -f $c.Name, $c.Path) -ForegroundColor Green
+    } else {
+        Write-Host ("  [FAIL] {0}  missing: {1}" -f $c.Name, $c.Path) -ForegroundColor Red
+        $Bad += $c.Name
+    }
+}
+
+if ($Bad.Count -gt 0) {
+    Write-Host ""
+    Write-Host ("Install incomplete, missing: {0}" -f ($Bad -join ", ")) -ForegroundColor Red
+    if (-not $NoKernel) {
+        Write-Host "If this is the full release bundle, check that kernel\bin and" -ForegroundColor Yellow
+        Write-Host "kernel\mihomo both exist inside the zip." -ForegroundColor Yellow
+    }
+    exit 1
+}
+
+Write-Host ""
+Write-Host "Done." -ForegroundColor Green
+if (-not $NoLaunch) {
+    Write-Host "Launching now..."
+    Start-Process $Target
+}
+exit 0
