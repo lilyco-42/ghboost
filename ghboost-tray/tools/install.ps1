@@ -4,10 +4,14 @@ param(
     [string]$InstallDir = "$env:LOCALAPPDATA\ghboost",
     [switch]$NoShortcut,
     [switch]$NoAutostart,
-    # Download the mihomo kernel + geo rule databases (~31MB).
-    # Required for the "Import subscription" path. Without it the panel falls
-    # back to "Use existing proxy" only.
-    [switch]$WithKernel
+    # Release bundles ship the kernel in .\kernel, so by default NOTHING is
+    # downloaded. This matters: our users are exactly the people with bad
+    # GitHub access, so making them fetch the kernel from GitHub after
+    # installing would defeat the purpose.
+    #   -WithKernel  force a fresh download anyway (use it to upgrade)
+    #   -NoKernel    skip the kernel entirely ("use existing proxy" mode only)
+    [switch]$WithKernel,
+    [switch]$NoKernel
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,33 +33,32 @@ $Target = Join-Path $InstallDir "ghboost-tray.exe"
 Copy-Item $Src $Target -Force
 Write-Host "Installed -> $Target"
 
-if (-not $NoShortcut) {
-    $Desktop = [Environment]::GetFolderPath("Desktop")
-    $Lnk = Join-Path $Desktop "ghboost.lnk"
-    $Wsh = New-Object -ComObject WScript.Shell
-    $Sc = $Wsh.CreateShortcut($Lnk)
-    $Sc.TargetPath = $Target
-    $Sc.WorkingDirectory = $InstallDir
-    $Sc.Description = "ghboost - one-click access acceleration"
-    $Sc.Save()
-    Write-Host "Desktop shortcut -> $Lnk"
-}
+# Kernel layout expected by web.rs::kernel_path() / config_dir():
+#   <InstallDir>\bin\mihomo.exe      -> kernel
+#   <InstallDir>\mihomo\country.mmdb -> GEOIP rules (GEOIP,TW,DIRECT needs this!)
+#   <InstallDir>\mihomo\geosite.dat  -> geosite rules
+# Without country.mmdb the GEOIP rules silently never match, which means
+# Taiwan-local sites would be sent through the proxy - slower, and some
+# banks block it as a foreign login. So the rule DB is not optional.
+$BinDir = Join-Path $InstallDir "bin"
+$CfgDir = Join-Path $InstallDir "mihomo"
+$Bundled = Join-Path $PSScriptRoot "kernel"
 
-if ($WithKernel) {
-    # Kernel layout expected by web.rs::kernel_path() / config_dir():
-    #   <InstallDir>\bin\mihomo.exe      -> kernel
-    #   <InstallDir>\mihomo\country.mmdb -> GEOIP rules (GEOIP,TW,DIRECT needs this!)
-    #   <InstallDir>\mihomo\geosite.dat  -> geosite rules
-    # Without country.mmdb the GEOIP rules silently never match, which means
-    # Taiwan-local sites would be sent through the proxy - slower, and some
-    # banks block it as a foreign login. So the rule DB is not optional.
-    $BinDir = Join-Path $InstallDir "bin"
-    $CfgDir = Join-Path $InstallDir "mihomo"
+if ($NoKernel) {
+    Write-Host "Skipping kernel (-NoKernel). Only 'Use existing proxy' will work."
+} elseif ((Test-Path $Bundled) -and -not $WithKernel) {
+    # Preferred path: take the kernel out of the release bundle, no network.
     New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
     New-Item -ItemType Directory -Force -Path $CfgDir | Out-Null
-
+    Copy-Item (Join-Path $Bundled "bin\*") $BinDir -Force -Recurse
+    Copy-Item (Join-Path $Bundled "mihomo\*") $CfgDir -Force -Recurse
+    Write-Host "Kernel (bundled) -> $BinDir\mihomo.exe"
+} elseif ($WithKernel) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $ProgressPreference = "SilentlyContinue"
+
+    New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $CfgDir | Out-Null
 
     $Zip = Join-Path $env:TEMP "mihomo.zip"
     $KernelUrl = "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-windows-amd64-compatible-v1.19.30.zip"
@@ -88,6 +91,22 @@ if ($WithKernel) {
     Write-Host ""
     Write-Host "NOTE: mihomo is GPL-3.0. Redistributing it requires complying with" -ForegroundColor DarkYellow
     Write-Host "      that license (provide source / written offer)." -ForegroundColor DarkYellow
+} else {
+    Write-Host ""
+    Write-Host "NOTE: no kernel in this package and -WithKernel was not given." -ForegroundColor Yellow
+    Write-Host "      'Import subscription' will not work; 'Use existing proxy' will." -ForegroundColor Yellow
+}
+
+if (-not $NoShortcut) {
+    $Desktop = [Environment]::GetFolderPath("Desktop")
+    $Lnk = Join-Path $Desktop "ghboost.lnk"
+    $Wsh = New-Object -ComObject WScript.Shell
+    $Sc = $Wsh.CreateShortcut($Lnk)
+    $Sc.TargetPath = $Target
+    $Sc.WorkingDirectory = $InstallDir
+    $Sc.Description = "ghboost - one-click access acceleration"
+    $Sc.Save()
+    Write-Host "Desktop shortcut -> $Lnk"
 }
 
 if (-not $NoAutostart) {
