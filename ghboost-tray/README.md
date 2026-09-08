@@ -62,7 +62,7 @@
 
 ### 内核与规则库的布局
 
-`install.ps1 -WithKernel` 会把文件放到：
+安装后文件放在（**发行包自带内核，默认不联网下载**）：
 
 ```
 %LOCALAPPDATA%\ghboost\bin\mihomo.exe        内核（~50MB）
@@ -82,11 +82,19 @@
 Windows 双击 `.ps1` **默认是用记事本打开**，根本不会执行；就算改成执行，
 默认的执行策略也会拦。所以发行包里带 `.bat` 包装器：
 
-- **安装**：双击 `install.bat`（加 `-WithKernel` 才会顺带下载内核）
+- **安装**：双击 `install.bat`
 - **卸载**：双击 `uninstall.bat`（自动提权 → 还原 hosts 与系统代理 →
   删开机自启与桌面快捷方式；`-RemoveData` 连数据目录一起删）
 
-命令行等价写法：`install.ps1 -WithKernel -NoAutostart` / `uninstall.ps1 -RemoveData`。
+命令行：`install.ps1 -NoAutostart` / `uninstall.ps1 -RemoveData`。
+
+**内核默认随发行包分发，安装过程不联网。** 这不是"图方便"，而是"否则这个
+功能是坏的"：我们的目标用户恰恰是 GitHub 访问不畅的人，让他们装完之后再去
+GitHub 下载内核是自相矛盾。`install.ps1` 的逻辑是
+
+1. 包里有 `kernel\` 就直接用（默认路径，不联网）
+2. `-WithKernel` 强制联网重新下载（用来升级内核）
+3. `-NoKernel` 完全不装（只能用「用现成代理」模式）
 `.bat` 一律 ASCII：cmd.exe 走 OEM codepage，写了中文会变乱码。
 
 ---
