@@ -385,6 +385,46 @@ fn main() {
         return;
     }
 
+    // `--restore`：一次性还原，给卸载脚本和排障用。不起服务、不建托盘。
+    // 做两件事：关掉系统代理 + 把 hosts 还原成系统原状。
+    //
+    // 存在的理由：安装器必须提供卸载（这是给用户的基本交代，也是代码签名
+    // 机构 SignPath 行为准则里的硬性要求）。而卸载如果不还原，用户卸完
+    // 会发现「网速还是怪怪的」—— 那比不卸载更糟。
+    // 写 hosts 需要管理员；没权限就明确报出来，绝不静默跳过。
+    if has("--restore") {
+        let mut failed = false;
+        match ghboost::proxy::unset_proxy() {
+            Ok(_) => println!("[OK]   系统代理已关闭"),
+            Err(e) => println!("[WARN] 系统代理关闭失败：{e}（若本就没开过可忽略）"),
+        }
+        let (tx, rx) = channel::<Msg>();
+        spawn_job(boost_params(false, true), Arc::new(Mutex::new(tx)));
+        loop {
+            match rx.recv() {
+                Ok(Msg::Done(Ok(v))) => {
+                    println!("[OK]   hosts 已还原：{v}");
+                    break;
+                }
+                Ok(Msg::Done(Err(e))) => {
+                    println!("[FAIL] hosts 还原失败：{e}");
+                    failed = true;
+                    break;
+                }
+                Ok(_) => continue, // Progress 行，还原很快，不必打印
+                Err(e) => {
+                    println!("[FAIL] 还原过程异常终止：{e}");
+                    failed = true;
+                    break;
+                }
+            }
+        }
+        if failed {
+            println!("提示：改 hosts 需要管理员权限，请以管理员身份重跑一次。");
+        }
+        std::process::exit(if failed { 1 } else { 0 });
+    }
+
     if has("--selftest") {
         selftest();
         return;
@@ -463,16 +503,14 @@ fn main() {
         // ── 2. 托盘图标被点击 ──
         // 能收到这个事件本身就证明消息泵在正常工作（它产生于窗口过程，
         // 不抽消息队列就永远不会有）。所以这也是「退出」能不能用的同一条链路。
-        if let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                button_state: tray_icon::MouseButtonState::Up,
-                ..
-            } = ev
-            {
-                trace("tray left click -> open panel");
-                detail = open_panel();
-            }
+        if let Ok(TrayIconEvent::Click {
+            button: tray_icon::MouseButton::Left,
+            button_state: tray_icon::MouseButtonState::Up,
+            ..
+        }) = TrayIconEvent::receiver().try_recv()
+        {
+            trace("tray left click -> open panel");
+            detail = open_panel();
         }
 
         // ── 3. 菜单事件 ──
