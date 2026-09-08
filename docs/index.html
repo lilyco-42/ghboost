@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ghboost — 一鍵加速 Google、YouTube、GitHub</title>
+<meta name="description" content="裝好就不用管。不用設定、不用懂協定、不用改設定檔。給台灣使用者的一鍵加速工具，開源、本機運作、不蒐集資料。">
+<style>
+:root{
+  --bg:#ffffff; --fg:#0f1720; --fg2:#5b6875; --line:#e3e8ef;
+  --brand:#0b6bcb; --brand-d:#08508f; --soft:#f2f7fd;
+  --ok:#12864b; --warn:#b47600; --bad:#c0392b;
+  --radius:14px;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
+  line-height:1.7;
+}
+.wrap{max-width:920px;margin:0 auto;padding:0 22px}
+a{color:var(--brand);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ── hero ── */
+header{
+  border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg,#f7fbff 0%,#ffffff 100%);
+  padding:64px 0 52px; text-align:center;
+}
+.logo{
+  width:56px;height:56px;border-radius:14px;margin:0 auto 18px;
+  background:var(--brand);color:#fff;font-weight:800;font-size:26px;
+  display:flex;align-items:center;justify-content:center;
+}
+h1{font-size:34px;line-height:1.28;margin:0 0 14px;letter-spacing:-.4px}
+.sub{font-size:17px;color:var(--fg2);margin:0 auto 30px;max-width:620px}
+
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;align-items:center}
+.btn{
+  display:inline-block;padding:14px 30px;border-radius:10px;
+  font-size:16px;font-weight:700;border:1px solid transparent;
+}
+.btn-p{background:var(--brand);color:#fff}
+.btn-p:hover{background:var(--brand-d);text-decoration:none}
+.btn-s{background:#fff;color:var(--fg);border-color:var(--line)}
+.btn-s:hover{border-color:#c9d4e2;text-decoration:none}
+.meta{font-size:13px;color:var(--fg2);margin-top:16px}
+
+/* ── 狀態燈 ── */
+.lamps{
+  display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:34px 0 0;
+}
+.lamp{
+  border:1px solid var(--line);border-radius:999px;padding:7px 16px 7px 12px;
+  display:flex;align-items:center;gap:9px;font-size:14px;background:#fff;
+}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+
+/* ── 章節 ── */
+section{padding:56px 0;border-bottom:1px solid var(--line)}
+h2{font-size:25px;margin:0 0 8px;letter-spacing:-.2px}
+h2+.lead{color:var(--fg2);margin:0 0 32px;font-size:16px}
+
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.card{
+  border:1px solid var(--line);border-radius:var(--radius);padding:22px;background:#fff;
+}
+.card h3{margin:0 0 8px;font-size:17px}
+.card p{margin:0;color:var(--fg2);font-size:15px}
+.num{
+  width:30px;height:30px;border-radius:8px;background:var(--soft);color:var(--brand);
+  font-weight:800;font-size:15px;display:flex;align-items:center;justify-content:center;margin-bottom:12px;
+}
+
+.steps{counter-reset:s;list-style:none;padding:0;margin:0}
+.steps li{
+  position:relative;padding:0 0 20px 40px;border-left:2px solid var(--line);margin-left:11px;
+}
+.steps li:last-child{border-left-color:transparent;padding-bottom:0}
+.steps li::before{
+  counter-increment:s;content:counter(s);
+  position:absolute;left:-13px;top:0;width:24px;height:24px;border-radius:50%;
+  background:var(--brand);color:#fff;font-size:13px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;
+}
+.steps b{display:block;font-size:16px;margin-bottom:2px}
+.steps span{color:var(--fg2);font-size:15px}
+
+/* ── 價格 ── */
+.prices{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.price{border:1px solid var(--line);border-radius:var(--radius);padding:26px}
+.price.hi{border-color:var(--brand);box-shadow:0 6px 24px rgba(11,107,203,.09)}
+.price h3{margin:0 0 4px;font-size:19px}
+.price .amt{font-size:30px;font-weight:800;margin:10px 0 2px}
+.price .amt small{font-size:14px;font-weight:600;color:var(--fg2)}
+.price ul{list-style:none;padding:0;margin:18px 0 22px}
+.price li{padding:6px 0 6px 24px;position:relative;font-size:15px;color:var(--fg2)}
+.price li::before{content:"✓";position:absolute;left:0;color:var(--ok);font-weight:800}
+.tag{
+  display:inline-block;background:var(--soft);color:var(--brand);font-size:12px;
+  font-weight:700;padding:3px 10px;border-radius:999px;margin-bottom:8px;
+}
+
+/* ── FAQ ── */
+.faq details{border-bottom:1px solid var(--line);padding:14px 0}
+.faq details:last-child{border-bottom:none}
+.faq summary{cursor:pointer;font-weight:700;font-size:16px;list-style:none}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::before{content:"＋";color:var(--brand);font-weight:800;margin-right:10px}
+.faq details[open] summary::before{content:"－"}
+.faq p{margin:10px 0 0 26px;color:var(--fg2);font-size:15px}
+
+footer{padding:38px 0;color:var(--fg2);font-size:14px}
+footer .row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+
+code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
+
+@media (max-width:720px){
+  h1{font-size:27px}
+  .grid,.prices{grid-template-columns:1fr}
+  header{padding:46px 0 38px}
+  section{padding:42px 0}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="logo">G</div>
+    <h1>一鍵加速 Google、YouTube、GitHub</h1>
+    <p class="sub">
+      裝好就不用管。不用設定、不用看懂協定、不用改設定檔——
+      按一個鈕，三個燈亮綠就可以用了。
+    </p>
+
+    <div class="cta">
+      <a class="btn btn-p" href="https://github.com/lilyco-42/ghboost/releases/latest">下載 Windows 版</a>
+      <a class="btn btn-s" href="https://github.com/lilyco-42/ghboost">原始碼（MIT）</a>
+    </div>
+    <p class="meta">Windows 10 / 11 · x64 · 綠色安裝，隨時可完整移除</p>
+
+    <div class="lamps">
+      <span class="lamp"><i class="dot"></i>Google</span>
+      <span class="lamp"><i class="dot"></i>YouTube</span>
+      <span class="lamp"><i class="dot"></i>GitHub</span>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>為什麼它不需要設定</h2>
+    <p class="lead">其他工具要你先搞懂的東西，我們在安裝時就處理掉了。</p>
+    <div class="grid">
+      <div class="card">
+        <div class="num">1</div>
+        <h3>加速器核心隨包附上</h3>
+        <p>安裝過程完全不連外。目標用戶正是連 GitHub 都不順的人，叫他們裝完再去 GitHub 抓核心是自相矛盾。</p>
+      </div>
+      <div class="card">
+        <div class="num">2</div>
+        <h3>貼上訂閱網址就好</h3>
+        <p>協定解析交給業界成熟的 mihomo 核心，vless / vmess / ss / trojan / hysteria2 / tuic 全部原生支援，還自帶節點體檢。</p>
+      </div>
+      <div class="card">
+        <div class="num">3</div>
+        <h3>台灣網站自動走直連</h3>
+        <p>內建 <code>GEOIP,TW,DIRECT</code>：PTT、露天、蝦皮、各家網銀不繞遠路——繞出去反而更慢，有些網銀還會擋異地登入。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>怎麼開始</h2>
+    <p class="lead">從下載到能用，大概一分鐘。</p>
+    <ol class="steps">
+      <li><b>下載、解開、點兩下 <code>install.bat</code></b>
+        <span>不用選路徑、不用勾選項。裝完會在桌面留一個 ghboost 捷徑。</span></li>
+      <li><b>打開面板</b>
+        <span>它會自動跑一次三個站點偵測，綠燈就是通、黃燈是慢、紅燈是不通。你什麼都不用按。</span></li>
+      <li><b>貼上訂閱網址，或選「用現成代理」</b>
+        <span>已經在用 Clash Verge 的話，填它的埠號就能直接接手，不用搬家。</span></li>
+      <li><b>按下「一鍵加速」</b>
+        <span>第一次會問一次管理員權限（改 hosts 需要）。選「是」，之後就是真的按一下。</span></li>
+    </ol>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>價格</h2>
+    <p class="lead">核心功能永久免費；Pro 用來支撐節點與簽章憑證的成本。</p>
+    <div class="prices">
+      <div class="price">
+        <h3>免費版</h3>
+        <div class="amt">NT$0</div>
+        <ul>
+          <li>一鍵加速、三個站點偵測</li>
+          <li>訂閱匯入 / 用現成代理</li>
+          <li>台灣網站自動直連</li>
+          <li>完整移除（含還原 hosts 與系統代理）</li>
+        </ul>
+        <a class="btn btn-s" href="https://github.com/lilyco-42/ghboost/releases/latest">立即下載</a>
+      </div>
+      <div class="price hi">
+        <span class="tag">開發中</span>
+        <h3>Pro</h3>
+        <div class="amt">NT$90 <small>/ 月</small></div>
+        <ul>
+          <li>多組訂閱、自動挑最快節點</li>
+          <li>開機自動加速，不用手動開</li>
+          <li>分流規則自訂（哪些網直連、哪些加速）</li>
+          <li>優先技術支援</li>
+        </ul>
+        <a class="btn btn-s" href="https://github.com/lilyco-42/ghboost/issues">許願 / 追蹤進度</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap faq">
+    <h2>常見問題</h2>
+    <p class="lead">先用得到的三件事，寫在前面。</p>
+
+    <details open>
+      <summary>它會蒐集我的瀏覽紀錄或帳號密碼嗎？</summary>
+      <p>不會。ghboost 全程在你自己的電腦上跑，沒有任何後端伺服器、沒有帳號系統、沒有遙測。
+      原始碼公開在 GitHub，你可以自己確認，也可以自己編。</p>
+    </details>
+
+    <details>
+      <summary>為什麼第一次按會跳出「是否允許」？</summary>
+      <p>加速的原理之一是改 hosts 與系統代理，這兩件事在 Windows 上需要管理員權限。
+      這是 Windows 的规定，不是我們多要的。只問一次；不給權限的話，偵測與「用現成代理」仍然可用。</p>
+    </details>
+
+    <details>
+      <summary>Windows 跳出「未知的發行者」藍色警告？</summary>
+      <p>這是 SmartScreen 對新發行者的標準反應——程式沒簽名時，需要靠下載量慢慢累積信譽。
+      專案已申請開源程式碼簽章（SignPath Foundation），通過後警告會明顯減輕。
+      在那之前請用 Release 頁面附的 <code>SHA256SUMS.txt</code> 校對檔案指紋。</p>
+    </details>
+
+    <details>
+      <summary>怎麼完整移除？</summary>
+      <p>點兩下 <code>uninstall.bat</code>。它會先通知程式正常退出，再還原 hosts 與系統代理、
+      移除開機啟動與桌面捷徑。加 <code>-RemoveData</code> 會連設定檔一起清掉。</p>
+    </details>
+
+    <details>
+      <summary>它跟 Clash Verge 有什麼不同？</summary>
+      <p>定位不同。Clash Verge 是給知道自己在做什麼的人的完整控制台；
+      ghboost 只做一件事：讓不想設定的人，按一下就能開 Google、YouTube、GitHub。
+      如果你已經在用 Clash Verge，ghboost 可以直接接手它的埠號，兩者不衝突。</p>
+    </details>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap row" style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap">
+    <span>ghboost · MIT 授權 · 加速器核心 <a href="https://github.com/MetaCubeX/mihomo">mihomo</a>（GPL-3.0，以獨立程式形式呼叫）</span>
+    <span><a href="https://github.com/lilyco-42/ghboost">GitHub</a> · <a href="https://github.com/lilyco-42/ghboost/releases/latest">下載</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
