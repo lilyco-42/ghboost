@@ -410,12 +410,48 @@ fn ghboost_dir() -> std::path::PathBuf {
 
 /// 内置内核的预期位置（`install.ps1 -WithKernel` 会把文件放到这里）
 fn kernel_path() -> std::path::PathBuf {
-    ghboost_dir().join("bin").join(if cfg!(windows) {
+    let dir = ghboost_dir().join("bin");
+    let name = if cfg!(windows) {
         "mihomo.exe"
     } else {
         "mihomo"
-    })
+    };
+    let want = dir.join(name);
+    if !want.exists() {
+        // 自愈：见 normalize_kernel_name 的说明。
+        // 这一段不是防御性冗余 —— 安装脚本的 PowerShell 在 CI 里根本执行不到，
+        // 唯一能真正被编译、被回归测试覆盖的正规化逻辑只有这里。
+        normalize_kernel_name(&dir, name);
+    }
+    want
 }
+
+/// 把 `mihomo-windows-amd64-compatible.exe` 这类档名统一成 `mihomo.exe`。
+///
+/// 上游发行包解出来的就是那个带后缀的名字，而程式找的是精确档名。
+/// 不正规化的故障形态极其糟糕：包里明明有内核，程式却报「找不到内核」，
+/// 用户完全无从下手 —— 而且它在开发机上不会复现（本机那份是手动改过名的）。
+#[cfg(windows)]
+fn normalize_kernel_name(dir: &std::path::Path, want: &str) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let os_name = entry.file_name();
+        let n = os_name.to_string_lossy();
+        if n.eq_ignore_ascii_case(want) {
+            continue;
+        }
+        if n.starts_with("mihomo") && n.ends_with(".exe") {
+            eprintln!("[ghboost] 内核档名不规范（{n}），已自动改名为 {want}");
+            let _ = std::fs::rename(entry.path(), dir.join(want));
+            return;
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn normalize_kernel_name(_dir: &std::path::Path, _want: &str) {}
 
 /// 订阅配置 —— 关键点：**一行协议解析都不写**。
 ///
@@ -526,8 +562,10 @@ fn do_subscribe(url: &str, mixed_port: u16) -> Result<Value, String> {
     };
 
     if !kernel_path().exists() {
-        return Err("找不到内置内核。请以管理员身份运行安装脚本下载它：\
-             powershell -ExecutionPolicy Bypass -File tools\\install.ps1 -WithKernel"
+        // 内核现在是随发行包附上的，所以这里的处置不再是「去 GitHub 下载」——
+        // 那对目标用户（正是连 GitHub 都不顺的人）是自相矛盾的。
+        return Err("找不到内置内核。请重新执行一次安装包里的 install.bat；\
+             若仍失败，确认安装目录下存在 bin\\mihomo.exe 与 mihomo\\country.mmdb。"
             .to_string());
     }
 
