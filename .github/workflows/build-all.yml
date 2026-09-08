@@ -32,14 +32,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Install system deps (webkit2gtk for default webview feature)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
       - name: Format check
         run: cargo fmt -- --check
       - name: Clippy (default features)
         run: cargo clippy --all-targets -- -D warnings
+      # webview 已从发布构建中移除（默认构建双击即开浏览器控制台，不再依赖本机
+      # WebView2/WebKit）。这里只做一次 check 防止这条可选路径悄悄腐烂。
+      # 注意是 check 不是 build：check 不链接，所以不需要装 webkit2gtk。
+      - name: Check (optional webview feature)
+        run: cargo check --all-targets --features webview
       - name: Run tests
         run: cargo test
 
@@ -173,12 +174,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 仓库只提供 x86_64 版 lib/webview/webview.lib，只有这个目标链接得上 GUI；
-          # aarch64 没有对应导入库，强行 --features webview 会报 LNK1112（machine type 冲突）。
+          # 两个目标都不再带 --features webview。
+          # 原因：webview 版运行时要求本机装了 WebView2（Windows 10/11 多数有，
+          # 但 LTSC / Server Core / 精简版系统没有），没装时双击 exe 就是"什么都没发生"，
+          # 没有任何报错——用户无法自查。
+          # 而**默认构建**双击 exe 会起本地 Web 控制台并自动打开浏览器
+          # （见 src/web.rs），在任何一个有浏览器的系统上都能用，也不需要随包带
+          # webview.dll。故 webview 降级为纯可选（`--features webview`），不做发布构建。
           - target: x86_64-pc-windows-msvc
-            gui: true
           - target: aarch64-pc-windows-msvc
-            gui: false
     steps:
       - uses: actions/checkout@v4
       - name: Cache cargo registry
@@ -203,7 +207,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.gui && '--features webview' || '' }}
+        run: cargo build --release --target ${{ matrix.target }}
       - name: Stage artifact
         shell: bash
         run: |
@@ -211,10 +215,6 @@ jobs:
           mkdir -p dist
           TRIPLE="${{ matrix.target }}"
           cp "target/${TRIPLE}/release/ghboost.exe" "dist/ghboost-${TRIPLE}.exe"
-          # GUI 版运行时需要 webview.dll 与 exe 同目录
-          if [ "${{ matrix.gui }}" = "true" ]; then
-            cp "lib/webview/webview.dll" "dist/"
-          fi
           if [ -f "target/${TRIPLE}/release/ghboost.dll" ]; then
             cp "target/${TRIPLE}/release/ghboost.dll" "dist/ghboost-${TRIPLE}.dll"
           fi
@@ -314,11 +314,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - name: Install system deps (native gnu only)
-        if: matrix.native
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      # 不再装 libwebkit2gtk-4.1-dev：webview 是可选 feature 且发布构建不带它，
+      # 默认构建不链接 webkit/gtk，装了纯属浪费 CI 时间。
       - name: Install zig (for cross-compile)
         run: |
           set -e

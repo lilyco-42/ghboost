@@ -27,11 +27,18 @@ libc = "0.2"
 # ── 原生目标：完整 lilyco（TUI + Web GUI）+ 真 tokio ──
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lilyco = { git = "https://github.com/lilyco-42/lilyco" }
-# lilyco-gui 直接依赖：`GuiRenderer::serve_registry` 内置 axum 服务 + 自动开浏览器
-# （`webbrowser 1.2.4` 已被 lilyco-gui 间接拉入，无需再声明）。
-# 仅在原生目标开 —— wasm 上 axum/tokio full/mio 会让编译挂掉。
-lilyco-gui = { git = "https://github.com/lilyco-42/lilyco" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+# Web 控制台（无参 / --web 双击即用）。为什么不用 lilyco-gui 的 GuiRenderer：
+# 它的页面模板从公网 CDN 拉 layui.js（lilyco-gui/src/lib.rs:475），
+# 而所有事件绑定都包在 `layui.use(...)` 回调里（477~518）——CDN 拉不到时
+# layui 未定义、回调不执行，Run 按钮退化成原生表单提交，表现为"点了没反应"。
+# ghboost 的受众恰恰是外网连通性差的人，本地控制台不能依赖公网资源。
+# 故这里起一个极小的 axum 服务复用仓库自带的 `src/gui.html`（零外部请求）。
+axum = "0.8"
+# 跨平台打开默认浏览器：Windows ShellExecute / macOS open / Linux xdg-open
+webbrowser = "1"
+# SSE 事件流（`async_stream::stream!`）——axum 的 Sse 需要一个 Stream
+async-stream = "0.3"
 
 # ── wasm32-unknown-unknown：三处必须裁剪，否则编不过 ──
 # 1) lilyco 默认 feature 含 web（= lilyco-gui → axum → hyper → tokio(full) → mio），

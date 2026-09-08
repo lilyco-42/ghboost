@@ -898,13 +898,14 @@ dependencies = [
 name = "lilyco-ghboost"
 version = "0.2.0"
 dependencies = [
+ "async-stream",
+ "axum",
  "base64",
  "cc",
  "getrandom 0.2.17",
  "libc",
  "lilyco",
  "lilyco-core",
- "lilyco-gui",
  "percent-encoding",
  "rand 0.8.8",
  "reqwest",
@@ -913,6 +914,7 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "tokio_with_wasm",
+ "webbrowser",
  "winres",
 ]
 

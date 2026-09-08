@@ -337,12 +337,44 @@ function updateProgress(cmd,cur,tot,msg){
   if(t)t.textContent=msg||(cur+'/'+tot);
 }
 
+// ── 传输层 ──────────────────────────────────────────────
+// 同一份页面跑在两个宿主里：
+//   · WebView：Rust 通过 bind 提供 window.run_command，事件用 eval 推回 push_*
+//   · 浏览器：window.__GH_HTTP__=1，用 fetch + SSE（server 在响应里注入该标记）
+// 判断放在**调用时**而不是解析时——WebView 的 bind 在 set_html 之后才装上，
+// 页面加载那一刻它还不存在。
+function is_http(){return window.__GH_HTTP__===1;}
+
+function http_run(cmd,args){
+  fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd:cmd,args:args})})
+  .then(function(r){if(!r.ok)return r.text().then(function(t){throw new Error(t||('HTTP '+r.status))});return r.json();})
+  .then(function(j){
+    var es=new EventSource('/progress/'+j.session_id);
+    es.onmessage=function(ev){var p=JSON.parse(ev.data);dispatch(p);if(p.type==='done'||p.type==='error')es.close();};
+    es.onerror=function(){es.close();};
+  })
+  .catch(function(e){setLoading(cmd,false);showOutput('Error: '+e.message,true);toast(e.message,'err');});
+}
+
+// 把服务端事件转成页面已有的 push_* 回调
+function dispatch(p){
+  if(p.type==='log')push_log(p.level,p.message);
+  else if(p.type==='tick')push_progress(p.current,p.total,p.message);
+  else if(p.type==='started')push_log('info','started ('+p.total+' total): '+p.message);
+  else if(p.type==='done')push_done(p.result,p.elapsed_ms);
+  else if(p.type==='error')push_error(p.message);
+}
+
 function run_cmd(cmd){
   if(running[cmd])return;
   setLoading(cmd,true);outputEl.textContent='';outputEl.className='output-panel';
   if(cmd==='test'){document.getElementById('test-tbody').innerHTML='';document.getElementById('test-results').style.display='none';document.getElementById('test-empty').style.display='';}
   if(cmd==='scan'){document.getElementById('scan-nodes').innerHTML='';document.getElementById('scan-results').style.display='none';}
-  try{window.run_command(JSON.stringify({cmd:cmd,args:collectArgs(cmd)}));}
+  try{
+    if(is_http())http_run(cmd,collectArgs(cmd));
+    else window.run_command(JSON.stringify({cmd:cmd,args:collectArgs(cmd)}));
+  }
   catch(e){setLoading(cmd,false);showOutput('Error: '+e.message,true);toast(e.message,'err');}
 }
 
@@ -417,12 +449,27 @@ function renderScan(data){
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
 // Proxy
+function proxy_cfg(){return {host:document.getElementById('proxy-host').value||'127.0.0.1',port:+document.getElementById('proxy-port').value||7890,socks_port:+document.getElementById('proxy-socks').value||null,bypass:document.getElementById('proxy-bypass').value||'localhost,127.0.0.1,::1,<local>'};}
+
 function do_set_proxy(){
-  var config={host:document.getElementById('proxy-host').value||'127.0.0.1',port:+document.getElementById('proxy-port').value||7890,socks_port:+document.getElementById('proxy-socks').value||null,bypass:document.getElementById('proxy-bypass').value||'localhost,127.0.0.1,::1,<local>'};
   showOutput('Enabling proxy...',false);
-  try{window.set_proxy(JSON.stringify(config));}catch(e){showOutput('Error: '+e.message,true);}
+  if(is_http()){
+    fetch('/proxy/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(proxy_cfg())})
+      .then(function(r){return r.json()}).then(proxy_set_result)
+      .catch(function(e){showOutput('Error: '+e.message,true);});
+    return;
+  }
+  try{window.set_proxy(JSON.stringify(proxy_cfg()));}catch(e){showOutput('Error: '+e.message,true);}
 }
-function do_unset_proxy(){showOutput('Disabling proxy...',false);try{window.unset_proxy();}catch(e){showOutput('Error: '+e.message,true);}}
+function do_unset_proxy(){
+  showOutput('Disabling proxy...',false);
+  if(is_http()){
+    fetch('/proxy/unset',{method:'POST'}).then(function(r){return r.json()}).then(proxy_set_result)
+      .catch(function(e){showOutput('Error: '+e.message,true);});
+    return;
+  }
+  try{window.unset_proxy();}catch(e){showOutput('Error: '+e.message,true);}
+}
 function proxy_set_result(res){
   if(res.ok){showOutput('Proxy: '+res.state,false);refresh_proxy_status();}else showOutput('Proxy error: '+res.error,true);
 }
@@ -432,7 +479,13 @@ function proxy_status_result(res){
   else if(res.state&&res.state.indexOf('Disabled')>=0){el.textContent='Disabled';el.style.color='var(--danger)';dot.className='status-dot';sb.textContent='Proxy: OFF';}
   else{el.textContent=res.state||'Unknown';el.style.color='var(--on-surface3)';dot.className='status-dot';sb.textContent='Proxy: --';}
 }
-function refresh_proxy_status(){try{window.get_proxy_status();}catch(e){}}
+function refresh_proxy_status(){
+  if(is_http()){
+    fetch('/proxy/status').then(function(r){return r.json()}).then(proxy_status_result).catch(function(){});
+    return;
+  }
+  try{window.get_proxy_status();}catch(e){}
+}
 setTimeout(refresh_proxy_status,500);
 
 // Status bar time
