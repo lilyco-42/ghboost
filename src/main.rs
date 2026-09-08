@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use lilyco::prelude::*;
 
 use ghboost::deploy;
+#[cfg(feature = "webview")]
+use ghboost::dispatch;
 use ghboost::hosts;
 use ghboost::nodes;
 #[cfg(feature = "webview")]
@@ -394,122 +396,40 @@ fn launch_gui(_registry: Registry) {
     wv.run().expect("WebView 运行失败");
 }
 
-/// 根据命令名分发到对应的 core 函数（WebView GUI 专用）
+/// WebView GUI 专用：把事件推给当前 WebView（由 `webview::eval_global` 完成）
 #[cfg(feature = "webview")]
 fn execute_command(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    // 创建一个把事件推送到 WebView 的 sink
     let sink = |e: &Event| {
-        let js = match e {
-            Event::Started { total, message } => {
-                let t = total.unwrap_or(0);
-                let m = message.as_deref().unwrap_or("...");
-                format!(
-                    "push_log(\"info\",\"{}\")",
-                    escape_js(&format!("started ({t} total): {m}"))
-                )
-            }
-            Event::Tick {
-                current,
-                total,
-                message,
-            } => {
-                format!(
-                    "push_progress({},{},{})",
-                    current,
-                    total.unwrap_or(0),
-                    serde_json::json!(message)
-                )
-            }
-            Event::Log { level, message } => {
-                let lvl = match level {
-                    Level::Info => "info",
-                    Level::Warn => "warn",
-                    Level::Error => "error",
-                };
-                format!("push_log(\"{}\",{})", lvl, serde_json::json!(message))
-            }
-            Event::Done { output, elapsed_ms } => {
-                let json_str = serde_json::to_string(output).unwrap_or_default();
-                format!("push_done({},{})", serde_json::json!(json_str), elapsed_ms)
-            }
+        let v = dispatch::event_to_json(e);
+        let js = match v["type"].as_str().unwrap_or("") {
+            "started" => format!(
+                "push_log(\"info\",\"{}\")",
+                escape_js(&format!(
+                    "started ({} total): {}",
+                    v["total"].as_u64().unwrap_or(0),
+                    v["message"].as_str().unwrap_or("...")
+                ))
+            ),
+            "tick" => format!(
+                "push_progress({},{},{})",
+                v["current"],
+                v["total"],
+                serde_json::json!(v["message"])
+            ),
+            "log" => format!(
+                "push_log(\"{}\",{})",
+                v["level"].as_str().unwrap_or("info"),
+                serde_json::json!(v["message"])
+            ),
+            _ => format!(
+                "push_done({},{})",
+                serde_json::json!(v["result"]),
+                v["elapsed_ms"]
+            ),
         };
         let _ = webview::eval_global(&js);
     };
-
-    match cmd {
-        "boost" => {
-            let bp = hosts::BoostParams {
-                timeout_ms: args["timeout_ms"].as_u64().unwrap_or(3000),
-                concurrency: args["concurrency"].as_u64().unwrap_or(16),
-                top: args["top"].as_u64().unwrap_or(1),
-                extra_ip: None,
-                only: None,
-                apply: args["apply"].as_bool().unwrap_or(false),
-                clean: args["clean"].as_bool().unwrap_or(false),
-            };
-            run_blocking(hosts::boost_core(bp, &sink))
-        }
-        "scan" => {
-            let sp = nodes::ScanParams {
-                source: None,
-                include_repo: true,
-                max_sources: args["max_sources"].as_u64().unwrap_or(60),
-                concurrency: args["concurrency"].as_u64().unwrap_or(16),
-                per_limit: args["per_limit"].as_u64().unwrap_or(500),
-                output: PathBuf::from(args["output"].as_str().unwrap_or("nodes_data")),
-            };
-            run_blocking(nodes::scan_core(sp, &sink))
-        }
-        "test" => {
-            let tp = nodes::TestParams {
-                input: PathBuf::from(args["input"].as_str().unwrap_or("nodes_data")),
-                top: args["top"].as_u64().unwrap_or(300),
-                concurrency: args["concurrency"].as_u64().unwrap_or(32),
-                timeout_ms: args["timeout_ms"].as_u64().unwrap_or(8000),
-                test_url: args["test_url"]
-                    .as_str()
-                    .unwrap_or("https://www.gstatic.com/generate_204")
-                    .to_string(),
-                mihomo: None,
-            };
-            run_blocking(nodes::test_core(tp, &sink))
-        }
-        "add" => {
-            let ap = nodes::AddParams {
-                input: PathBuf::from(args["input"].as_str().unwrap_or("nodes_data")),
-                keep: args["keep"].as_u64().unwrap_or(20),
-                max_ms: args["max_ms"].as_u64().unwrap_or(0),
-                apply: args["apply"].as_bool().unwrap_or(false),
-                profile: None,
-            };
-            run_blocking(nodes::add_core(ap, &sink))
-        }
-        "deploy" => {
-            let protocol = match args["protocol"].as_str().unwrap_or("vless-reality") {
-                "vless-reality" => deploy::Protocol::VlessReality,
-                "vless-ws" => deploy::Protocol::VlessWs,
-                "trojan" => deploy::Protocol::Trojan,
-                "shadowsocks" => deploy::Protocol::Shadowsocks,
-                "hysteria2" => deploy::Protocol::Hysteria2,
-                _ => return Err("不支持的协议".to_string()),
-            };
-            let dp = deploy::DeployParams {
-                host: args["host"].as_str().unwrap_or("").to_string(),
-                port: args["port"].as_u64().unwrap_or(22) as u16,
-                user: args["user"].as_str().unwrap_or("root").to_string(),
-                password: args["password"].as_str().map(|s| s.to_string()),
-                key_path: args["key_path"].as_str().map(PathBuf::from),
-                protocol,
-                port_out: args["port_out"].as_u64().map(|p| p as u16),
-                domain: args["domain"].as_str().map(|s| s.to_string()),
-                install_bbr: args["install_bbr"].as_bool().unwrap_or(true),
-                configure_firewall: args["configure_firewall"].as_bool().unwrap_or(true),
-            };
-            run_blocking(deploy::deploy_core(dp))
-                .map(|r| serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
-        }
-        _ => Err(format!("unknown command: {cmd}")),
-    }
+    dispatch::execute_command_with_sink(cmd, args, &sink)
 }
 
 /// 转义字符串用于 JS 字面量（WebView GUI 专用）
@@ -560,17 +480,60 @@ fn main() {
         .register(RegisteredCommand::from_app::<Deploy>())
         .expect("注册 deploy 失败");
 
+    // 分发优先级：--mcp / --schema / --gui（原生 WebView）/ --web 或无参（Web 控制台）/ CLI
     if args.iter().any(|a| a == "--mcp") {
         lilyco::serve_mcp(registry);
+    } else if args.iter().any(|a| a == "--schema") {
+        let schemas: Vec<_> = registry.visible().map(|c| &c.schema).collect();
+        println!("{}", serde_json::to_string_pretty(&schemas).unwrap());
     } else if args.iter().any(|a| a == "--gui") {
+        // 原生 WebView GUI（Windows MSVC / macOS / Linux gtk）—— 零依赖，零网络，
+        // 但要求本机有 WebView2（Win）/ WKWebView（macOS）/ webkit2gtk（Linux）
         #[cfg(feature = "webview")]
         launch_gui(registry);
         #[cfg(not(feature = "webview"))]
         eprintln!("error: --gui requires the 'webview' feature (rebuild with --features webview)");
-    } else if args.iter().any(|a| a == "--schema") {
-        let schemas: Vec<_> = registry.visible().map(|c| &c.schema).collect();
-        println!("{}", serde_json::to_string_pretty(&schemas).unwrap());
+    } else if args.len() == 1 || args.iter().any(|a| a == "--web" || a == "--gui-web") {
+        // 跨平台 Web 控制台：axum 监听 127.0.0.1 + webbrowser 打开默认浏览器。
+        // 双击 exe（无参）也走这里——这是真正的"双击即用"主路径。
+        // 端口：LILYCO_PORT 环境变量可改（默认 8619），冲突则 +1 试到 8629。
+        #[cfg(not(target_arch = "wasm32"))]
+        run_web_console(registry);
+        #[cfg(target_arch = "wasm32")]
+        eprintln!(
+            "error: ghboost 的 web 控制台 wasm 不可用——在浏览器里加载本 crate 的 wasm 产物即可"
+        );
     } else {
         lilyco::run_cli_registry("ghboost", registry);
+    }
+}
+
+/// 跨平台 Web 控制台：axum 监听回环 + 自动打开默认浏览器。
+///
+/// 页面用仓库自带的 `src/gui.html`（零外部请求）—— 不用 lilyco-gui 的
+/// `GuiRenderer`，因为它的模板从公网 CDN 拉 layui.js，而所有事件绑定都在
+/// `layui.use(...)` 回调里；CDN 拉不到时 Run 按钮直接失效。
+///
+/// 端口 `LILYCO_PORT`（默认 8619），被占用则 +1 试到 +10。
+#[cfg(not(target_arch = "wasm32"))]
+fn run_web_console(_registry: Registry) {
+    let preferred: u16 = std::env::var("LILYCO_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8619);
+    let port = match ghboost::web::pick_port(preferred) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    if let Err(e) = rt.block_on(ghboost::web::serve(port)) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
     }
 }

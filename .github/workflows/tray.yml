@@ -1,0 +1,75 @@
+# Windows 桌面托盘端（ghboost-tray）的构建与打包。
+#
+# 为什么单独一个文件：
+#   这个 crate 只在 Windows 上编（tray-icon 在 Linux 要 gtk、macOS 要 objc），
+#   放进 build-all.yml 会污染那份已经全绿的矩阵。仓库根 Cargo.toml 没有
+#   [workspace] 段，所以它本来也不参与根构建 —— 这里只是把显式编它的动作
+#   隔离出来，任何失败都不会波及主 CI。
+#
+# 为什么必须自动化：
+#   代码签名走 SignPath Foundation（给开源项目的免费 OV 级证书），它的硬性
+#   前提就是「构建过程全自动化、产物可追溯到仓库源码」，人工在本地编完再上传
+#   的不给签。所以这份 workflow 不是锦上添花，是拿到签名的前置条件。
+name: tray
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: ghboost-tray (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ghboost-tray
+
+      - name: Build
+        working-directory: ghboost-tray
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $Exe = "ghboost-tray/target/release/ghboost-tray.exe"
+          if (-not (Test-Path $Exe)) { throw "build output missing: $Exe" }
+          Copy-Item $Exe dist/
+          Copy-Item ghboost-tray/tools/install.ps1 dist/
+          Copy-Item ghboost-tray/tools/uninstall.ps1 dist/
+          Copy-Item ghboost-tray/tools/install.bat dist/
+          Copy-Item ghboost-tray/tools/uninstall.bat dist/
+          Copy-Item ghboost-tray/README.md dist/
+          Copy-Item ghboost-tray/THIRD-PARTY-NOTICES.md dist/
+          (Get-FileHash dist/ghboost-tray.exe -Algorithm SHA256).Hash |
+            Out-File -Encoding ascii dist/SHA256SUMS.txt
+          Get-Content dist/SHA256SUMS.txt
+          Compress-Archive -Path dist/* -DestinationPath ghboost-tray-windows-x64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghboost-tray-windows-x64
+          path: ghboost-tray-windows-x64.zip
+
+      # 打 tag 时挂到 Release 上，作为对外下载地址。
+      # 注意：此时 exe 还是未签名的，首次下载会遇到 SmartScreen 警告 ——
+      # 这是所有新发布者的必经阶段（见 ghboost-tray/README.md 的签名章节）。
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ghboost-tray-windows-x64.zip

@@ -3,4 +3,10 @@
 /mihomo_bin/
 /mihomo.zip
 *.ps1
+# 例外：托盘端安装脚本是要随发行包交付的，必须入库
+!ghboost-tray/tools/*.ps1
+/ghboost-tray/target/
 nodes_data/
+
+# Android: Rust .so 由 CI 构建后注入 jniLibs/，不进仓库
+ghboost-android/app/src/main/jniLibs/

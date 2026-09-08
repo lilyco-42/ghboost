@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ghboost · 一键加速</title>
+<style>
+/* 全部内联：本机控制台绝不能依赖公网 CDN —— 目标用户正是外网连通性差的人，
+   layui/jquery 拉不到 = 事件绑定不执行 = 按钮"点了没反应"（已在 gui.html 踩过）。 */
+:root{
+  --bg:#16181c; --card:#1e2126; --card2:#252930; --line:#31363d;
+  --fg:#e6e8ea; --fg2:#9aa3ad; --fg3:#6b7480;
+  --green:#3fb950; --yellow:#d29922; --red:#f85149; --blue:#58a6ff; --gray:#8b949e;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:#f4f6f8; --card:#ffffff; --card2:#f0f2f5; --line:#dfe3e8;
+    --fg:#1c2024; --fg2:#5a636d; --fg3:#8b949e;
+    --green:#1a7f37; --yellow:#9a6700; --red:#cf222e; --blue:#0969da; --gray:#6b7480;
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--fg);
+  font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  display:flex;justify-content:center;padding:32px 16px 48px;min-height:100vh;
+}
+.wrap{width:100%;max-width:520px}
+
+/* ── 顶部 ── */
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+.brand{font-size:17px;font-weight:600;letter-spacing:.2px}
+.brand small{display:block;font-size:11px;color:var(--fg3);font-weight:400;letter-spacing:0}
+.pill{
+  font-size:11px;padding:4px 11px;border-radius:20px;
+  border:1px solid var(--line);color:var(--fg2);background:var(--card2);white-space:nowrap;
+}
+
+/* ── 主卡片：状态灯 + 大按钮 ── */
+.hero{
+  background:var(--card);border:1px solid var(--line);border-radius:16px;
+  padding:30px 24px 26px;text-align:center;
+}
+.lamp{
+  width:96px;height:96px;border-radius:50%;margin:0 auto 18px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--gray);transition:background .35s ease, box-shadow .35s ease;
+  box-shadow:0 0 0 12px color-mix(in srgb, var(--gray) 14%, transparent);
+}
+.lamp.g{background:var(--green);box-shadow:0 0 0 12px color-mix(in srgb, var(--green) 14%, transparent)}
+.lamp.y{background:var(--yellow);box-shadow:0 0 0 12px color-mix(in srgb, var(--yellow) 14%, transparent)}
+.lamp.r{background:var(--red);box-shadow:0 0 0 12px color-mix(in srgb, var(--red) 14%, transparent)}
+.lamp.pulsing{animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.state{font-size:20px;font-weight:600;margin-bottom:6px}
+.sub{font-size:12.5px;color:var(--fg2);min-height:20px;margin-bottom:22px;word-break:break-word}
+
+.btn-main{
+  width:100%;padding:15px;border:0;border-radius:11px;cursor:pointer;
+  background:var(--green);color:#fff;font-size:16px;font-weight:600;
+  font-family:inherit;transition:filter .15s;
+}
+.btn-main:hover{filter:brightness(1.12)}
+.btn-main:active{filter:brightness(.92)}
+.btn-main:disabled{background:var(--card2);color:var(--fg3);cursor:not-allowed;filter:none}
+.btn-main.stop{background:var(--red)}
+.row{display:flex;gap:10px;margin-top:10px}
+.btn-sub{
+  flex:1;padding:10px;border:1px solid var(--line);border-radius:9px;cursor:pointer;
+  background:var(--card2);color:var(--fg2);font-size:13px;font-family:inherit;transition:all .15s;
+}
+.btn-sub:hover{border-color:var(--fg3);color:var(--fg)}
+
+/* ── 站点检测 ── */
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:18px 20px;margin-top:16px;
+}
+.card-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.card-t{font-size:13px;font-weight:600}
+.card-t span{font-weight:400;color:var(--fg3);font-size:11px;margin-left:6px}
+.link{background:none;border:0;color:var(--blue);font-size:12px;cursor:pointer;font-family:inherit}
+.link:disabled{color:var(--fg3);cursor:default}
+.site{
+  display:flex;align-items:center;gap:11px;padding:10px 0;
+  border-top:1px solid var(--line);
+}
+.site:first-of-type{border-top:0}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--gray);flex:none}
+.dot.g{background:var(--green)} .dot.y{background:var(--yellow)} .dot.r{background:var(--red)}
+.site-n{flex:1;font-size:13.5px}
+.site-ip{font-size:10.5px;color:var(--fg3);font-family:ui-monospace,Consolas,monospace}
+.site-v{font-size:12px;color:var(--fg2);font-variant-numeric:tabular-nums}
+.site-v.g{color:var(--green)} .site-v.r{color:var(--red)} .site-v.y{color:var(--yellow)}
+
+/* ── 提示条 ── */
+.note{
+  display:none;align-items:center;gap:10px;margin-top:16px;padding:13px 15px;
+  border-radius:11px;background:color-mix(in srgb, var(--yellow) 12%, transparent);
+  border:1px solid color-mix(in srgb, var(--yellow) 34%, transparent);
+  font-size:12.5px;color:var(--fg);
+}
+.note.show{display:flex}
+.note .grow{flex:1;line-height:1.5}
+.note button{
+  flex:none;padding:7px 13px;border:0;border-radius:8px;cursor:pointer;
+  background:var(--yellow);color:#16181c;font-size:12px;font-weight:600;font-family:inherit;
+}
+/* ── 代理卡片 ── */
+.seg{display:flex;gap:4px;background:var(--card2);border-radius:9px;padding:3px;margin-bottom:14px}
+.seg-b{
+  flex:1;padding:7px;border:0;border-radius:7px;cursor:pointer;background:transparent;
+  color:var(--fg2);font-size:12.5px;font-family:inherit;transition:all .15s;
+}
+.seg-b.on{background:var(--card);color:var(--fg);font-weight:600;
+  box-shadow:0 1px 3px color-mix(in srgb, #000 25%, transparent)}
+.form-row{display:flex;gap:10px}
+.form-group{flex:1}
+.form-label{display:block;font-size:11px;color:var(--fg3);margin-bottom:4px}
+.form-input{
+  width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg);color:var(--fg);font-size:13px;font-family:inherit;
+}
+.form-input:focus{outline:none;border-color:var(--blue)}
+.hint{font-size:11.5px;color:var(--fg3);line-height:1.6;margin-top:6px}
+
+.log{
+  margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:14px 16px;font:11.5px/1.75 ui-monospace,Consolas,monospace;
+  color:var(--fg2);max-height:190px;overflow:auto;white-space:pre-wrap;word-break:break-all;
+}
+.log:empty{display:none}
+.foot{margin-top:18px;text-align:center;font-size:11px;color:var(--fg3);line-height:1.8}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="brand">ghboost<small>访问加速 · 一键搞定</small></div>
+    <div class="pill" id="pill">检测中…</div>
+  </div>
+
+  <div class="hero">
+    <div class="lamp" id="lamp"></div>
+    <div class="state" id="state">待机</div>
+    <div class="sub" id="sub">点下面的按钮开始</div>
+    <button class="btn-main" id="btnMain">一键加速</button>
+    <div class="row">
+      <button class="btn-sub" id="btnCheck">重新检测</button>
+      <button class="btn-sub" id="btnClean">还原 hosts</button>
+      <button class="btn-sub" id="btnQuit">退出程序</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">
+      <div class="card-t">站点连通性 <span>加速后应该更快</span></div>
+      <button class="link" id="btnCheck2">检测</button>
+    </div>
+    <div class="site"><div class="dot" id="d0"></div><div class="site-n">Google<div class="site-ip" id="i0"></div></div><div class="site-v" id="v0">未检测</div></div>
+    <div class="site"><div class="dot" id="d1"></div><div class="site-n">YouTube<div class="site-ip" id="i1"></div></div><div class="site-v" id="v1">未检测</div></div>
+    <div class="site"><div class="dot" id="d2"></div><div class="site-n">GitHub<div class="site-ip" id="i2"></div></div><div class="site-v" id="v2">未检测</div></div>
+  </div>
+
+  <div class="card" id="cardProxy">
+    <div class="card-h">
+      <div class="card-t">代理 <span>有节点就用这个</span></div>
+      <div class="pill" id="pxPill">未启用</div>
+    </div>
+
+    <!-- A. 已经在跑 Clash Verge / v2rayN 的人：只差一个系统代理开关 -->
+    <div class="seg" id="segMode">
+      <button class="seg-b on" data-m="port">用现成代理</button>
+      <button class="seg-b" data-m="sub">导入订阅</button>
+    </div>
+
+    <div id="panePort">
+      <div class="form-row">
+        <div class="form-group"><span class="form-label">HTTP 連接埠</span>
+          <input class="form-input" type="number" id="pxHttp" value="7890" min="1" max="65535"></div>
+        <div class="form-group"><span class="form-label">SOCKS5 連接埠</span>
+          <input class="form-input" type="number" id="pxSocks" value="7891" min="1" max="65535"></div>
+      </div>
+      <div class="hint">已有 Clash Verge / v2rayN 在跑的话，端口通常就是 7890 / 7891，直接点开启即可。</div>
+    </div>
+
+    <div id="paneSub" style="display:none">
+      <div class="form-group"><span class="form-label">訂閱連結</span>
+        <input class="form-input" type="text" id="pxUrl" placeholder="https://...（vless / vmess / ss / trojan 都行）"></div>
+      <div class="hint">节点解析交给内置内核，协议不用选；台湾本地站点与区网会自动直连。</div>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <button class="btn-sub" id="btnPxOn" style="flex:2">開啟代理</button>
+      <button class="btn-sub" id="btnPxOff">關閉</button>
+    </div>
+    <div class="hint" id="pxMsg" style="margin-top:8px"></div>
+  </div>
+
+  <div class="note" id="note">
+    <div class="grow" id="noteTxt"></div>
+    <button id="btnElevate">以管理员身份重启</button>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <div class="foot">
+    只改本机 hosts，不上传任何数据<br>
+    出问题点「还原 hosts」即可恢复到系统原状
+  </div>
+</div>
+
+<script>
+var running=false, accelerated=false, el=function(id){return document.getElementById(id)};
+
+/* 公开版要加速的域名（由 Rust 端注入，见 main.rs 的 PUBLIC_DOMAINS） */
+var ONLY="__ONLY__";
+
+/* 统一 origin：localhost 与 127.0.0.1 在浏览器眼里是两个源，
+   页面若从 localhost 打开，POST 会被预检拦掉（表现：能检测、不能加速）。
+   这里直接跳回 127.0.0.1，从根上消除歧义。 */
+if(location.hostname==='localhost'||location.hostname==='[::1]'||location.hostname==='::1'){
+  location.replace('http://127.0.0.1:'+location.port+location.pathname);
+}
+
+/* fetch 包装：失败时把 origin 和 URL 一起报出来，
+   否则前端只有一句 "Failed to fetch"，等于没有错误信息。 */
+function jfetch(url,opt){
+  return fetch(url,opt).catch(function(e){
+    throw new Error('请求失败 '+location.origin+url+' → '+(e&&e.message?e.message:e));
+  });
+}
+
+function log(s){var L=el('log');L.textContent+=(L.textContent?'\n':'')+s;L.scrollTop=L.scrollHeight;}
+
+/* ── 状态灯 ── */
+function setLamp(kind,txt,sub,pulse){
+  var l=el('lamp');
+  l.className='lamp'+(kind?' '+kind:'')+(pulse?' pulsing':'');
+  el('state').textContent=txt;
+  el('sub').textContent=sub||'';
+}
+function setPill(txt){el('pill').textContent=txt;}
+
+/* ── 与 Rust 通信：HTTP 优先，WebView 兜底 ── */
+function is_http(){return window.__GH_HTTP__===1;}
+
+function run(cmd,args){
+  if(running)return;
+  running=true;
+  el('btnMain').disabled=true;
+  if(cmd==='boost'){
+    setLamp('y','正在测速选优…','正在为 GitHub / Google 挑选最快的 IP，约 10~30 秒',true);
+  }else{
+    setLamp('y','正在还原…','',true);
+  }
+  setPill('处理中');
+  try{
+    if(is_http())httpRun(cmd,args);
+    else window.run_command(JSON.stringify({cmd:cmd,args:args}));
+  }catch(e){finishErr(e.message||String(e));}
+}
+
+function httpRun(cmd,args){
+  jfetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd:cmd,args:args})})
+  .then(function(r){if(!r.ok)return r.text().then(function(t){throw new Error(t||('HTTP '+r.status))});return r.json()})
+  .then(function(j){
+    var es=new EventSource('/progress/'+j.session_id);
+    es.onmessage=function(ev){
+      var p=JSON.parse(ev.data);
+      if(p.type==='log')log((p.level==='error'?'[ERROR] ':'')+p.message);
+      else if(p.type==='tick'&&p.total)log('['+p.current+'/'+p.total+'] '+(p.message||''));
+      if(p.type==='done'){es.close();finishOk(p.result);}
+      else if(p.type==='error'){es.close();finishErr(p.message);}
+    };
+    es.onerror=function(){es.close();};
+  })
+  .catch(function(e){finishErr(e.message);});
+}
+
+function finishOk(result){
+  running=false;el('btnMain').disabled=false;
+  var txt=(typeof result==='string'?result:JSON.stringify(result));
+  log('完成：'+txt);
+  if(el('btnMain').dataset.mode==='clean'){
+    accelerated=false;el('btnMain').dataset.mode='boost';
+    el('btnMain').textContent='一键加速';el('btnMain').className='btn-main';
+    setLamp('','待机','hosts 已还原');setPill('未加速');
+  }else{
+    accelerated=true;el('btnMain').dataset.mode='stop';
+    el('btnMain').textContent='停止加速';el('btnMain').className='btn-main stop';
+    setLamp('g','已加速','GitHub / Google 走最优 IP 了');setPill('已加速');
+  }
+  setTimeout(check,600);
+}
+
+function finishErr(msg){
+  running=false;el('btnMain').disabled=false;
+  log('ERROR: '+msg);
+  var needAdmin=/拒绝访问|denied|permission|Permission|EAccess|read-only/i.test(msg);
+  setLamp('r',needAdmin?'权限不足':'失败',msg,false);
+  setPill('失败');
+  if(needAdmin)showNote('写入 hosts 需要管理员权限。点右边按钮，Windows 会问一次“是否允许”，选“是”即可。');
+}
+
+/* ── 站点检测 ── */
+function check(){
+  var b=[el('btnCheck'),el('btnCheck2')];
+  b.forEach(function(x){x.disabled=true});
+  [0,1,2].forEach(function(i){
+    el('d'+i).className='dot';el('v'+i).className='site-v';el('v'+i).textContent='检测中…';
+  });
+  fetch('/api/check').then(function(r){return r.json()}).then(function(j){
+    (j.sites||[]).forEach(function(s,i){
+      if(i>2)return;
+      var ok=s.ok, ms=s.ms;
+      var grade = !ok ? 'r' : (ms>1200?'y':'g');
+      el('d'+i).className='dot '+grade;
+      el('v'+i).className='site-v '+grade;
+      el('v'+i).textContent = ok ? (ms+'ms') : '不可达';
+      el('i'+i).textContent = s.ip ? s.ip : (s.error||'');
+    });
+  }).catch(function(e){
+    [0,1,2].forEach(function(i){el('v'+i).textContent='检测失败'});
+  }).then(function(){b.forEach(function(x){x.disabled=false})});
+}
+
+/* ── 权限提示 ── */
+function showNote(t){el('noteTxt').textContent=t;el('note').classList.add('show');}
+
+/* ── 事件绑定 ── */
+function boostArgs(apply){
+  return {apply:apply,clean:true,timeout_ms:3000,concurrency:16,top:1,only:ONLY};
+}
+
+el('btnMain').onclick=function(){
+  var m=el('btnMain').dataset.mode||'boost';
+  if(m==='elevate'){
+    /* 没有管理员权限时写不进 hosts —— 与其点完必失败，不如第一步就提权。 */
+    el('btnMain').disabled=true;el('btnMain').textContent='等待系统授权…';
+    setLamp('y','正在申请权限…','Windows 会弹出“是否允许此应用更改设备”，选“是”');
+    jfetch('/api/elevate',{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+      if(!j.ok){setLamp('r','提权失败',j.error||'未知错误');el('btnMain').disabled=false;
+        el('btnMain').textContent='以管理员身份启用加速';}
+    }).catch(function(e){
+      setLamp('r','提权失败',e.message);el('btnMain').disabled=false;
+      el('btnMain').textContent='以管理员身份启用加速';
+    });
+    return;
+  }
+  if(m==='stop'){run('boost',boostArgs(false));}
+  else{run('boost',boostArgs(true));}
+};
+el('btnClean').onclick=function(){run('boost',{apply:false,clean:true,timeout_ms:1000,concurrency:16,top:1,only:ONLY});};
+el('btnCheck').onclick=check;
+el('btnCheck2').onclick=check;
+el('btnQuit').onclick=function(){
+  el('btnQuit').disabled=true;el('btnQuit').textContent='正在退出…';
+  fetch('/api/quit',{method:'POST'}).catch(function(){});
+};
+
+/* ── 代理设置 ── */
+var pxMode='port';
+[].forEach.call(document.querySelectorAll('#segMode .seg-b'),function(b){
+  b.onclick=function(){
+    pxMode=b.dataset.m;
+    [].forEach.call(document.querySelectorAll('#segMode .seg-b'),function(x){x.classList.remove('on')});
+    b.classList.add('on');
+    el('panePort').style.display = pxMode==='port'?'':'none';
+    el('paneSub').style.display  = pxMode==='sub' ?'':'none';
+  };
+});
+
+function pxMsg(t,err){
+  var m=el('pxMsg');m.textContent=t||'';
+  m.style.color = err ? 'var(--red)' : (t ? 'var(--green)' : 'var(--fg3)');
+}
+
+function pxState(){
+  jfetch('/api/proxy/state').then(function(r){return r.json()}).then(function(j){
+    var on = /Enabled/.test(j.system||'');
+    el('pxPill').textContent = on ? '已启用' : '未启用';
+    el('pxPill').style.color = on ? 'var(--green)' : 'var(--fg2)';
+    el('pxPill').style.borderColor = on ? 'var(--green)' : 'var(--line)';
+  }).catch(function(){});
+}
+
+el('btnPxOn').onclick=function(){
+  var b=el('btnPxOn');b.disabled=true;pxMsg('处理中…');
+  var p = pxMode==='sub'
+    ? jfetch('/api/proxy/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({url:el('pxUrl').value.trim(),mixed_port:+el('pxHttp').value||7890})})
+    : jfetch('/proxy/set',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({host:'127.0.0.1',port:+el('pxHttp').value||7890,
+          socks_port:+el('pxSocks').value||null,bypass:'localhost,127.0.0.1,::1,<local>'})});
+  p.then(function(r){return r.json()}).then(function(j){
+    if(j.ok===false){
+      pxMsg(j.error||'失败',true);
+      if(/内核|mihomo|Mihomo|找不到/.test(j.error||'')){
+        pxMsg('需要内置内核：请安装完整版，或改用「用现成代理」填 Clash Verge 的端口',true);
+      }
+    }else{
+      if(j.proxy_ok===false){
+        pxMsg('内核已启动，但改不动系统代理：'+j.system_proxy+'（可手动在系统设置里填 127.0.0.1:'+(j.mixed_port||'')+'）',true);
+      }else{
+        pxMsg('代理已开启（端口 '+(j.mixed_port||'')+'）');
+      }
+      log('代理开启：'+JSON.stringify(j));
+    }
+    b.disabled=false;pxState();setTimeout(check,800);
+  }).catch(function(e){pxMsg(e.message,true);b.disabled=false;});
+};
+
+el('btnPxOff').onclick=function(){
+  var b=el('btnPxOff');b.disabled=true;pxMsg('处理中…');
+  jfetch('/api/proxy/stop',{method:'POST'}).then(function(r){return r.json()})
+  .then(function(j){
+    if(j.ok===false)pxMsg(j.error||'失败',true);else{pxMsg('代理已关闭');log('代理关闭');}
+    b.disabled=false;pxState();
+  }).catch(function(e){pxMsg(e.message,true);b.disabled=false;});
+};
+
+/* ── 启动 ── */
+jfetch('/api/info').then(function(r){return r.json()}).then(function(j){
+  if(!j.admin){
+    /* 关键：不要让用户点一个注定失败的大按钮。
+       第一步就引导提权，提完权回来这个按钮就是真正的一键加速。 */
+    el('btnMain').dataset.mode='elevate';
+    el('btnMain').textContent='以管理员身份启用加速';
+    el('state').textContent='需要授权';
+    el('sub').textContent='改 hosts 需要管理员权限，点下面的按钮，Windows 会问一次“是否允许”，选“是”';
+    showNote('当前不是管理员：能测速、能看结果，但写不进 hosts。点「以管理员身份重启」或上面的大按钮都行。');
+  }
+}).catch(function(){});
+el('btnMain').dataset.mode='boost';
+check();
+pxState();
+</script>
+</body>
+</html>

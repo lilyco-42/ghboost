@@ -513,7 +513,23 @@ fn render_hosts(rows: &[Row]) -> String {
     s
 }
 
-fn hosts_path() -> PathBuf {
+/// 当前进程是否有写 hosts 的权限。
+///
+/// Windows 下「属于 Administrators 组」不等于「已提权」——UAC 会把令牌拆成
+/// 两份，未提权进程拿的是被过滤掉管理员 SID 的那份。所以不能只看组成员资格。
+/// 这里直接用**能否以追加方式打开 hosts 文件**来判定：这与"待会儿真的写"
+/// 是同一个条件，不会出现"检测说有权限、写入却失败"的鬼故事。
+///
+/// 副作用：某些杀软会独占锁定 hosts，此时会误报无权限。但那种情况下写入本来
+/// 也会失败，所以误报无害。
+pub fn is_admin() -> bool {
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(hosts_path())
+        .is_ok()
+}
+
+pub fn hosts_path() -> PathBuf {
     if cfg!(windows) {
         PathBuf::from(r"C:\Windows\System32\drivers\etc\hosts")
     } else {

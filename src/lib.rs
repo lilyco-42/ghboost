@@ -19,12 +19,16 @@
 // 所以在 wasm 目标上整模块裁掉（这也要求 wasm 只编 lib，见 CI 里的 --lib）。
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deploy;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dispatch;
 pub mod hosts;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mihomo;
 pub mod nodes;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod proxy;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod web;
 #[cfg(feature = "webview")]
 pub mod webview;
 

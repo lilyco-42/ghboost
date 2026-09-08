@@ -42,9 +42,9 @@ class MainActivity : AppCompatActivity() {
         // Initialize native core
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                GhBoostCore.Init()
-                GhBoostCore.SetHomeDir(filesDir.absolutePath)
-                val version = GhBoostCore.Version()
+                GhBoostCore.nativeInit()
+                GhBoostCore.nativeSetHomeDir(filesDir.absolutePath)
+                val version = GhBoostCore.nativeVersion()
                 withContext(Dispatchers.Main) {
                     tvVersion.text = "ghboost v$version"
                     tvStatus.text = "Ready"
@@ -68,7 +68,8 @@ class MainActivity : AppCompatActivity() {
         btnScan.isEnabled = false
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val json = GhBoostCore.Scan()
+                // nativeScan 需要一个 JSON 参数串；"{}" = 全部走默认参数
+                val json = GhBoostCore.nativeScan("{}")
                 withContext(Dispatchers.Main) {
                     tvNodes.text = json
                     tvStatus.text = "Scan complete"

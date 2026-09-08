@@ -14,6 +14,7 @@ GitHub 访问加速 + 免费节点扫描/测速/注入 + 一键部署服务器�
 - **节点注入**：自动将最优节点注入 Clash Verge 配置
 - **一键部署**：SSH 远程部署代理服务器（VLESS-Reality / VLESS-WS / Trojan / Shadowsocks / Hysteria2）
 - **跨平台**：支持 Windows/macOS/Linux/Android/iOS
+- **桌面托盘版**：Windows 一键加速 —— 托盘状态灯 + 一个大按钮，不用碰命令行（见 [`ghboost-tray/`](ghboost-tray/)）
 
 ## 安装
 
@@ -34,6 +35,22 @@ cd ghboost
 # 编译
 cargo build --release
 ```
+
+## 桌面托盘版（Windows，不含在上述 CI 内）
+
+[`ghboost-tray/`](ghboost-tray/) 是给不懂命令行的人用的外壳：托盘常驻、状态灯、
+一个大按钮，面板用系统默认浏览器打开，不内嵌 WebView。
+它是仓库里的**独立 crate**（根 `Cargo.toml` 无 `[workspace]` 段，根 CI 不会编它，
+因此不会影响 Linux/macOS 构建）。
+
+```bash
+cd ghboost-tray
+cargo build --release
+# 安装（桌面快捷方式 + 开机自启 + 可选下载 mihomo 内核）
+powershell -ExecutionPolicy Bypass -File tools/install.ps1 -WithKernel
+```
+
+详细设计与踩坑记录见 [`ghboost-tray/README.md`](ghboost-tray/README.md)。
 
 ## 使用方法
 
