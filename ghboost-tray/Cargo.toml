@@ -1,0 +1,27 @@
+[package]
+name = "ghboost-tray"
+version = "0.1.0"
+edition = "2021"
+description = "ghboost 桌面托盘原型 —— 最小化验证：托盘状态灯 + 一键加速（无 WebView 依赖）"
+
+# 注意：ghboost 的 package 名是 lilyco-ghboost，但 [lib] name 是 ghboost。
+# 依赖键即 extern crate 名，用 package= 指向真实包名。
+[dependencies]
+ghboost = { path = "..", package = "lilyco-ghboost" }
+tray-icon = "0.24"
+serde_json = "1"
+# 跨平台开浏览器：Windows ShellExecute / macOS open / Linux xdg-open / WSL wslview
+# （ghboost 内部已用它，这里只是想在"控制台已启动"时再开一次窗口）
+webbrowser = "1"
+
+# Windows 消息泵：托盘能响应点击的**硬前提**（见 src/main.rs 的 win 模块注释）。
+# 版本与 tray-icon/muda 用的是同一个，避免重复编译一份。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[[bin]]
+name = "ghboost-tray"
+path = "src/main.rs"
