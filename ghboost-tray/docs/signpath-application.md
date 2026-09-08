@@ -26,9 +26,10 @@
 
 1. **所有维护者开 MFA**：GitHub 账号 + SignPath 账号都要
 2. **明确 Authors / Reviewers 角色分工**：外部贡献的 PR 必须经 Reviewer 审阅。
-   建议在 main 的分支保护上补：
-   - Require a pull request before merging
-   - Required approvals: 1
+   把分工写进 `CONTRIBUTING.md` 即可 —— **不要在单人仓库开
+   "Required approvals: 1"**：GitHub 要求审批人是**另一个人**，
+   开了之后你自己的 PR 也合不了，项目直接死锁。
+   SignPath 要的是「有这个约定」，不是强制审批开关。
 3. **已有 release**：✅ v0.3.0 已发布，含 `ghboost-tray-windows-x64.zip`
 4. **下载页写明功能**：✅ 仓库 README + Release 说明
 5. **提供卸载方式**：✅ `tools/uninstall.ps1` + `uninstall.bat`
