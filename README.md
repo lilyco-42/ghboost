@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="docs/banner.svg" width="720" alt="banner">
+</div>
+
 # ghboost
 
 GitHub 访问加速 + 免费节点扫描/测速/注入 + 一键部署服务器工具

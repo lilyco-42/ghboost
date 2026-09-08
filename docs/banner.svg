@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200" font-family="system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1522"/><stop offset="1" stop-color="#0c2d48"/>
+    </linearGradient>
+    <linearGradient id="ac" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="200" fill="url(#bg)"/>
+  <circle cx="540" cy="30" r="80" fill="#38bdf8" opacity="0.08"/>
+  <text x="552" y="164" font-size="84" font-weight="700" fill="#38bdf8" opacity="0.30" text-anchor="end" font-family="Consolas,monospace">↓</text>
+  <rect x="0" y="0" width="6" height="200" fill="url(#ac)"/>
+  <rect x="36" y="46" height="34" rx="17" width="130" fill="#38bdf8" opacity="0.14" stroke="#38bdf8"/>
+  <text x="101" y="69" font-size="15" fill="#22d3ee" text-anchor="middle">Rust · ★2</text>
+  <text x="36" y="126" font-size="42" font-weight="700" fill="#f8fafc">ghboost</text>
+  <text x="36" y="158" font-size="17" fill="#22d3ee">GitHub 加速 · 免费节点扫描 / 测速 / 一键注入 Clash</text>
+</svg>
