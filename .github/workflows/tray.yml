@@ -40,6 +40,33 @@ jobs:
         working-directory: ghboost-tray
         run: cargo build --release --locked
 
+      # 内核随包分发，装完即可用。
+      # 理由不是"方便"，而是"否则这个功能是坏的"：我们的目标用户恰恰是
+      # GitHub 访问不畅的人，让他们装完再去 GitHub 下载内核是自相矛盾。
+      # mihomo 是 GPL-3.0，随二进制一起带上它的许可证文本。
+      - name: Stage mihomo kernel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $ProgressPreference = "SilentlyContinue"
+          $K = "dist/kernel"
+          New-Item -ItemType Directory -Force -Path "$K/bin" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$K/mihomo" | Out-Null
+          $Zip = Join-Path $env:TEMP "mihomo.zip"
+          Invoke-WebRequest -Uri "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-windows-amd64-compatible-v1.19.30.zip" -OutFile $Zip -UseBasicParsing
+          Expand-Archive -Path $Zip -DestinationPath "$K/bin" -Force
+          Remove-Item $Zip -Force
+          foreach ($f in @("country.mmdb", "geosite.dat")) {
+            Invoke-WebRequest -Uri "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/$f" -OutFile "$K/mihomo/$f" -UseBasicParsing
+          }
+          try {
+            Invoke-WebRequest -Uri "https://www.gnu.org/licenses/gpl-3.0.txt" -OutFile "$K/mihomo-LICENSE.txt" -UseBasicParsing
+          } catch {
+            Write-Host "WARN: could not fetch the GPL text (non-fatal)"
+          }
+          Get-ChildItem $K -Recurse -File | Select-Object FullName, Length | Format-Table
+
       - name: Package
         shell: pwsh
         run: |
@@ -54,8 +81,12 @@ jobs:
           Copy-Item ghboost-tray/tools/uninstall.bat dist/
           Copy-Item ghboost-tray/README.md dist/
           Copy-Item ghboost-tray/THIRD-PARTY-NOTICES.md dist/
-          (Get-FileHash dist/ghboost-tray.exe -Algorithm SHA256).Hash |
-            Out-File -Encoding ascii dist/SHA256SUMS.txt
+          # 校验和覆盖包内所有文件（含内核），方便用户验签
+          $Root = (Resolve-Path dist).Path
+          (Get-ChildItem dist -Recurse -File | ForEach-Object {
+            $rel = $_.FullName.Substring($Root.Length + 1)
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash, $rel
+          }) | Out-File -Encoding ascii dist/SHA256SUMS.txt
           Get-Content dist/SHA256SUMS.txt
           Compress-Archive -Path dist/* -DestinationPath ghboost-tray-windows-x64.zip
 
