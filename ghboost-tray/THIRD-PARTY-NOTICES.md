@@ -33,10 +33,14 @@
   https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-windows-amd64-compatible-v1.19.30.zip
   ```
 
-  安装脚本只在你显式传入 `-WithKernel` 时才下载，默认不下载、不内置。
+  发行包（`ghboost-tray-windows-x64.zip`）里**随包内置**该二进制，位于
+  `kernel\bin\mihomo.exe`，安装时直接复制、不联网 —— 因为本产品的目标用户
+  恰恰是访问 GitHub 不畅的人，要求他们装完再联网下载等于功能不可用。
+  从源码构建时若包内没有 `kernel\`，才需要显式传 `-WithKernel` 触发下载。
 - 依据 GPL-3.0 第 6 条，mihomo 的完整对应源码可从上述项目地址获取；
   若你从本项目的 Release 中获得了 mihomo 二进制，可直接到
   <https://github.com/MetaCubeX/mihomo> 取得同样版本的源码。
+  发行包内同时附带了 GPL-3.0 全文（`kernel\mihomo-LICENSE.txt`）。
 
 ### 规则数据库
 
