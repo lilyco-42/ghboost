@@ -26,3 +26,8 @@ windows-sys = { version = "0.61", features = [
 [[bin]]
 name = "ghboost-tray"
 path = "src/main.rs"
+
+# 用户的下载体积：CI 不 strip 的时候二进制 6.89 MB，strip 后 ~4 MB。
+# 调试符号在生产中没用，去掉是纯粹的好事。
+[profile.release]
+strip = true
