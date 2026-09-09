@@ -119,6 +119,13 @@ h2+.lead{color:var(--fg2);margin:0 0 32px;font-size:16px}
 .price ul{list-style:none;padding:0;margin:18px 0 22px}
 .price li{padding:6px 0 6px 24px;position:relative;font-size:15px;color:var(--fg2)}
 .price li::before{content:"✓";position:absolute;left:0;color:var(--ok);font-weight:800}
+.plans{list-style:none;padding:0;margin:16px 0 18px;border-top:1px solid var(--line)}
+.plans li{padding:10px 2px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14.5px;color:var(--fg2)}
+.plans li::before{content:none}
+.plans b{color:var(--fg);font-weight:700;min-width:52px}
+.plans .p-cap{flex:1}
+.plans .p-amt{font-weight:800;color:var(--fg);font-size:15px}
+.pnote{margin:12px 0 0;font-size:13px;color:var(--fg2);line-height:1.65}
 .tag{
   display:inline-block;background:var(--soft);color:var(--brand);font-size:12px;
   font-weight:700;padding:3px 10px;border-radius:999px;margin-bottom:8px;
@@ -211,7 +218,7 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
       <li><b>打開面板</b>
         <span>它會自動跑一次三個站點偵測，綠燈就是通、黃燈是慢、紅燈是不通。你什麼都不用按。</span></li>
       <li><b>貼上訂閱網址，或選「用現成代理」</b>
-        <span>已經在用 Clash Verge 的話，填它的埠號就能直接接手，不用搬家。</span></li>
+        <span>還沒有節點的話，<a href="https://lain42.top/panel/redeem">這裡買一組</a>，兌換後會直接給你訂閱網址。已經在用 Clash Verge 的話，填它的埠號就能直接接手，不用搬家。</span></li>
       <li><b>按下「一鍵加速」</b>
         <span>第一次會問一次管理員權限（改 hosts 需要）。選「是」，之後就是真的按一下。</span></li>
     </ol>
@@ -237,16 +244,16 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
         <a class="btn btn-s" href="https://github.com/lilyco-42/ghboost/releases/latest">立即下載</a>
       </div>
       <div class="price hi">
-        <span class="tag">規劃中</span>
+        <span class="tag">已上線</span>
         <h3>節點訂閱服務</h3>
-        <div class="amt">價格未定</div>
-        <ul>
-          <li>幫你把節點這件事整個搞定，不用自己找</li>
-          <li>仍會保留「用你自己的訂閱」的選項</li>
-          <li>客戶端不會因為它而少任何功能</li>
-          <li>開跑前會先在這裡與 GitHub 公告</li>
+        <div class="amt" id="subAmt">¥9.9 <small>起 / 30 天</small></div>
+        <ul class="plans" id="planList">
+          <li><b>基礎</b><span class="p-cap">10 GB / 30 天</span><span class="p-amt">¥9.9</span></li>
+          <li><b>進階</b><span class="p-cap">50 GB / 30 天</span><span class="p-amt">¥29.9</span></li>
+          <li><b>大流量</b><span class="p-cap">100 GB / 30 天</span><span class="p-amt">¥49.9</span></li>
         </ul>
-        <a class="btn btn-s" href="https://github.com/lilyco-42/ghboost/issues">許願 / 追蹤進度</a>
+        <a class="btn btn-p" href="https://lain42.top/panel/redeem">前往購買 / 兌換卡密</a>
+        <p class="pnote">付款後會拿到一組卡密，在面板貼上兌換，系統會自動開通並產生一條訂閱網址；把網址貼回 ghboost 就能用。不用註冊帳號，也沒有綁約。客戶端功能不會因為沒買而少任何一樣。</p>
       </div>
     </div>
   </div>
@@ -308,5 +315,29 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
   </div>
 </footer>
 
+<script>
+/* 套餐價格以節點面板為準：這裡只是「顯示層」，抓不到就保留 HTML 裡寫死的數字，
+   頁面永遠不會因為面板暫時連不上而破圖或顯示空白。 */
+(function(){
+  var els = document.querySelectorAll('#planList li');
+  if (!els.length) return;
+  fetch('https://lain42.top/panel/api/buy/plans')
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(j){
+      if (!j || !j.success || !j.data || j.data.length < els.length) return;
+      j.data.forEach(function(p, i){
+        var li = els[i]; if (!li) return;
+        var amt = li.querySelector('.p-amt');
+        var cap = li.querySelector('.p-cap');
+        if (amt) amt.textContent = '¥' + p.price;
+        if (cap) cap.textContent = p.traffic_limit_gb + ' GB / ' + p.duration_days + ' 天';
+      });
+      var lead = document.getElementById('subAmt');
+      if (lead) lead.innerHTML = '¥' + j.data[0].price +
+        ' <small>起 / ' + j.data[0].duration_days + ' 天</small>';
+    })
+    .catch(function(){ /* 靜默降級，保留靜態價格 */ });
+})();
+</script>
 </body>
 </html>
