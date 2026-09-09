@@ -510,7 +510,7 @@ proxy-groups:
 rules:
   - GEOIP,TW,DIRECT
   - GEOIP,LAN,DIRECT
-  - MATCH,"節點選擇"
+  - MATCH,節點選擇
 "#
     )
 }
