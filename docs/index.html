@@ -165,7 +165,7 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
     </p>
 
     <div class="cta">
-      <a class="btn btn-p" href="https://github.com/lilyco-42/ghboost/releases/latest">下載 Windows 版</a>
+      <a class="btn btn-p" data-dl="hero" href="https://github.com/lilyco-42/ghboost/releases/latest">下載 Windows 版</a>
       <a class="btn btn-s" href="https://github.com/lilyco-42/ghboost">原始碼（MIT）</a>
     </div>
     <p class="meta">Windows 10 / 11 · x64 · 綠色安裝，隨時可完整移除</p>
@@ -241,7 +241,7 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
           <li>開機自動啟動</li>
           <li>完整移除（含還原 hosts 與系統代理）</li>
         </ul>
-        <a class="btn btn-s" href="https://github.com/lilyco-42/ghboost/releases/latest">立即下載</a>
+        <a class="btn btn-s" data-dl="price" href="https://github.com/lilyco-42/ghboost/releases/latest">立即下載</a>
       </div>
       <div class="price hi">
         <span class="tag">已上線</span>
@@ -277,10 +277,14 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
     </details>
 
     <details>
-      <summary>Windows 跳出「未知的發行者」藍色警告？</summary>
-      <p>這是 SmartScreen 對新發行者的標準反應——程式沒簽名時，需要靠下載量慢慢累積信譽。
-      專案已申請開源程式碼簽章（SignPath Foundation），通過後警告會明顯減輕。
-      在那之前請用 Release 頁面附的 <code>SHA256SUMS.txt</code> 校對檔案指紋。</p>
+      <summary>Windows 跳出「Windows 已保護您的電腦」藍色警告？</summary>
+      <p>這是 SmartScreen 對「還沒累積下載量的新發行者」的標準反應，程式沒簽章時一定會出現，
+      跟檔案本身有沒有問題無關。放行方式：點警告視窗裡的「<b>其他資訊</b>」，
+      再點右下角「<b>仍要執行</b>」，只這一次。</p>
+      <p>為什麼不乾脆買個簽章把警告消掉：商業簽章一年幾千元，這筆錢最後會變成你的訂閱費。
+      程式碼是公開的（MIT），不想相信的話可以自己從原始碼編一個出來，編出來的東西跟我們發的一樣。
+      想自己驗檔案的話：zip 解開後裡面有一份 <code>SHA256SUMS.txt</code>，逐檔列出了 SHA256（含內核）。
+      專案已申請開源程式的免費簽章（SignPath Foundation），通過後這個警告會自行消失。</p>
     </details>
 
     <details>
@@ -342,17 +346,50 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
 /* 版本號同理：手寫的那個一定會過期（曾經首屏還掛著 v0.3.3，而實際已發 v0.3.5，
    第一眼就給人「沒人維護」的感覺）。改成向 GitHub 問一次最新 release，
    抓不到就保留 HTML 裡寫死的值 —— 這頁本來就放在 github.io、下載也在
-   github.com，訪客要是連不到 GitHub，本來也下載不了，所以降級不丟人。 */
+   github.com，訪客要是連不到 GitHub，本來也下載不了，所以降級不丟人。
+
+   同一次請求順便解決更致命的一件事：**下載按鈕必須直連那一個檔案**。
+   一次發版會掛上 30 個資產（.so / .apk / .wasm / 各平台二進位 / MSI…），
+   把人丟進 Release 頁面等於叫他從 30 個檔名裡自己挑出對的那個 ——
+   這是純粹的流失，而且完全沒有必要。Windows 上唯一需要下的就是
+   ghboost-tray-windows-x64.zip。抓不到 API 就維持 releases/latest，
+   永遠不會變成死鏈。 */
 (function(){
   var pill = document.getElementById('verPill');
-  if (!pill) return;
+  var btns = document.querySelectorAll('a[data-dl]');
+  if (!pill && !btns.length) return;
+
   fetch('https://api.github.com/repos/lilyco-42/ghboost/releases/latest')
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(j){
-      if (!j || !j.tag_name) return;
-      pill.textContent = '✓ ' + j.tag_name + ' 已釋出';
+      if (!j) return;
+      var tag = j.tag_name || '';
+      if (pill && tag) pill.textContent = '✓ ' + tag + ' 已釋出';
+
+      /* 只替身 Windows 的按鈕：這個頁面預設就是 Windows 用戶。
+         其他平台（macOS / Linux）硬猜架構反而會給錯檔，
+         那還不如讓他自己到 Release 頁面挑，至少不會下錯。 */
+      var win = /Windows|WinNT|Win64/i.test(navigator.userAgent || '');
+      var hit = null;
+      if (win && j.assets) {
+        j.assets.forEach(function(a){
+          if (a && a.name === 'ghboost-tray-windows-x64.zip') hit = a;
+        });
+      }
+      if (!btns.length) return;
+      btns.forEach(function(b){
+        if (hit && hit.browser_download_url) {
+          var mb = Math.round((hit.size || 0) / 1048576);
+          b.href = hit.browser_download_url;
+          b.textContent = '下載 Windows 版 · ' + tag + (mb ? ' · ' + mb + ' MB' : '');
+        } else if (tag) {
+          /* 非 Windows、或資產還在上傳：至少把版本號寫進按鈕，
+             讓人一眼知道這不是個過期頁面。 */
+          b.textContent = (b.dataset.dl === 'hero' ? '下載 ' : '立即下載 ') + tag;
+        }
+      });
     })
-    .catch(function(){ /* 靜默降級，保留靜態版本號 */ });
+    .catch(function(){ /* 靜默降級，保留靜態版本號與 releases/latest */ });
 })();
 </script>
 </body>
