@@ -808,7 +808,17 @@ fn do_subscribe(input: &str, mixed_port: u16) -> Result<Value, String> {
     }
 
     let mut slot = mihomo_slot().lock().map_err(|e| e.to_string())?;
-    if slot.is_none() {
+    // 端口变了就必须换一个新的 manager：manager 的 api_port 是创建时定死的，
+    // 沿用旧的会把 reload 请求打到旧端口，而新配置声明的是新端口 ——
+    // 表现为"面板上改了端口再订阅，节点数变成 0"（面板端口是用户可改的）。
+    let needs_new = match slot.as_ref() {
+        None => true,
+        Some(m) => m.mixed_port() != mixed_port,
+    };
+    if needs_new {
+        if let Some(old) = slot.take() {
+            let _ = old.stop();
+        }
         *slot = Some(MihomoManager::new(cfg));
     }
     let mgr = slot.as_mut().unwrap();

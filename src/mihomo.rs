@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Mihomo 内核配置
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -81,6 +81,15 @@ pub struct MihomoManager {
 }
 
 impl MihomoManager {
+    /// 这个 manager 当前用的是哪个 mixed 端口。
+    ///
+    /// 换端口重新订阅时必须**换掉 manager**：`api_port` 是创建时定死的，沿用旧的
+    /// manager 会把 reload 请求发到旧端口，而新配置里声明的是新端口 ——
+    /// 故障形态是"改了端口再订阅，节点数变成 0"。
+    pub fn mixed_port(&self) -> u16 {
+        self.config.mixed_port
+    }
+
     /// 创建新的 Mihomo 管理器
     pub fn new(config: MihomoConfig) -> Self {
         let config_dir = config.config_dir.clone().unwrap_or_else(|| {
@@ -340,10 +349,57 @@ rules:
         Ok((0, 0, 0, 0, 0))
     }
 
+    /// 构造 `PUT /configs` 的请求体。
+    ///
+    /// 必须是 JSON `{"path": "", "payload": "<yaml>"}`，**不能**直接把 YAML 当请求体：
+    /// 内核（v1.19.30 实测）对裸 YAML 一律回 `HTTP 400 {"message":"Body invalid"}`。
+    /// 单独拆出来是为了能写单测钉死这个形状 —— 这段一旦被"简化"回裸 YAML，
+    /// 订阅会退化成静默 0 节点，非常难查。
+    fn reload_body(config_content: &str) -> String {
+        serde_json::json!({ "path": "", "payload": config_content }).to_string()
+    }
+
+    /// 等内核的 RESTful API 真正开始监听。
+    ///
+    /// `start()` 只固定睡 500ms，而内核冷启动到 "RESTful API listening" 实测要
+    /// 1.6~2.5s（慢机器更久）。不等就发 PUT 会撞 connection refused，
+    /// 故障形态是"点订阅报网络错"，而且只在慢机器上复现 —— 最难查的那一种。
+    fn wait_api_ready(&self, budget: Duration) -> Result<(), String> {
+        let url = format!("http://127.0.0.1:{}/version", self.config.api_port);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(800))
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+        let deadline = Instant::now() + budget;
+        let mut last = String::from("从未成功连上");
+        while Instant::now() < deadline {
+            match client.get(&url).send() {
+                Ok(r) if r.status().is_success() => return Ok(()),
+                Ok(r) => last = format!("HTTP {}", r.status()),
+                Err(e) => last = e.to_string(),
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        Err(format!(
+            "内核的 API 一直没起来（最后一次：{last}）。\n\
+             可能是端口 {} 被别的内核占了，或内核启动失败。",
+            self.config.api_port
+        ))
+    }
+
     /// 重载配置文件
     pub fn reload_config(&self) -> Result<(), String> {
-        // force=true 是必需的：不带这个参数时 mihomo 只接受**部分字段**热更新，
-        // 新增的 proxy-provider / rules 会被静默忽略，表现为"订阅导进去了但没节点"。
+        // 顺序上必须先等 API 就绪：见 wait_api_ready 的说明。
+        self.wait_api_ready(Duration::from_secs(10))?;
+
+        // 两个坑，都是 v1.19.30 上实测出来的：
+        // 1. force=true 是必需的：不带这个参数时 mihomo 只接受**部分字段**热更新，
+        //    新增的 proxy-provider / rules 会被静默忽略，表现为"订阅导进去了但没节点"。
+        // 2. 请求体必须是 JSON {"path","payload} 而不是裸 YAML（见 reload_body）。
+        //    更致命的是：reqwest 的 send() 只有**网络层**失败才返回 Err，
+        //    4xx/5xx 是 Ok —— 所以必须自己检查状态码，否则内核拒绝配置这件事
+        //    会被完全吞掉，外面只看到"没有节点"，谁都想不到是这里。
         let url = format!(
             "http://127.0.0.1:{}/configs?force=true",
             self.config.api_port
@@ -357,12 +413,20 @@ rules:
             .build()
             .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-        client
+        let resp = client
             .put(&url)
-            .body(config_content)
-            .header("Content-Type", "application/yaml")
+            .header("Content-Type", "application/json")
+            .body(Self::reload_body(&config_content))
             .send()
             .map_err(|e| format!("重载配置失败: {e}"))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            // 内核会在 body 里说清是哪一行不认识，这是排障的唯一线索，一定要带出来。
+            let detail = resp.text().unwrap_or_default();
+            let brief: String = detail.chars().take(300).collect();
+            return Err(format!("内核拒绝了新的配置（HTTP {status}）。\n{brief}"));
+        }
 
         Ok(())
     }
@@ -451,5 +515,34 @@ mod tests {
         let result = manager.generate_config();
         assert!(result.is_ok());
         assert!(manager.config_path.exists());
+    }
+
+    /// 回归护栏：请求体必须是 JSON {"path","payload"}，不是裸 YAML。
+    /// 2026-09-10 踩过：发裸 YAML 时内核回 400，而 send() 不把 4xx 当错误，
+    /// 结果订阅永远解析出 0 个节点，且没有任何报错。
+    #[test]
+    fn reload_请求体必须是_json_包裹而不是裸_yaml() {
+        let yaml = "mixed-port: 7890\nproxies: []\n";
+        let body = MihomoManager::reload_body(yaml);
+
+        // 它得是能被内核解析的 JSON，而不是一段以 mixed-port 开头的 YAML 文本
+        assert!(
+            !body.starts_with("mixed-port"),
+            "请求体不能是裸 YAML: {body}"
+        );
+
+        let v: serde_json::Value =
+            serde_json::from_str(&body).expect("reload 请求体必须是合法 JSON");
+        assert_eq!(v["path"], "");
+        assert_eq!(v["payload"], yaml);
+    }
+
+    /// YAML 里带引号、反斜杠、换行时，JSON 转义必须把它们完整保住。
+    #[test]
+    fn reload_请求体里的_yaml_特殊字符不能被转义破坏() {
+        let yaml = "path: 'C:/Users/me/nodes.txt'\nname: \"a\\\\b\"\n";
+        let body = MihomoManager::reload_body(yaml);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["payload"], yaml);
     }
 }
