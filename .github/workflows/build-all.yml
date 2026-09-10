@@ -159,6 +159,43 @@ jobs:
         run: |
           chmod +x gradlew 2>/dev/null || true
           ./gradlew assembleRelease --no-daemon
+      # 閘門：未簽名的 APK 裝不起來（使用者只看到「應用程式未安裝」），
+      # 而這種錯誤在 CI 上完全看不出來 —— 建置會成功、檔案會上傳、
+      # Release 會出現 4 個 .apk，只是沒人裝得起來。所以在這裡就擋掉。
+      - name: Verify APKs are signed (installable)
+        run: |
+          set -e
+          shopt -s nullglob
+          files=(ghboost-android/app/build/outputs/apk/release/*.apk)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no APK produced"; exit 1
+          fi
+          for apk in "${files[@]}"; do
+            if unzip -l "$apk" | grep -qE 'META-INF/[A-Za-z0-9_]+\.(RSA|DSA|EC)'; then
+              echo "signed   : $(basename "$apk")"
+            else
+              echo "::error::UNSIGNED APK would ship: $apk"
+              exit 1
+            fi
+          done
+      # Gradle 的預設檔名是 app-arm64-v8a-release.apk 這種內部命名，
+      # 混在 30 個資產裡沒人認得出來。改成和 Windows 一致的 ghboost-android-<abi>.apk。
+      - name: Rename APKs to friendly names
+        working-directory: ghboost-android/app/build/outputs/apk/release
+        run: |
+          set -e
+          for f in *.apk; do
+            case "$f" in
+              *universal*)   out="ghboost-android-universal.apk" ;;
+              *arm64-v8a*)   out="ghboost-android-arm64-v8a.apk" ;;
+              *armeabi-v7a*) out="ghboost-android-armeabi-v7a.apk" ;;
+              *x86_64*)      out="ghboost-android-x86_64.apk" ;;
+              *)             out="ghboost-android-$f" ;;
+            esac
+            mv "$f" "$out"
+            echo "renamed: $f -> $out"
+          done
+          ls -lh
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -596,8 +633,8 @@ jobs:
           generate_release_notes: true
           body: |
             ## 支持的平台
-            - **Android**: arm64-v8a / armeabi-v7a / x86_64 (APK + .so)
-            - **Windows**: x86_64 / arm64 + MSI 安装器（含桌面图标）
+            - **Android**: 一般手機選 `ghboost-android-arm64-v8a.apk`（其餘：universal / armeabi-v7a / x86_64）
+            - **Windows**: 一般電腦選 `ghboost-tray-windows-x64.zip`（解開後跑 `install.bat`）；另附 MSI 安裝器
             - **Linux**: x86_64 / aarch64 (gnu + musl)
             - **macOS**: arm64 / x86_64
             - **iOS**: device / simulator (.a 静态库)
