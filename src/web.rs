@@ -510,6 +510,35 @@ fn is_newer(latest: &str, current: &str) -> bool {
     false
 }
 
+#[cfg(test)]
+mod tests_version_cmp {
+    use super::*;
+
+    /// 版本比较是「要不要弹更新提示」的唯一开关，而且**在运行时几乎验不到**：
+    /// 装着的那个版本只有恰好落后于 latest 时才会走 true 分支，日常跑永远是
+    /// false。所以只能靠单测守住 —— 尤其是「0.10 比 0.9 新」这种：
+    /// 一旦哪天有人图省事改成字符串比较，`"0.10.0" > "0.9.0"` 会是 false，
+    /// 用户从此再也收不到更新提示，而页面上什么错都不会报。
+    #[test]
+    fn is_newer_compares_segment_by_segment() {
+        assert!(is_newer("0.3.10", "0.3.9"));
+        assert!(is_newer("0.10.0", "0.9.0"));
+        assert!(is_newer("1.0.0", "0.99.99"));
+        assert!(is_newer("0.3.9", "0.3.8"));
+        // 段数不同：短的按 0 补齐，所以 0.3.10 比 0.3 新
+        assert!(is_newer("0.3.10", "0.3"));
+    }
+
+    #[test]
+    fn is_newer_is_false_when_not_newer() {
+        assert!(!is_newer("0.3.10", "0.3.10"));
+        assert!(!is_newer("0.3.9", "0.3.10"));
+        assert!(!is_newer("0.9.0", "0.10.0"));
+        // 预发布后缀按 0 处理：0.3.5-beta 不比 0.3.5 新
+        assert!(!is_newer("0.3.5-beta", "0.3.5"));
+    }
+}
+
 // ────────────────────────────── 代理设置 ──────────────────────────────
 //
 // 面向的是**已有节点/订阅、只差一个傻瓜式开关**的用户（台湾市场的主要形态：
