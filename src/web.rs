@@ -358,18 +358,58 @@ async fn api_elevate() -> Json<Value> {
         std::process::Command::new("pkexec").args(&args).spawn()
     };
 
-    match spawned {
-        Ok(_) => {
-            // 让新进程先起来再自杀：UAC 对话框期间旧进程还活着也无所谓，
-            // 端口冲突时它会自己顺延一个（见 tray 的 pick_port）。
-            std::thread::spawn(|| {
-                std::thread::sleep(Duration::from_millis(400));
-                std::process::exit(0);
-            });
-            Json(serde_json::json!({ "ok": true }))
+    let mut child = match spawned {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(
+                serde_json::json!({ "ok": false, "error": format!("無法啟動提權程式：{e}") }),
+            )
         }
-        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    };
+
+    // 关键：**等提权启动器自己退出再回话**。
+    //
+    // 启动器（Windows 上是 powershell 的 `Start-Process -Verb RunAs`）要等授权框
+    // 被回答之后才退出：选「是」→ 拉起后以 0 退出；选「否」/被拦截 → 非 0 退出。
+    // 所以它的退出码就是**真实的授权结果**。
+    //
+    // 改之前这里是「派发完就无条件等 400ms 自杀」，有两个后果：
+    //   1. 用户在 UAC 选「否」时，旧进程已经死了、新进程也不会起来 —— 程序整个消失，
+    //      页面只能收到连线中断，于是报出一个其实没发生的「提權失敗」；
+    //   2. 回应与自杀抢时间，页面经常拿到 `Failed to fetch`（用户报过两次）。
+    //
+    // 代价是这个请求会**挂到用户点完授权为止**（见下面的 120 秒上限），
+    // 页面正好显示「等待系統授權…」——这本来就是该等的地方。
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let granted = child.wait().map(|s| s.success()).unwrap_or(false);
+        let _ = tx.send(granted);
+    });
+
+    let granted = match tokio::time::timeout(Duration::from_secs(120), rx).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(_)) => {
+            return Json(serde_json::json!({ "ok": false, "error": "提權程式異常結束，請再試一次。" }))
+        }
+        // 用户一直没理授权框：不要自杀，程序还在，他可以再点一次。
+        Err(_) => {
+            return Json(serde_json::json!({ "ok": false, "error": "等授權等到超時（120 秒）。若 Windows 沒跳出視窗，請重新啟動 ghboost 再試一次。" }))
+        }
+    };
+
+    if !granted {
+        // 用户选了「否」：程序保持活着，页面原样重试即可。
+        return Json(
+            serde_json::json!({ "ok": false, "error": "授權被取消。請再點一次，並在 Windows 詢問時選「是」。" }),
+        );
     }
+
+    // 授权通过：让新进程先起来再自杀（端口冲突时它会顺延一个，见 tray 的 pick_port）。
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(400));
+        std::process::exit(0);
+    });
+    Json(serde_json::json!({ "ok": true }))
 }
 
 /// 运行环境信息：前端据此决定要不要弹"以管理员身份重启"。

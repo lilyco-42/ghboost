@@ -376,32 +376,56 @@ function boostArgs(apply){
   return {apply:apply,clean:true,timeout_ms:3000,concurrency:16,top:1,only:ONLY};
 }
 
+/* ── 提權 ──
+   按下去之後程式要去跟 Windows 要管理員權限，這段時間 /api/elevate 是**故意不回**的：
+   它得等使用者在授權視窗上點完，才知道結果（選「是」/「否」/沒理它）。
+   所以這裡不能把「連線中斷」當成提權失敗 —— 那只是舊程式退出了。
+   真實的成敗由後端判定後回傳，這裡只負責把原因講成人話。 */
+var elevating=false;
+function doElevate(btn,label){
+  if(elevating)return;
+  elevating=true;
+  if(btn){btn.disabled=true;btn.textContent='等待系統授權…';}
+  setLamp('y','正在申請權限…','Windows 會彈出「是否允許此應用更改設備」，選「是」',true);
+
+  jfetch('/api/elevate',{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+    if(!j.ok){
+      /* 授權被取消 / 逾時：程式還活著，可以直接再點一次。 */
+      elevating=false;
+      if(btn){btn.disabled=false;btn.textContent=label;}
+      setLamp('r','提權未完成',j.error||'未知錯誤');
+      showNote('程式還在執行，可以直接再點一次。若一直沒看到授權視窗，請重新啟動 ghboost。');
+      return;
+    }
+    /* 授權通過：舊程式 400ms 後退出，新程式會重新監聽並自開瀏覽器。
+       等一下再重整，才不會連到還沒退場的舊程式。 */
+    if(btn)btn.textContent='已提權，正在重新載入…';
+    setLamp('y','已提權','正在重新連線到提權後的程序…',true);
+    setTimeout(function(){location.reload();},1500);
+  }).catch(function(e){
+    /* 連線真的斷了 = 舊程式已退出、新的還沒起來，這**不代表授權失敗**。
+       新程式開好後會自己開一個新分頁，這裡只要把話說清楚。 */
+    elevating=false;
+    if(btn){btn.disabled=false;btn.textContent=label;}
+    setLamp('y','已送出提權','若幾秒後自動跳出新視窗，就去那一個繼續；沒有就重新啟動 ghboost。');
+  });
+}
+
 el('btnMain').onclick=function(){
   var m=el('btnMain').dataset.mode||'boost';
   if(m==='elevate'){
     /* 沒有管理員權限時寫不進 hosts —— 與其點完必失敗，不如第一步就提權。 */
-    el('btnMain').disabled=true;el('btnMain').textContent='等待系統授權…';
-    setLamp('y','正在申請權限…','Windows 會彈出「是否允許此應用更改設備」，選「是」');
-    jfetch('/api/elevate',{method:'POST'}).then(function(r){return r.json()}).then(function(j){
-      if(!j.ok){
-        setLamp('r','提權失敗',j.error||'未知錯誤');el('btnMain').disabled=false;
-        el('btnMain').textContent='以管理員身分啟用加速';
-      }else{
-        /* 提權成功：舊程序即將退出，本頁面會變成孤兒。
-           新（提權後）程序會在同埠重新監聽並自開瀏覽器；
-           這裡讓當前頁面重新載入，重新連上新的提權實例。 */
-        el('btnMain').textContent='已提權，正在重新載入…';
-        setLamp('y','已提權','正在重新連線到提權後的程序…',true);
-        setTimeout(function(){location.reload();},1800);
-      }
-    }).catch(function(e){
-      setLamp('r','提權失敗',e.message+'（請確認 ghboost-tray 正在執行）');el('btnMain').disabled=false;
-      el('btnMain').textContent='以管理員身分啟用加速';
-    });
+    doElevate(el('btnMain'),'以管理員身分啟用加速');
     return;
   }
   if(m==='stop'){run('boost',boostArgs(false));}
   else{run('boost',boostArgs(true));}
+};
+
+/* 「以管理員身分重啟」：這顆按鈕之前**完全沒綁事件**，
+   但畫面上寫著「點右邊按鈕」——按下去什麼都不會發生。 */
+if(el('btnElevate'))el('btnElevate').onclick=function(){
+  doElevate(el('btnElevate'),'以管理員身分重啟');
 };
 el('btnClean').onclick=function(){run('boost',{apply:false,clean:true,timeout_ms:1000,concurrency:16,top:1,only:ONLY});};
 el('btnCheck').onclick=check;

@@ -155,6 +155,10 @@ fn post_local(port: u16, path: &str) -> bool {
     if s.write_all(req.as_bytes()).is_err() {
         return false;
     }
+    // 一定要设读超时：`/api/elevate` 会**一直挂到用户在 UAC 上点完**为止（最长 120 秒）。
+    // 这里是在 Win32 消息泵的同一条线程上调用的，没有超时 = 用户不点授权，
+    // 整个托盘就跟着卡住（点不动、关不掉）。调用方本来也不看回传值。
+    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
     let mut buf = [0u8; 64];
     let _ = s.read(&mut buf);
     true
