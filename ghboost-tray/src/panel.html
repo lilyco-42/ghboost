@@ -398,6 +398,11 @@ function pxState(){
 
 el('btnPxOn').onclick=function(){
   var b=el('btnPxOn');b.disabled=true;pxMsg('處理中…');
+  // 訂閱模式卻沒貼連結：与其報錯，不如直接引導去買（這也是產品唯一的收入來源）。
+  if(pxMode==='sub' && !el('pxUrl').value.trim()){
+    b.disabled=false;pxMsg('先貼上訂閱網址，或點上方「去 lain42.top 買一組卡密」拿到網址再回來。',true);
+    el('pxUrl').focus();return;
+  }
   var p = pxMode==='sub'
     ? jfetch('/api/proxy/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({url:el('pxUrl').value.trim(),mixed_port:+el('pxHttp').value||7890})})
