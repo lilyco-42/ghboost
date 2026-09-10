@@ -401,6 +401,8 @@ static UPDATE_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(Instant, Value
 const UPDATE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 const RELEASES_LATEST_API: &str = "https://api.github.com/repos/lilyco-42/ghboost/releases/latest";
 const RELEASES_PAGE: &str = "https://github.com/lilyco-42/ghboost/releases/latest";
+/// Windows 上唯一需要下载的那一个文件（见 fetch_latest_release 里的说明）
+const TRAY_ZIP_ASSET: &str = "ghboost-tray-windows-x64.zip";
 
 /// 新版检查。`checked=false` 表示"这次还没查到"，UI 什么都不显示。
 async fn api_update() -> Json<Value> {
@@ -420,13 +422,17 @@ async fn api_update() -> Json<Value> {
     // 过期：先回旧值（没有就回"未检查"），刷新另起线程，页面不等它。
     let me = current.clone();
     std::thread::spawn(move || {
-        let val = match fetch_latest_version() {
-            Some(latest) => serde_json::json!({
+        let val = match fetch_latest_release() {
+            Some((latest, download)) => serde_json::json!({
                 "checked": true,
                 "current": me,
                 "latest": latest,
                 "has_update": is_newer(&latest, &me),
                 "url": RELEASES_PAGE,
+                // 一次發版會掛 30 個資產（.so / .apk / .wasm / MSI…），
+                // 把人丟進 Release 頁面等於叫他從檔名堆裡自己挑。
+                // Windows 上要下的永遠只有那一個 zip，直接給直連。
+                "download": download,
             }),
             // 查不到（没网 / 被拦 / 限流）就标"查过了但没有更新"，下次再试。
             None => serde_json::json!({ "checked": true, "current": me, "has_update": false }),
@@ -444,8 +450,9 @@ async fn api_update() -> Json<Value> {
     ))
 }
 
-/// 拉 GitHub 上最新 release 的 tag（去掉前导 `v`）。任何失败都当"查不到"。
-fn fetch_latest_version() -> Option<String> {
+/// 拉 GitHub 上最新 release 的 tag（去掉前导 `v`），顺带找出 Windows 托盘包的直连地址。
+/// 任何失败都当"查不到"。
+fn fetch_latest_release() -> Option<(String, Option<String>)> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(6))
         // GitHub API 强制要求 User-Agent，没有会直接 403。
@@ -460,13 +467,27 @@ fn fetch_latest_version() -> Option<String> {
         .ok()?
         .json()
         .ok()?;
-    Some(
-        body.get("tag_name")?
-            .as_str()?
-            .trim()
-            .trim_start_matches('v')
-            .to_string(),
-    )
+    let tag = body
+        .get("tag_name")?
+        .as_str()?
+        .trim()
+        .trim_start_matches('v')
+        .to_string();
+
+    // 找不到（资产还在上传、或 GitHub 改了字段）就退回 Release 页面，
+    // 绝不因为少一个字段就让整次更新检查变成失败。
+    let download = body
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(TRAY_ZIP_ASSET))
+        })
+        .and_then(|a| a.get("browser_download_url"))
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string());
+
+    Some((tag, download))
 }
 
 /// 逐段比较数字；非数字段按 0（所以 `0.3.5-beta` 不会被判成比 `0.3.4` 新）。
