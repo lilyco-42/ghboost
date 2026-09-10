@@ -288,6 +288,13 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
     </details>
 
     <details>
+      <summary>怎麼更新到新版？</summary>
+      <p>下載新的 zip，解開後<b>再跑一次 <code>install.bat</code></b> 就好。
+      它會先把正在跑的舊程式關掉再覆蓋成新的（程式在跑的時候 Windows 不讓人改它，
+      少了這一步安裝會直接失敗），你貼過的訂閱網址與設定都會留著。</p>
+    </details>
+
+    <details>
       <summary>怎麼完整移除？</summary>
       <p>點兩下 <code>uninstall.bat</code>。它會先通知程式正常退出，再還原 hosts 與系統代理、
       移除開機啟動與桌面捷徑。加 <code>-RemoveData</code> 會連設定檔一起清掉。</p>

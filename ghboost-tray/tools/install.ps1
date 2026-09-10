@@ -33,6 +33,28 @@ if (-not (Test-Path $Src)) {
 
 Write-Host "Source : $Src"
 
+# --- 0. Let the running instance go before we overwrite it.
+#     Updating means running install.bat again, and the app is nearly always
+#     still running: the exe is locked, Copy-Item -Force throws, and under
+#     $ErrorActionPreference="Stop" the whole script dies in red without ever
+#     saying "close the app first". --quit asks the console to shut itself
+#     down cleanly (it removes its port file on the way out).
+$Running = @(Get-Process -Name "ghboost-tray" -ErrorAction SilentlyContinue)
+if ($Running.Count -gt 0) {
+    $QuitExe = $null
+    try { $QuitExe = $Running[0].Path } catch { }
+    if (-not $QuitExe) { $QuitExe = Join-Path $InstallDir "ghboost-tray.exe" }
+    Write-Host "Stopping running ghboost-tray..."
+    if (Test-Path $QuitExe) { & $QuitExe --quit 2>$null }
+    $null = $Running[0].WaitForExit(8000)
+    Start-Sleep -Milliseconds 500
+    Get-Process -Name "ghboost-tray" -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "  still alive (pid $($_.Id)) - stopping it"
+        Stop-Process -Id $_.Id -Force
+    }
+    Start-Sleep -Milliseconds 500
+}
+
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $Target = Join-Path $InstallDir "ghboost-tray.exe"
 Copy-Item $Src $Target -Force
