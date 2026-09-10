@@ -176,11 +176,11 @@ body{
 
     <!-- A. 已經在跑 Clash Verge / v2rayN 的人：只差一個系統代理開關 -->
     <div class="seg" id="segMode">
-      <button class="seg-b on" data-m="port">用現成代理</button>
-      <button class="seg-b" data-m="sub">匯入訂閱</button>
+      <button class="seg-b" data-m="port">用現成代理</button>
+      <button class="seg-b on" data-m="sub">匯入訂閱</button>
     </div>
 
-    <div id="panePort">
+    <div id="panePort" style="display:none">
       <div class="form-row">
         <div class="form-group"><span class="form-label">HTTP 連接埠</span>
           <input class="form-input" type="number" id="pxHttp" value="7890" min="1" max="65535"></div>
@@ -190,7 +190,7 @@ body{
       <div class="hint">已有 Clash Verge / v2rayN 在跑的話，埠通常就是 7890 / 7891，直接點開啟即可。</div>
     </div>
 
-    <div id="paneSub" style="display:none">
+    <div id="paneSub">
       <div class="form-group"><span class="form-label">訂閱連結</span>
         <input class="form-input" type="text" id="pxUrl" placeholder="https://...（vless / vmess / ss / trojan 都行）"></div>
       <div class="hint">節點解析交給內置內核，協議不用選；台灣本地站台與區網會自動直連。</div>
@@ -371,7 +371,7 @@ el('btnQuit').onclick=function(){
 };
 
 /* ── 代理設置 ── */
-var pxMode='port';
+var pxMode='sub';
 [].forEach.call(document.querySelectorAll('#segMode .seg-b'),function(b){
   b.onclick=function(){
     pxMode=b.dataset.m;
