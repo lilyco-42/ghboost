@@ -228,6 +228,8 @@ jobs:
   windows-msi:
     name: Windows MSI
     runs-on: windows-latest
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - name: Cache cargo registry
@@ -269,6 +271,42 @@ jobs:
           else
             echo "MSI not found"
           fi
+      # ── 代码签名（SignPath Foundation，开源免费 OV 证书）──
+      # MSI 安装器的 SmartScreen 比 exe 更严格，必须签。守卫式：没配
+      # SIGNPATH_API_TOKEN 时跳过；失败只告警、不阻断发版（continue-on-error）。
+      # 审批通过后把 CI token 存为仓库 Secret「SIGNPATH_API_TOKEN」即自动签。
+      # 注：MSI 可能需要与 exe 不同的 signing policy（installer-signing），
+      #     以 SignPath 审批后给的集成指引为准；失败保留未签名 MSI（continue-on-error）。
+      - name: Code-sign MSI with SignPath (after approval)
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        continue-on-error: true
+        env:
+          SIGNPATH_ORG: ${{ vars.SIGNPATH_ORG || 'lilyco-42' }}
+          SIGNPATH_PROJECT: ${{ vars.SIGNPATH_PROJECT || 'ghboost-tray' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $token = $env:SIGNPATH_API_TOKEN
+          $org   = $env:SIGNPATH_ORG
+          $proj  = $env:SIGNPATH_PROJECT
+          $base  = "https://app.signpath.io/API/v1/$org/projects/$proj"
+          $hdr   = @{ Authorization = "Bearer $token" }
+          $msi   = Get-ChildItem dist -Filter *.msi -File | Select-Object -First 1
+          if (-not $msi) { Write-Host "no MSI found, skip"; exit 0 }
+          Write-Host "uploading for signing: $($msi.FullName)"
+          $sr = Invoke-RestMethod -Method Post `
+            -Uri "$base/artifacts?signingPolicy=release-signing" `
+            -Headers $hdr -InFile $msi.FullName -ContentType 'application/octet-stream'
+          $srId = $sr.signingRequestId
+          $st = $null
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 10
+            $st = Invoke-RestMethod -Uri "$base/signing-requests/$srId" -Headers $hdr
+            if ($st.status -ne 'Pending' -and $st.status -ne 'Queued') { break }
+          }
+          if ($st.status -ne 'Completed') { throw "signing not completed: $($st.status)" }
+          Invoke-WebRequest -Uri $st.links.signedArtifact -Headers $hdr -OutFile $msi.FullName
+          Write-Host "signed: $($msi.FullName)"
       - uses: actions/upload-artifact@v4
         with:
           name: ghboost-windows-msi
