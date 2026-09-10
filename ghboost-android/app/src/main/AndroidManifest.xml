@@ -4,6 +4,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- Android 14 (API 34) 起，宣告 foregroundServiceType="specialUse" 就必須配這條權限。
+         少了它（或 service 上沒寫 type）在 Android 15+ 會直接拋
+         MissingForegroundServiceTypeException —— 實測在 API 36 上一按 Start 就崩，
+         使用者只看到「GhBoost keeps stopping」。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Android 13 (API 33) 起通知要另外授權，否則常駐通知不出來，
+         使用者無從判斷 VPN 是不是還活著。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
@@ -28,10 +39,16 @@
         <service
             android:name=".GhBoostVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
-            android:exported="false">
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
+            <!-- 說明這個 specialUse FGS 具體做什麼（Play 上架時會審這一項，
+                 直接分發時也讓系統/使用者看得出用途）。 -->
+            <property
+                android:name="android.content.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn_tunnel" />
         </service>
 
     </application>

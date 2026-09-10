@@ -52,7 +52,18 @@ class GhBoostVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
+        // startForeground 是從系統端拋回來的：一旦失敗（例如 Android 15+ 的
+        // MissingForegroundServiceTypeException）會一路炸到 ActivityThread，
+        // 整個 App 當掉，使用者只看到「一直在停止」。
+        // 類型已在 Manifest 宣告，這裡再兜一層 —— 真出事就記 log 收掉服務，
+        // 絕不再讓它彈崩潰對話框。
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification("Starting..."))
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground failed, aborting", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         startVpn()
         return START_STICKY
     }
