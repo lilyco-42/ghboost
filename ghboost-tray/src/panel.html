@@ -500,7 +500,10 @@ jfetch('/api/update').then(function(r){return r.json()}).then(function(j){
   if(!j||!j.has_update)return;
   el('updC').textContent=j.current||'';
   el('updV').textContent=j.latest||'';
-  if(j.url)el('updLink').href=j.url;
+  /* 優先用那一個 zip 的直連：Release 頁面有 30 個資產，
+     叫人自己挑檔名等於沒給連結。拿不到直連（資產還在上傳）就退回 Release 頁。 */
+  if(j.download)el('updLink').href=j.download;
+  else if(j.url)el('updLink').href=j.url;
   el('upd').classList.add('show');
 }).catch(function(){});
 
