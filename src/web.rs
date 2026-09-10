@@ -389,11 +389,15 @@ async fn api_elevate() -> Json<Value> {
     let granted = match tokio::time::timeout(Duration::from_secs(120), rx).await {
         Ok(Ok(v)) => v,
         Ok(Err(_)) => {
-            return Json(serde_json::json!({ "ok": false, "error": "提權程式異常結束，請再試一次。" }))
+            return Json(
+                serde_json::json!({ "ok": false, "error": "提權程式異常結束，請再試一次。" }),
+            )
         }
         // 用户一直没理授权框：不要自杀，程序还在，他可以再点一次。
         Err(_) => {
-            return Json(serde_json::json!({ "ok": false, "error": "等授權等到超時（120 秒）。若 Windows 沒跳出視窗，請重新啟動 ghboost 再試一次。" }))
+            return Json(
+                serde_json::json!({ "ok": false, "error": "等授權等到超時（120 秒）。若 Windows 沒跳出視窗，請重新啟動 ghboost 再試一次。" }),
+            )
         }
     };
 
