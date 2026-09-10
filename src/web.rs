@@ -637,11 +637,25 @@ fn classify_subscription(input: &str) -> Result<NodeSource, String> {
 
 /// 订阅网址：http provider，内核自己去拉
 fn http_provider(url: &str) -> String {
+    // 缓存文件**按网址命名**，不能所有订阅共用一个 subscription.yaml。
+    // mihomo 的 http provider 在 `Initial()` 时若发现缓存比 interval 新，会**直接读盘、根本不去拉**。
+    // 共用缓存的后果：用户换了订阅网址，拿到的仍是上一个订阅的节点，
+    // 而且 updatedAt 是旧的、界面上一点异常都看不出来（实测：换成真实订阅后仍显示 38 分钟前的测试节点）。
+    let cache = subscription_cache_name(url);
     format!(
         "proxy-providers:\n  subscription:\n    type: http\n    url: \"{url}\"\n    \
-         interval: 86400\n    path: ./subscription.yaml\n    health-check:\n      \
+         interval: 86400\n    path: ./{cache}\n    health-check:\n      \
          enable: true\n      url: https://www.gstatic.com/generate_204\n      interval: 300\n"
     )
+}
+
+/// 订阅缓存档名：同一个网址复用缓存（离线也能起来），换网址就一定是新档、必须真去拉。
+fn subscription_cache_name(url: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    url.hash(&mut h);
+    format!("sub-{:016x}.yaml", h.finish())
 }
 
 /// 节点链接：file provider，读我们刚落盘的那份文本
@@ -796,26 +810,27 @@ fn do_subscribe(input: &str, mixed_port: u16) -> Result<Value, String> {
             .to_string());
     }
 
-    // 先探端口：7890 极可能被 Clash Verge / v2rayN 占着。
-    // 不先说清楚的话，用户只看到一句"Mihomo 启动后立即退出"，完全不知道该怎么办。
-    if std::net::TcpListener::bind(("127.0.0.1", mixed_port)).is_err() {
-        return Err(format!(
-            "端口 {mixed_port} 已被占用。\n\
-             如果你已经在跑 Clash Verge / v2rayN，直接用「用现成代理」填它的端口即可；\n\
-             想用内置内核就换一个端口（比如 {}）重试。",
-            mixed_port + 100
-        ));
-    }
-
     let mut slot = mihomo_slot().lock().map_err(|e| e.to_string())?;
     // 端口变了就必须换一个新的 manager：manager 的 api_port 是创建时定死的，
     // 沿用旧的会把 reload 请求打到旧端口，而新配置声明的是新端口 ——
     // 表现为"面板上改了端口再订阅，节点数变成 0"（面板端口是用户可改的）。
+    // 注意：端口探测**只能**在「要起新内核」时做。复用已有内核时，端口必然
+    // 被我们自己的内核占着，探测会误报"端口被占用"，导致"换网址重新导入"直接失败。
     let needs_new = match slot.as_ref() {
         None => true,
         Some(m) => m.mixed_port() != mixed_port,
     };
     if needs_new {
+        // 先探端口：7890 极可能被 Clash Verge / v2rayN 占着。
+        // 不先说清楚的话，用户只看到一句"Mihomo 启动后立即退出"，完全不知道该怎么办。
+        if std::net::TcpListener::bind(("127.0.0.1", mixed_port)).is_err() {
+            return Err(format!(
+                "端口 {mixed_port} 已被占用。\n\
+                 如果你已经在跑 Clash Verge / v2rayN，直接用「用现成代理」填它的端口即可；\n\
+                 想用内置内核就换一个端口（比如 {}）重试。",
+                mixed_port + 100
+            ));
+        }
         if let Some(old) = slot.take() {
             let _ = old.stop();
         }
@@ -1129,5 +1144,22 @@ mod tests {
             NodeSource::Url(_) => "Url",
             NodeSource::Links(_) => "Links",
         }
+    }
+
+    /// 回归护栏：订阅缓存档必须**按网址区分**。
+    /// 共用一个 subscription.yaml 时，mihomo 见缓存比 interval 新就直接读盘不复拉，
+    /// 结果是「换了订阅网址却仍拿到上一个订阅的节点」，而且界面上看不出任何异常。
+    #[test]
+    fn 换订阅网址必须用不同的缓存档() {
+        let a = subscription_cache_name("https://a.example.com/sub");
+        let b = subscription_cache_name("https://b.example.com/sub");
+        assert_ne!(a, b, "不同网址不能共用缓存档");
+        assert_eq!(a, subscription_cache_name("https://a.example.com/sub"));
+        assert!(a.starts_with("sub-") && a.ends_with(".yaml"), "档名: {a}");
+
+        // 供应商配置里真的用上了这个档名，而不是写死的 subscription.yaml
+        let cfg = http_provider("https://a.example.com/sub");
+        assert!(cfg.contains(&format!("path: ./{a}")), "实际配置:\n{cfg}");
+        assert!(!cfg.contains("path: ./subscription.yaml"));
     }
 }

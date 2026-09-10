@@ -1,6 +1,6 @@
 [package]
 name = "ghboost-tray"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 description = "ghboost 桌面托盘版 —— 状态灯 + 傻瓜式面板 + 台湾代理设定，免命令行"
 license = "MIT"
