@@ -166,18 +166,51 @@ jobs:
         run: |
           set -e
           shopt -s nullglob
-          files=(ghboost-android/app/build/outputs/apk/release/*.apk)
+          DIR=ghboost-android/app/build/outputs/apk/release
+          files=("$DIR"/*.apk)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::no APK produced"; exit 1
           fi
+
+          APKSIGNER=""
+          for cand in "$ANDROID_HOME"/build-tools/*/apksigner "$ANDROID_SDK_ROOT"/build-tools/*/apksigner; do
+            if [ -x "$cand" ]; then APKSIGNER="$cand"; fi
+          done
+          if [ -z "$APKSIGNER" ]; then
+            if command -v apksigner >/dev/null 2>&1; then APKSIGNER="$(command -v apksigner)"; fi
+          fi
+          echo "apksigner: ${APKSIGNER:-<not found>}"
+
+          # 签名有三種可能，任一成立就算簽過：
+          #   1) apksigner verify 通過（最權威）
+          #   2) zip 裡有 META-INF/*.RSA|DSA|EC  -> v1 (JAR) 簽章
+          #   3) 檔尾有 "APK Sig Block 42" magic -> v2/v3 簽章
+          # 注意 AGP 8.x + minSdk 26 只做 v2，v2 簽章塊**不在 zip 目錄裡**，
+          # 所以只看 META-INF 會把已簽名的包誤判成未簽名（第一版閘門就是這樣炸的）。
+          fail=0
           for apk in "${files[@]}"; do
-            if unzip -l "$apk" | grep -qE 'META-INF/[A-Za-z0-9_]+\.(RSA|DSA|EC)'; then
-              echo "signed   : $(basename "$apk")"
+            how=""
+            if [ -n "$APKSIGNER" ]; then
+              if "$APKSIGNER" verify --print-certs "$apk" >/dev/null 2>&1; then how="apksigner"; fi
+            fi
+            if [ -z "$how" ]; then
+              if unzip -l "$apk" | grep -qE 'META-INF/[A-Za-z0-9_.-]+\.(RSA|DSA|EC)$'; then how="v1 (META-INF)"; fi
+            fi
+            if [ -z "$how" ]; then
+              if grep -aq "APK Sig Block 42" "$apk"; then how="v2/v3 signing block"; fi
+            fi
+            if [ -n "$how" ]; then
+              echo "signed ($how): $(basename "$apk")"
             else
               echo "::error::UNSIGNED APK would ship: $apk"
-              exit 1
+              fail=1
             fi
           done
+
+          echo "--- evidence: ${files[0]} ---"
+          unzip -l "${files[0]}" | grep -i "META-INF" || echo "(no META-INF entries => no v1 signature)"
+          if [ -n "$APKSIGNER" ]; then "$APKSIGNER" verify --print-certs "${files[0]}" || true; fi
+          exit "$fail"
       # Gradle 的預設檔名是 app-arm64-v8a-release.apk 這種內部命名，
       # 混在 30 個資產裡沒人認得出來。改成和 Windows 一致的 ghboost-android-<abi>.apk。
       - name: Rename APKs to friendly names
