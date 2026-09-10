@@ -146,8 +146,10 @@ jobs:
 
           # 真正需要签名的是会直接被用户执行的二进制；zip 只是容器。
           Invoke-Sign "dist/ghboost-tray.exe"
-          if (Test-Path "dist/lilyco-ghboost-0.2.0-x86_64.msi") {
-            Invoke-Sign "dist/lilyco-ghboost-0.2.0-x86_64.msi"
+          # 若有 MSI 安装包（版本号不固定，不要写死），全部签上；没有则静默跳过。
+          # MSI 走 SignPath 的 installer 行为准则，需满足可卸载/可还原（install.ps1 已满足）。
+          foreach ($m in (Get-ChildItem dist -Filter *.msi -File)) {
+            Invoke-Sign $m.FullName
           }
           # 签名会改变文件哈希，按签名后的内容重算校验和
           $Root = (Resolve-Path dist).Path
