@@ -36,6 +36,18 @@ body{
   border:1px solid var(--line);color:var(--fg2);background:var(--card2);white-space:nowrap;
 }
 
+/* ── 新版本提示 ── */
+.upd{
+  display:none;align-items:center;gap:10px;margin-bottom:14px;padding:10px 12px;
+  border:1px solid var(--line);border-radius:10px;background:var(--card2);
+  font-size:12.5px;color:var(--fg2);
+}
+.upd.show{display:flex}
+.upd .grow{flex:1}
+.upd b{color:var(--fg);font-weight:600}
+.upd a{color:var(--blue);text-decoration:none;white-space:nowrap}
+.upd a:hover{text-decoration:underline}
+
 /* ── 主卡片：狀態燈 + 大按鈕 ── */
 .hero{
   background:var(--card);border:1px solid var(--line);border-radius:16px;
@@ -144,6 +156,11 @@ body{
   <div class="top">
     <div class="brand">ghboost<small>訪問加速 · 一鍵搞定</small></div>
     <div class="pill" id="pill">偵測中…</div>
+  </div>
+
+  <div class="upd" id="upd">
+    <div class="grow">有新版本 <b id="updV"></b>（目前 <span id="updC"></span>）</div>
+    <a id="updLink" href="https://github.com/lilyco-42/ghboost/releases/latest" target="_blank" rel="noopener">下載新版 ↗</a>
   </div>
 
   <div class="hero">
@@ -448,6 +465,16 @@ jfetch('/api/info').then(function(r){return r.json()}).then(function(j){
     showNote('當前不是管理員：能測速、能看結果，但寫不進 hosts。點「以管理員身分重啟」或上面的大按鈕都行。');
   }
 }).catch(function(){});
+/* 新版本提醒：由 Rust 侧去问 GitHub（页面保持零外部请求），
+   查不到或没更新就什么都不显示 —— 没网不该变成报错。 */
+jfetch('/api/update').then(function(r){return r.json()}).then(function(j){
+  if(!j||!j.has_update)return;
+  el('updC').textContent=j.current||'';
+  el('updV').textContent=j.latest||'';
+  if(j.url)el('updLink').href=j.url;
+  el('upd').classList.add('show');
+}).catch(function(){});
+
 el('btnMain').dataset.mode='boost';
 check();
 pxState();

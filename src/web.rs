@@ -91,6 +91,7 @@ pub async fn serve_at(port: u16, html: &str) -> Result<(), String> {
         .route("/proxy/status", get(proxy_status))
         .route("/api/quit", post(api_quit))
         .route("/api/info", get(api_info))
+        .route("/api/update", get(api_update))
         .route("/api/check", get(api_check))
         .route("/api/elevate", post(api_elevate))
         .route("/api/proxy/subscribe", post(api_proxy_subscribe))
@@ -378,6 +379,114 @@ async fn api_info() -> Json<Value> {
         "os": std::env::consts::OS,
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+// ────────────────────────────── 版本更新提醒 ──────────────────────────────
+//
+// 客户端永远免费、靠订阅赚钱 —— 用户跑着旧版本，等于修过的 bug 他还在踩，
+// 转化就断了。所以面板必须能告诉他"有新版"。
+//
+// 三条硬约束（都是这文件开头那套原则的延续）：
+// 1. **页面零外部请求**：轮询 GitHub 必须由 Rust 侧做，不能让浏览器去 fetch
+//    api.github.com —— 那样在缺根证书 / 被拦的环境里会静默失败，
+//    也违背了"本地控制台不依赖公网"这条底线。
+// 2. **绝不能挡住面板**：结果缓存 6 小时；过期时本次请求直接回旧值，
+//    刷新丢到后台线程。网络不通只是"没有提示"，不是报错。
+// 3. **只在真的更新时提示**：逐段比较数字，tag 带后缀（如 `0.3.5-beta`）
+//    非数字段按 0 处理，不会被误判成更新。
+
+static UPDATE_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(Instant, Value)>>> =
+    std::sync::OnceLock::new();
+
+const UPDATE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+const RELEASES_LATEST_API: &str = "https://api.github.com/repos/lilyco-42/ghboost/releases/latest";
+const RELEASES_PAGE: &str = "https://github.com/lilyco-42/ghboost/releases/latest";
+
+/// 新版检查。`checked=false` 表示"这次还没查到"，UI 什么都不显示。
+async fn api_update() -> Json<Value> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let cached: Option<(Instant, Value)> = UPDATE_CACHE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().cloned());
+
+    if let Some((at, val)) = &cached {
+        if at.elapsed() < UPDATE_TTL {
+            return Json(val.clone());
+        }
+    }
+
+    // 过期：先回旧值（没有就回"未检查"），刷新另起线程，页面不等它。
+    let me = current.clone();
+    std::thread::spawn(move || {
+        let val = match fetch_latest_version() {
+            Some(latest) => serde_json::json!({
+                "checked": true,
+                "current": me,
+                "latest": latest,
+                "has_update": is_newer(&latest, &me),
+                "url": RELEASES_PAGE,
+            }),
+            // 查不到（没网 / 被拦 / 限流）就标"查过了但没有更新"，下次再试。
+            None => serde_json::json!({ "checked": true, "current": me, "has_update": false }),
+        };
+        if let Ok(mut g) = UPDATE_CACHE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+        {
+            *g = Some((Instant::now(), val));
+        }
+    });
+
+    Json(cached.map(|(_, v)| v).unwrap_or_else(
+        || serde_json::json!({ "checked": false, "current": current, "has_update": false }),
+    ))
+}
+
+/// 拉 GitHub 上最新 release 的 tag（去掉前导 `v`）。任何失败都当"查不到"。
+fn fetch_latest_version() -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(6))
+        // GitHub API 强制要求 User-Agent，没有会直接 403。
+        .user_agent(concat!("ghboost/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()?;
+    let body: Value = client
+        .get(RELEASES_LATEST_API)
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .ok()?;
+    Some(
+        body.get("tag_name")?
+            .as_str()?
+            .trim()
+            .trim_start_matches('v')
+            .to_string(),
+    )
+}
+
+/// 逐段比较数字；非数字段按 0（所以 `0.3.5-beta` 不会被判成比 `0.3.4` 新）。
+fn is_newer(latest: &str, current: &str) -> bool {
+    let nums = |s: &str| -> Vec<u64> {
+        s.split('.')
+            .map(|p| p.trim().parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let (a, b) = (nums(latest), nums(current));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
+        if x != y {
+            return x > y;
+        }
+    }
+    false
 }
 
 // ────────────────────────────── 代理设置 ──────────────────────────────
