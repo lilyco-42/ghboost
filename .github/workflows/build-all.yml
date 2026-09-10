@@ -274,17 +274,28 @@ jobs:
       - name: Build MSI
         # --nocapture：不加的话 candle 的真实报错会被 cargo-wix 吞掉，
         # 只剩一句 "The 'candle' application failed with exit code = 10"，无法排障。
-        run: cargo wix --target x86_64-pc-windows-msvc -v --nocapture
+        #
+        # **构建前必须清掉 target/wix 里的旧 MSI**。target 目录是跨 run 缓存的，
+        # 缓存会把上一次的 `lilyco-ghboost-<旧版本>-x86_64.msi` 一并带回来；
+        # 而下面 Stage 只要找得到第一个就拷走，字母序 `0.2.0` < `0.3.5`，
+        # 于是 v0.3.5 的 Release 里挂的还是 0.2.0 的安装包（真事，已发生一次：
+        # 日志里 cargo-wix 明明写着 ICE61 (0.3.5 0.3.5)，挂出去的却是 0.2.0）。
+        run: |
+          rm -f target/wix/*.msi
+          cargo wix --target x86_64-pc-windows-msvc -v --nocapture
         shell: bash
       - name: Stage artifact
         shell: bash
         run: |
           set -e
           mkdir -p dist
-          MSI=$(find target/wix -name "*.msi" -type f | head -1)
+          # 正常情况清理后只应剩一个；真多出来时以 mtime 为准，
+          # 不再用 find|head -1 那种依赖字母序、会把旧包顶上来的写法。
+          ls -l target/wix/*.msi 2>/dev/null || echo "(target/wix 下没有 msi)"
+          MSI=$(ls -t target/wix/*.msi 2>/dev/null | head -1)
           if [ -n "$MSI" ]; then
             cp "$MSI" dist/
-            echo "MSI: $(ls -lh "$MSI" | awk '{print $5}')"
+            echo "MSI: $(basename "$MSI") $(ls -lh "$MSI" | awk '{print $5}')"
           else
             echo "MSI not found"
           fi
