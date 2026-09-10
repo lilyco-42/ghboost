@@ -571,7 +571,12 @@ jobs:
   # ============ 发布 ============
   release:
     name: Publish GitHub Release
-    needs: [windows, windows-msi]
+    # **必须等所有平台都产出再发版**。
+    # 只 needs: [windows, windows-msi] 时，Windows 一好就发布，
+    # 而 Android / Linux / macOS / iOS 还在构建 → 这就是竞态，不是偶发：
+    # v0.3.5 只挂出 16 个资产（v0.3.4 有 23 个），Android 的 .so 全部缺席，
+    # 但 Release 说明里照样写着「支持 Android」。谁先跑完谁上，全看运气。
+    needs: [test, android, android-apk, windows, windows-msi, linux, macos, ios, web]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
