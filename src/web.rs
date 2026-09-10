@@ -562,15 +562,110 @@ fn normalize_kernel_name(dir: &std::path::Path, want: &str) {
 #[cfg(not(windows))]
 fn normalize_kernel_name(_dir: &std::path::Path, _want: &str) {}
 
+/// 用户贴进来的东西属于哪一种。
+///
+/// 台湾市场两种形态都很常见：买订阅给一条 `https://` 网址，
+/// 或者机场直接给一串 `vless://` 链接（甚至一整坨 base64）。
+/// 两种都得能直接贴 —— 让用户先去搞懂差别，就不是傻瓜式了。
+enum NodeSource {
+    /// 订阅网址：交给 mihomo 的 http provider 自己去拉、自己定时更新
+    Url(String),
+    /// 节点链接原文：单条 / 多条 / base64 一大坨都算，落盘后由 file provider 读
+    Links(String),
+}
+
+/// 认得出 `vless://` 这类前缀的链接
+const LINK_SCHEMES: &[&str] = &[
+    "vless://",
+    "vmess://",
+    "ss://",
+    "ssr://",
+    "trojan://",
+    "hysteria://",
+    "hysteria2://",
+    "hy2://",
+    "tuic://",
+    "snell://",
+    "socks://",
+    "socks5://",
+    "http://",
+    "https://",
+    "wireguard://",
+    "anytls://",
+    "juicity://",
+    "mieru://",
+    "ssh://",
+];
+
+/// 判断输入是订阅网址还是节点链接。
+///
+/// 只做**分流**，不做解析 —— 解析是内核的活，自己写就是造轮子 + 永远追不上新协议。
+/// 实测（mihomo v1.19.30）：`type: file` provider 能吃原始链接、能吃 base64、
+/// 能吃五种协议混排，全部正确解析，所以这里只要别误杀就行。
+fn classify_subscription(input: &str) -> Result<NodeSource, String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err("请先贴上订阅网址或节点链接。".to_string());
+    }
+    if s.starts_with("http://") || s.starts_with("https://") {
+        return Ok(NodeSource::Url(s.to_string()));
+    }
+
+    let lines: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+
+    if lines.iter().all(|l| {
+        let low = l.to_ascii_lowercase();
+        LINK_SCHEMES.iter().any(|p| low.starts_with(*p))
+    }) {
+        return Ok(NodeSource::Links(lines.join("\n")));
+    }
+
+    // 一整坨看不懂的东西：很可能就是 base64 订阅内容。mihomo 自己会解，
+    // 这里只负责放行，别把用户输入判死。
+    // 判定直接复用扫描模块里那个 —— 它比"长得像 base64"更严格，
+    // 会真的解一次并校验 UTF-8，误放行率更低。
+    if lines.len() == 1 && crate::nodes::try_b64_decode(lines[0]).is_some() {
+        return Ok(NodeSource::Links(lines[0].to_string()));
+    }
+
+    Err("看不出这是订阅网址还是节点链接。\n\
+         订阅网址要以 https:// 开头；\n\
+         节点链接要以 vless:// / vmess:// / ss:// / trojan:// 这类开头，多条就一行一条；\n\
+         也可以直接把整段 base64 订阅内容贴进来。"
+        .to_string())
+}
+
+/// 订阅网址：http provider，内核自己去拉
+fn http_provider(url: &str) -> String {
+    format!(
+        "proxy-providers:\n  subscription:\n    type: http\n    url: \"{url}\"\n    \
+         interval: 86400\n    path: ./subscription.yaml\n    health-check:\n      \
+         enable: true\n      url: https://www.gstatic.com/generate_204\n      interval: 300\n"
+    )
+}
+
+/// 节点链接：file provider，读我们刚落盘的那份文本
+fn file_provider(path: &std::path::Path) -> String {
+    // 路径里的反斜杠在 YAML 双引号里是**转义符**（`\U`、`\n` …），
+    // `C:\Users\...` 会被吃成 `C:Users...`，表现为"链接贴进去了却零节点"。
+    // 统一成正斜杠 + 单引号，两个坑一起绕开（单引号里反斜杠才是字面量）。
+    let p = path.to_string_lossy().replace('\\', "/");
+    format!(
+        "proxy-providers:\n  subscription:\n    type: file\n    path: '{p}'\n    \
+         health-check:\n      enable: true\n      \
+         url: https://www.gstatic.com/generate_204\n      interval: 300\n"
+    )
+}
+
 /// 订阅配置 —— 关键点：**一行协议解析都不写**。
 ///
-/// mihomo 原生支持 `proxy-providers` 直接吃订阅 URL，自己拉取、自己解析
+/// mihomo 原生支持 `proxy-providers` 直接吃订阅 URL 或节点文件，自己解析
 /// vless / vmess / ss / trojan / hysteria2 / tuic，还自带健康检查。
 /// 自己写解析器 = 重复造轮子 + 永远追不上新协议 + 解析错就是连不上。
 ///
 /// 规则按台湾用户调过：`GEOIP,TW,DIRECT` 让 PTT / 露天 / 蝦皮 / 各家网银
 /// 走直连 —— 这些站点绕一圈出去反而更慢，有些网银还会因为异地登录被挡。
-fn subscription_config(url: &str, mixed: u16, api: u16) -> String {
+fn subscription_config(provider: &str, mixed: u16, api: u16) -> String {
     format!(
         r#"# ghboost 生成 · 由 mihomo 内核直接使用
 mixed-port: {mixed}
@@ -594,17 +689,7 @@ dns:
     geoip: true
     geoip-code: TW
 
-proxy-providers:
-  subscription:
-    type: http
-    url: "{url}"
-    interval: 86400
-    path: ./subscription.yaml
-    health-check:
-      enable: true
-      url: https://www.gstatic.com/generate_204
-      interval: 300
-
+{provider}
 proxy-groups:
   - name: "節點選擇"
     type: select
@@ -622,6 +707,42 @@ rules:
   - MATCH,節點選擇
 "#
     )
+}
+
+/// 问内核要"到底认出几个节点"。
+///
+/// 没有这一步，链接填错的故障形态是**代理开了但全都连不上**，
+/// 用户只会以为软件坏了。宁可多等两秒，也要把错误说清楚。
+fn provider_node_count(api_port: u16) -> usize {
+    let url = format!("http://127.0.0.1:{api_port}/providers/proxies/subscription");
+    let Ok(resp) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .and_then(|c| c.get(&url).send())
+    else {
+        return 0;
+    };
+    let Ok(v) = resp.json::<serde_json::Value>() else {
+        return 0;
+    };
+    v.get("proxies")
+        .and_then(|p| p.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0)
+}
+
+/// 轮询内核直到节点解析出来（或超时）。返回 (节点数, 等待毫秒)。
+fn wait_for_nodes(api_port: u16, budget: Duration) -> usize {
+    let step = Duration::from_millis(300);
+    let mut waited = Duration::ZERO;
+    loop {
+        let n = provider_node_count(api_port);
+        if n > 0 || waited >= budget {
+            return n;
+        }
+        std::thread::sleep(step);
+        waited += step;
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -648,13 +769,10 @@ async fn api_proxy_subscribe(Json(req): Json<SubscribeRequest>) -> Json<Value> {
     })
 }
 
-fn do_subscribe(url: &str, mixed_port: u16) -> Result<Value, String> {
+fn do_subscribe(input: &str, mixed_port: u16) -> Result<Value, String> {
     use crate::mihomo::{MihomoConfig, MihomoManager};
 
-    let url = url.trim().to_string();
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("订阅链接必须以 http:// 或 https:// 开头".to_string());
-    }
+    let source = classify_subscription(input)?;
 
     let api_port = mixed_port + 10;
     let cfg = MihomoConfig {
@@ -698,12 +816,69 @@ fn do_subscribe(url: &str, mixed_port: u16) -> Result<Value, String> {
     // 顺序固定：start() 内部会 generate_config() 写一份默认配置，
     // 所以必须先启动、再覆写、再 reload。
     mgr.start()?;
+
+    // file provider 要读的那份文本，和配置放在同一个目录（内核的 -d 就是这里）。
+    let is_links = matches!(source, NodeSource::Links(_));
+    let provider = match &source {
+        NodeSource::Url(u) => http_provider(u),
+        NodeSource::Links(text) => {
+            let path = mgr
+                .config_path()
+                .parent()
+                .map(|d| d.join("nodes.txt"))
+                .ok_or_else(|| "配置文件路径异常".to_string())?;
+            std::fs::write(&path, format!("{text}\n"))
+                .map_err(|e| format!("写入节点文件失败: {e}"))?;
+            file_provider(&path)
+        }
+    };
+
     std::fs::write(
         mgr.config_path(),
-        subscription_config(&url, mixed_port, api_port),
+        subscription_config(&provider, mixed_port, api_port),
     )
     .map_err(|e| format!("写入订阅配置失败: {e}"))?;
     mgr.reload_config()?;
+
+    // 等内核把节点解析出来，顺便把"链接贴错了"变成一句人话。
+    // file provider 是同步解析的，给短预算；http 要真去联网拉，给长一点。
+    let nodes = wait_for_nodes(
+        api_port,
+        if is_links {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_secs(12)
+        },
+    );
+    if nodes == 0 && is_links {
+        // 链接是**同步**解析的，0 个就说明输入一定有问题。
+        // 关键：必须把内核和系统代理一起收掉。留着的话系统代理指向一个没有节点的
+        // 内核，故障形态是"点了开启代理以后整个网都断了"—— 比没开还糟。
+        if let Some(m) = slot.as_mut() {
+            let _ = m.stop();
+        }
+        *slot = None;
+        let _ = crate::proxy::unset_proxy();
+        return Err("内核没能认出这些链接里的任何节点。\n\
+             请确认整条链接是完整的（从 vless:// 一路到 #备注都要复制到）。\n\
+             一次贴了很多条的话，先只贴一条试试 —— \n\
+             只要有一条格式坏掉，内核会把整批都丢掉（不是跳过那一条）。"
+            .to_string());
+    }
+    if nodes == 0 {
+        // 网址的情况不判死：可能是对方服务器慢，也可能订阅要带特殊 header。
+        // 内核留着（也许过会儿就拉到了），但**不接管系统代理** ——
+        // 接管了就是把用户所有流量丢进黑洞。
+        return Ok(serde_json::json!({
+            "ok": true,
+            "mixed_port": mixed_port,
+            "api_port": api_port,
+            "nodes": 0,
+            "proxy_ok": false,
+            "system_proxy": "未接管：这个订阅网址一个节点都没拉到。\
+                             它可能要浏览器才能打开，或已经失效。",
+        }));
+    }
 
     // 内核起来了就算成功 —— 系统代理是"顺手帮你开"，
     // 它失败（比如组策略禁改代理）不该把整次订阅导入判成失败。
@@ -721,6 +896,7 @@ fn do_subscribe(url: &str, mixed_port: u16) -> Result<Value, String> {
         "ok": true,
         "mixed_port": mixed_port,
         "api_port": api_port,
+        "nodes": nodes,
         "proxy_ok": proxy_ok,
         "system_proxy": proxy_state,
     }))
@@ -861,4 +1037,87 @@ fn rand_u64() -> u64 {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     nanos ^ (std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 这些用例锁的是「用户贴什么都能被正确分流」。
+    // 之前 README 和面板都写着"vless / vmess / ss / trojan 都行"，
+    // 代码却硬性要求 http(s) 开头 —— 测试和实现得一起对上，不然文档就是假的。
+
+    #[test]
+    fn 订阅网址走_http_provider() {
+        match classify_subscription("https://sub.example.com/a?b=1").unwrap() {
+            NodeSource::Url(u) => assert_eq!(u, "https://sub.example.com/a?b=1"),
+            other => panic!("应该判成网址，实际: {}", kind(&other)),
+        }
+    }
+
+    #[test]
+    fn 单条节点链接要认() {
+        // 台湾用户最典型的形态：机场直接给一条 vless 链接，没有订阅网址
+        let s = "vless://b5f6bc1e-6f4a-4d0e-9c1a-1f2e3d4c5b6a@1.2.3.4:443?type=ws#HK-01";
+        match classify_subscription(s).unwrap() {
+            NodeSource::Links(t) => assert!(t.starts_with("vless://")),
+            other => panic!("应该判成节点链接，实际: {}", kind(&other)),
+        }
+    }
+
+    #[test]
+    fn 多条混协议链接要认() {
+        let input =
+            "vless://a@b:443#V\nvmess://eyJ2IjoiMiJ9\nss://YWVzLTEyOC1nY206cGFzcw==@e.com:8388#S";
+        match classify_subscription(input).unwrap() {
+            NodeSource::Links(t) => assert_eq!(t.lines().count(), 3),
+            other => panic!("应该判成节点链接，实际: {}", kind(&other)),
+        }
+    }
+
+    #[test]
+    fn 整段_base64_要认() {
+        // 一串看起来完全不像链接的东西：base64 字母表里没有 ':'
+        // 注意必须带正确的 padding —— 判定用的是 STANDARD 解码，不是"长得像"
+        let blob = "dmxlc3M6Ly9iNWY2YmMxZS02ZjRhLTRkMGUtOWMxYS0xZjJlM2Q0YzViNmFAMS4yLjMuNDo0NDM/\
+                    dHlwZT13cyNISy0wMQ==";
+        match classify_subscription(blob).unwrap() {
+            NodeSource::Links(t) => assert_eq!(t, blob),
+            other => panic!("应该判成节点链接，实际: {}", kind(&other)),
+        }
+    }
+
+    #[test]
+    fn 看不懂的输入要报错而不是放行() {
+        for bad in ["随便打几个字", "ftp://example.com/a", "12345"] {
+            assert!(
+                classify_subscription(bad).is_err(),
+                "{bad} 应该被拒绝 —— 放行只会让内核解析出 0 个节点，用户无从判断哪里错了"
+            );
+        }
+        assert!(classify_subscription("   ").is_err());
+    }
+
+    #[test]
+    fn 节点文件路径不能被转义吃掉() {
+        let cfg = subscription_config(
+            &file_provider(std::path::Path::new(r"C:\Users\me\nodes.txt")),
+            7890,
+            7900,
+        );
+        // 反斜杠配双引号 = YAML 转义序列，C:\Users 会被吃成 C:Users，
+        // 表现是"链接贴进去了却零节点"。这里必须看到正斜杠 + 单引号。
+        assert!(
+            cfg.contains("path: 'C:/Users/me/nodes.txt'"),
+            "实际配置:\n{cfg}"
+        );
+        assert!(cfg.contains("type: file"));
+    }
+
+    fn kind(s: &NodeSource) -> &'static str {
+        match s {
+            NodeSource::Url(_) => "Url",
+            NodeSource::Links(_) => "Links",
+        }
+    }
 }

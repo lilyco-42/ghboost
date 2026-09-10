@@ -220,7 +220,10 @@ fn which_mihomo() -> Result<PathBuf, ()> {
 }
 
 /// 整体 base64 解码（仅当整块都是 base64 字符时）
-fn try_b64_decode(text: &str) -> Option<String> {
+///
+/// 面板"贴链接"功能也用它来判断用户贴的是不是一整坨 base64 订阅内容
+/// （见 `web::classify_subscription`）—— 那里只需要"是或不是"，不需要解码结果。
+pub fn try_b64_decode(text: &str) -> Option<String> {
     let t = text.trim();
     if t.len() < 40 {
         return None;
