@@ -1,6 +1,6 @@
 [package]
 name = "lilyco-ghboost"
-version = "0.3.12"
+version = "0.3.13"
 edition = "2021"
 description = "GitHub 访问加速 + 免费节点扫描/测速/注入（lilyco 框架）；核心逻辑导出 C ABI 供多语言/多平台集成"
 license = "MIT"

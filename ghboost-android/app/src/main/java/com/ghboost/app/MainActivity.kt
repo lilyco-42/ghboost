@@ -2,7 +2,9 @@ package com.ghboost.app
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
@@ -26,6 +28,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val VPN_REQUEST_CODE = 100
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 101
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,8 +48,16 @@ class MainActivity : AppCompatActivity() {
                 GhBoostCore.nativeInit()
                 GhBoostCore.nativeSetHomeDir(filesDir.absolutePath)
                 val version = GhBoostCore.nativeVersion()
+                // nativeVersion() 回的是 JSON（例如 {"name":"ghboost","version":"0.3.12"}），
+                // 直接拼進字串使用者就會看到一坨原始 JSON。取出 version 欄位，
+                // 取不到就退回原樣（總比顯示壞掉的東西好）。
+                val pretty = try {
+                    org.json.JSONObject(version).optString("version").ifBlank { version }
+                } catch (e: Exception) {
+                    version
+                }
                 withContext(Dispatchers.Main) {
-                    tvVersion.text = "ghboost v$version"
+                    tvVersion.text = "ghboost v$pretty"
                     tvStatus.text = "Ready"
                 }
             } catch (e: Exception) {
@@ -60,7 +71,24 @@ class MainActivity : AppCompatActivity() {
         btnStart.setOnClickListener { startVpn() }
         btnStop.setOnClickListener { stopVpn() }
 
+        requestNotificationPermissionIfNeeded()
         updateButtons()
+    }
+
+    /**
+     * Android 13+ 要另外授權才看得到常駐通知。沒授權的話 VPN 還是能跑，
+     * 但使用者看不到任何東西，無從判斷它是不是還活著 —— 所以一進來就問。
+     */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(
+                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                NOTIFICATION_PERMISSION_REQUEST_CODE
+            )
+        }
     }
 
     private fun scanNodes() {

@@ -207,6 +207,19 @@ jobs:
             fi
           done
 
+          # 簽章 key 漂移是**靜默故障**：CI 完全看不出來（包還是能簽、能裝），
+          # 只有使用者升級時才會撞 INSTALL_FAILED_UPDATE_INCOMPATIBLE。
+          # 所以把憑證摘要釘死；換 key 必須同時改這一行，逼人想清楚。
+          EXPECTED_CERT_SHA256="967bd2c260b666c9e2dc65ff630438ce741482716b4b797921e933d69646f2ca"
+          if [ -n "$APKSIGNER" ]; then
+            got="$("$APKSIGNER" verify --print-certs "${files[0]}" 2>/dev/null | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)"
+            echo "cert sha256: $got"
+            if [ "$got" != "$EXPECTED_CERT_SHA256" ]; then
+              echo "::error::signing key drift: expected $EXPECTED_CERT_SHA256, got $got -- 使用者會無法升級"
+              fail=1
+            fi
+          fi
+
           echo "--- evidence: ${files[0]} ---"
           unzip -l "${files[0]}" | grep -i "META-INF" || echo "(no META-INF entries => no v1 signature)"
           if [ -n "$APKSIGNER" ]; then "$APKSIGNER" verify --print-certs "${files[0]}" || true; fi
