@@ -27,6 +27,8 @@ jobs:
   windows:
     name: ghboost-tray (windows-latest)
     runs-on: windows-latest
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -98,6 +100,66 @@ jobs:
           Get-Content dist/SHA256SUMS.txt
           Compress-Archive -Path dist/* -DestinationPath ghboost-tray-windows-x64.zip
 
+      # ── 代码签名（SignPath Foundation，开源免费 OV 证书）──
+      # 前置：你已在 https://signpath.org/apply.html 提交并通过审批，
+      #       并把 CI token 存为仓库 Secret「SIGNPATH_API_TOKEN」。
+      # 没有该 Secret 时此步骤自动跳过，行为与之前完全一致（产物未签名）。
+      # 签名失败时只告警、不阻断发版（continue-on-error）：
+      #   脚本在「重新打包」之前若抛错就直接退出，原始未签名 zip 原样保留，
+      #   所以配置差错最多让你拿到未签名包，绝不会把 Release 卡死。
+      # 审批通过后 SignPath 会给你确切的 API 路径 / 字段名，若与下方不一致请按他们给的改。
+      - name: Code-sign with SignPath (after approval)
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        continue-on-error: true
+        env:
+          SIGNPATH_ORG: ${{ vars.SIGNPATH_ORG || 'lilyco-42' }}
+          SIGNPATH_PROJECT: ${{ vars.SIGNPATH_PROJECT || 'ghboost-tray' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $token = $env:SIGNPATH_API_TOKEN
+          $org   = $env:SIGNPATH_ORG
+          $proj  = $env:SIGNPATH_PROJECT
+          $base  = "https://app.signpath.io/API/v1/$org/projects/$proj"
+          $hdr   = @{ Authorization = "Bearer $token" }
+
+          function Invoke-Sign($file) {
+            if (-not (Test-Path $file)) { Write-Host "skip (not found): $file"; return }
+            Write-Host "uploading for signing: $file"
+            # 1) 上传待签文件，拿 signing-request id
+            $sr = Invoke-RestMethod -Method Post `
+              -Uri "$base/artifacts?signingPolicy=release-signing" `
+              -Headers $hdr -InFile $file -ContentType 'application/octet-stream'
+            $srId = $sr.signingRequestId
+            # 2) 轮询（最多 5 分钟，避免 CI 卡死）
+            $st = $null
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 10
+              $st = Invoke-RestMethod -Uri "$base/signing-requests/$srId" -Headers $hdr
+              if ($st.status -ne 'Pending' -and $st.status -ne 'Queued') { break }
+            }
+            if ($st.status -ne 'Completed') { throw "signing not completed: $($st.status)" }
+            # 3) 下载签名后文件覆盖原文件
+            Invoke-WebRequest -Uri $st.links.signedArtifact -Headers $hdr -OutFile $file
+            Write-Host "signed: $file"
+          }
+
+          # 真正需要签名的是会直接被用户执行的二进制；zip 只是容器。
+          Invoke-Sign "dist/ghboost-tray.exe"
+          if (Test-Path "dist/lilyco-ghboost-0.2.0-x86_64.msi") {
+            Invoke-Sign "dist/lilyco-ghboost-0.2.0-x86_64.msi"
+          }
+          # 签名会改变文件哈希，按签名后的内容重算校验和
+          $Root = (Resolve-Path dist).Path
+          (Get-ChildItem dist -Recurse -File | ForEach-Object {
+            $rel = $_.FullName.Substring($Root.Length + 1)
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash, $rel
+          }) | Out-File -Encoding ascii dist/SHA256SUMS.txt
+          # 只有全部签名成功才会走到这里：删旧 zip、用签名后的 dist 重新打包
+          Remove-Item ghboost-tray-windows-x64.zip -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist/* -DestinationPath ghboost-tray-windows-x64.zip
+          Write-Host "SignPath code-signing step done."
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -143,8 +205,9 @@ jobs:
           Write-Host "Install smoke test passed."
 
       # 打 tag 时挂到 Release 上，作为对外下载地址。
-      # 注意：此时 exe 还是未签名的，首次下载会遇到 SmartScreen 警告 ——
-      # 这是所有新发布者的必经阶段（见 ghboost-tray/README.md 的签名章节）。
+      # 若仓库已配置 SIGNPATH_API_TOKEN，上面的「Code-sign」步骤已把
+      # exe/msi 签名并重新打包，这里挂上去的就是带正规签名的产物；
+      # 没配置则仍是未签名包（首次下载会遇到 SmartScreen 警告，见产品页 FAQ）。
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
