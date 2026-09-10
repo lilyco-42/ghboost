@@ -232,6 +232,23 @@ jobs:
       SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - name: 版本与 tag 一致性告警
+        # MSI 的檔名、以及「新增移除程式」裡顯示的版本號，全部取自 Cargo.toml，
+        # 與 git tag 沒有任何自動關聯。忘了 bump 就會出現
+        # 「v0.3.4 的 Release 裡掛著 lilyco-ghboost-0.2.0-x86_64.msi」這種事
+        # （真實發生過），簽名之後連簽章資訊裡都寫著錯版本。
+        # 這裡**只告警不失敗**：寧可發一個版本號難看的包，
+        # 也不要因為一條 lint 把整條發布流水線卡住。
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        continue-on-error: true
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CV=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "tag=$TAG cargo=$CV"
+          if [ "$TAG" != "$CV" ]; then
+            echo "::warning::Cargo.toml 版本 ($CV) 與 tag ($TAG) 不一致：MSI 會帶著 $CV 發出去。發版前請先 bump Cargo.toml 與 ghboost-tray/Cargo.toml，並同步兩個 Cargo.lock（CI 用 --locked，不同步會直接失敗）。"
+          fi
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
