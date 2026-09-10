@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -25,6 +26,9 @@ class MainActivity : AppCompatActivity() {
 
     private var vpnIntent: Intent? = null
     private var isRunning = false
+
+    /** 原生 tun2socks 是否真的会转发流量；false 时 Start 必须锁住（详见 nativeTunForwardingImplemented）。 */
+    private var tunReady = false
 
     companion object {
         private const val VPN_REQUEST_CODE = 100
@@ -56,9 +60,26 @@ class MainActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     version
                 }
+                // 原生层到底会不会转发流量？不会的话**不能放开 Start** ——
+                // 实测按下 Start 会建立 TUN 但没人转发，整机 100% 丢包，
+                // 界面却还显示「VPN running」。宁可把按钮锁住并说清楚原因。
+                tunReady = try {
+                    GhBoostCore.nativeTunForwardingImplemented()
+                } catch (e: Throwable) {
+                    // .so 裡沒這個符號（例如舊版庫）也要當成不可用，不能假設可以用。
+                    Log.w("GhBoost", "nativeTunForwardingImplemented unavailable", e)
+                    false
+                }
+
                 withContext(Dispatchers.Main) {
                     tvVersion.text = "ghboost v$pretty"
-                    tvStatus.text = "Ready"
+                    if (tunReady) {
+                        tvStatus.text = "Ready"
+                    } else {
+                        tvStatus.text = "Android 端尚未完成：開啟會斷網，先別按 Start"
+                        tvNodes.text = "TUN 轉發（tun2socks）還沒接上，現在按 Start 只會讓整支手機連不上網。"
+                    }
+                    updateButtons()
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -113,6 +134,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVpn() {
+        if (!tunReady) {
+            tvStatus.text = "Android 端尚未完成：現在開啟只會斷網（tun2socks 還沒接上）"
+            return
+        }
         // 用局部 val：直接对可变的成员属性 vpnIntent 做 null 检查后，
         // Kotlin 无法智能转换成非空 Intent（可能被并发修改），编译会报
         // "Smart cast to 'android.content.Intent' is impossible"。
@@ -143,7 +168,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateButtons() {
-        btnStart.isEnabled = !isRunning
+        // 转发没接上时 Start 一律锁住：按下去只会断网，没有任何好处。
+        btnStart.isEnabled = tunReady && !isRunning
         btnStop.isEnabled = isRunning
     }
 

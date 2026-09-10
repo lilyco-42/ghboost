@@ -679,7 +679,9 @@ jobs:
           generate_release_notes: true
           body: |
             ## 支持的平台
-            - **Android**: 一般手機選 `ghboost-android-arm64-v8a.apk`（其餘：universal / armeabi-v7a / x86_64）
+            - **Android**（實驗性，**目前沒有實際加速能力**）：TUN 轉發（tun2socks）尚未接上，
+              App 會鎖住 Start 避免按下後整機斷網。要嘗鮮的話一般手機選 `ghboost-android-arm64-v8a.apk`
+              （其餘：universal / armeabi-v7a / x86_64）
             - **Windows**: 一般電腦選 `ghboost-tray-windows-x64.zip`（解開後跑 `install.bat`）；另附 MSI 安裝器
             - **Linux**: x86_64 / aarch64 (gnu + musl)
             - **macOS**: arm64 / x86_64

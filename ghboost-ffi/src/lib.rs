@@ -16,7 +16,7 @@ pub mod protect;
 #[cfg(target_os = "android")]
 mod android {
     use jni::objects::{JClass, JObject, JString};
-    use jni::sys::{jint, jstring};
+    use jni::sys::{jboolean, jint, jstring};
     use jni::JNIEnv;
 
     use crate::tun2socks;
@@ -152,6 +152,19 @@ mod android {
         _class: JClass,
     ) {
         tun2socks::stop();
+    }
+
+    /// 这个 .so 里的 tun2socks 是否真的会转发流量。
+    ///
+    /// 由 `tun2socks::FORWARDING_IMPLEMENTED` 决定，App 用它判断要不要放开 Start。
+    /// 不加这道闸门的话：按下 Start 会建立 TUN 却没人转发 —— 实测整机断网，
+    /// 界面还显示「VPN running」。
+    #[no_mangle]
+    pub extern "system" fn Java_com_ghboost_app_GhBoostCore_nativeTunForwardingImplemented(
+        _env: JNIEnv,
+        _class: JClass,
+    ) -> jboolean {
+        tun2socks::FORWARDING_IMPLEMENTED as jboolean
     }
 
     #[no_mangle]

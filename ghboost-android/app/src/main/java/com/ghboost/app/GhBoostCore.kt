@@ -15,9 +15,10 @@ import android.net.VpnService
  *   Java_com_ghboost_app_GhBoostCore_nativeScan
  *   Java_com_ghboost_app_GhBoostCore_nativeTest
  *   Java_com_ghboost_app_GhBoostCore_nativeAdd
- *   Java_com_ghboost_app_GhBoostCore_nativeStartTun2Socks
- *   Java_com_ghboost_app_GhBoostCore_nativeStopTun2Socks
- *   Java_com_ghboost_app_GhBoostCore_nativeVersion
+   *   Java_com_ghboost_app_GhBoostCore_nativeStartTun2Socks
+   *   Java_com_ghboost_app_GhBoostCore_nativeStopTun2Socks
+   *   Java_com_ghboost_app_GhBoostCore_nativeTunForwardingImplemented
+   *   Java_com_ghboost_app_GhBoostCore_nativeVersion
  *
  * 历史坑：这里曾声明成 `Init / Scan / ...`（少了 native 前缀），且 StartTun2Socks 的
  * 签名与 Rust 完全不符，结果 APK 一启动就 FATAL EXCEPTION。CI 一直全绿，
@@ -76,6 +77,19 @@ object GhBoostCore {
 
     /** Stop the tun2socks proxy. */
     external fun nativeStopTun2Socks()
+
+    /**
+     * 这个 .so 里的 tun2socks 是否**真的会转发流量**。
+     *
+     * 现在是 false —— `start()` 只是置了个标志，TUN fd 没有任何人读写。
+     * 实测（API 36 模拟器）：按下 Start 后 TUN 建起来、系统显示 VPN 已连接，
+     * 但 ping 8.8.8.8 是 100% 丢包，等于整机断网。所以在它变成 true 之前，
+     * UI 必须拦住 Start，不能让使用者按下一个「按了就断网」的按钮。
+     *
+     * 由 Rust 侧 `tun2socks::FORWARDING_IMPLEMENTED` 决定，接上 lwip 后翻成 true
+     * 即可，这里不用改。
+     */
+    external fun nativeTunForwardingImplemented(): Boolean
 
     // ── Info ───────────────────────────────────────────────────
 
