@@ -177,7 +177,7 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
     </div>
 
     <div class="status">
-      <span class="status-pill">✓ v0.3.3 已釋出</span>
+      <span class="status-pill" id="verPill">✓ v0.3.5 已釋出</span>
       <span class="status-pill">安裝流程 CI 自動驗證</span>
       <a class="status-link" href="https://github.com/lilyco-42/ghboost/blob/main/CONTRIBUTING.md">負責區域</a>
     </div>
@@ -337,6 +337,22 @@ code{background:var(--soft);padding:2px 6px;border-radius:5px;font-size:14px}
         ' <small>起 / ' + j.data[0].duration_days + ' 天</small>';
     })
     .catch(function(){ /* 靜默降級，保留靜態價格 */ });
+})();
+
+/* 版本號同理：手寫的那個一定會過期（曾經首屏還掛著 v0.3.3，而實際已發 v0.3.5，
+   第一眼就給人「沒人維護」的感覺）。改成向 GitHub 問一次最新 release，
+   抓不到就保留 HTML 裡寫死的值 —— 這頁本來就放在 github.io、下載也在
+   github.com，訪客要是連不到 GitHub，本來也下載不了，所以降級不丟人。 */
+(function(){
+  var pill = document.getElementById('verPill');
+  if (!pill) return;
+  fetch('https://api.github.com/repos/lilyco-42/ghboost/releases/latest')
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(j){
+      if (!j || !j.tag_name) return;
+      pill.textContent = '✓ ' + j.tag_name + ' 已釋出';
+    })
+    .catch(function(){ /* 靜默降級，保留靜態版本號 */ });
 })();
 </script>
 </body>
