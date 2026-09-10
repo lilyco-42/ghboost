@@ -40,18 +40,20 @@ ghboost 是一個 Windows 系統託盤工具。裝好之後，托盤上會多一
 ### 方式一：直接下載（推薦）
 
 到 [Releases](https://github.com/lilyco-42/ghboost/releases/latest) 下載
-`ghboost-tray-windows-x64.zip`，解壓到任意目錄，雙擊 `install.ps1`
-（右鍵 → 用 PowerShell 執行）即可。
+`ghboost-tray-windows-x64.zip`，解壓到任意目錄，**雙擊 `install.bat`** 即可。
+（`.ps1` 在 Windows 上雙擊預設是用記事本打開，跑不起來的 —— `install.bat`
+就是為這件事存在的。）
 
 安裝腳本會：
 - 建立桌面捷徑
 - 設定開機自動啟動
-- 可選下載 mihomo 內核（`-WithKernel` 參數）
+- 裝好 mihomo 內核：**直接用包裡 `kernel\` 那份，不聯網**
+  （要升級內核才加 `-WithKernel` 強制重新下載）
 
 ### 方式二：從原始碼編譯
 
 ```bash
-# 需要 Rust 1.75+ 和 PowerShell
+# 需要 Rust 1.98+（CI 用的版本）和 PowerShell
 git clone https://github.com/lilyco-42/ghboost.git
 cd ghboost/ghboost-tray
 cargo build --release
@@ -65,7 +67,8 @@ powershell -ExecutionPolicy Bypass -File tools/install.ps1 -WithKernel
 2. **託盤圖示**：系統託盤（右下角）會出現 ghboost 圖示
    - 🟢 綠色 = 正在加速
    - 🔴 紅色 = 已關閉
-3. **開啟面板**：右鍵托盤圖示 →「開啟面板」，或直接在瀏覽器訪問 `http://127.0.0.1:9099`
+3. **開啟面板**：右鍵托盤圖示 →「開啟面板」，或直接在瀏覽器訪問 `http://127.0.0.1:8619`
+   （埠號從 8619 開始往上找第一個空閒的；實際埠號寫在 `%LOCALAPPDATA%\ghboost\console.port`）
 4. **選模式**：
    - 有訂閱網址 → 貼到「匯入訂閱」欄位 → 點「開啟代理」
    - 已經在用 Clash Verge / v2rayN → 切到「用現成代理」，填它的埠號 → 點「開啟代理」
@@ -110,11 +113,12 @@ ghboost deploy 1.2.3.4 --password xxx --protocol vless-reality
 ghboost/
 ├── ghboost-tray/        # Windows 桌面托盤應用（主產品）
 │   ├── src/
-│   │   ├── main.rs      # 托盤 + UI + mihomo 管理
-│   │   └── web.rs       # 面板 HTML + 訂閱解析
-│   ├── kernel/          # 內嵌 mihomo 二進制 + GeoIP 庫
+│   │   ├── main.rs      # 托盤 + Win32 消息泵
+│   │   └── panel.html   # 面板（繁中，零外部請求）
 │   └── tools/
-│       └── install.ps1  # 安裝腳本
+│       ├── install.ps1  # 安裝腳本（預設用隨包內核，不聯網）
+│       └── install.bat  # 雙擊入口（.ps1 雙擊只會被記事本打開）
+├── kernel/              # 打包時由 CI 放入（repo 不存二進制）
 ├── src/                 # CLI 核心（scan/test/add/boost/deploy）
 │   ├── main.rs          # CLI 入口
 │   ├── lib.rs           # 模塊宣告 + C ABI FFI
@@ -147,7 +151,7 @@ ghboost/
 | VMess | ✅ | ✅ | ✅ | — |
 | Trojan | ✅ | ✅ | ✅ | ✅ |
 | Shadowsocks | ✅ | ✅ | ✅ | ✅ |
-| Hysteria2 | — | — | — | ✅ |
+| Hysteria2 | — | — | ✅ | ✅ |
 
 ## 平台支援
 
@@ -167,13 +171,12 @@ ghboost/
 
 使用 GitHub Actions：
 - **tray.yml**：編譯 Windows 托盤二進制 + 上傳 Release
-- **build-all.yml**：8 平台 CLI 二進制
+- **build-all.yml**：8 平台 CLI 二進制 + MSI；**tag push 時自動建立 Release**
 - **ci.yml**：lint + test
-- **release.yml**（softprops）：tag push 時自動建立 Release
 
 ## 依賴
 
-- **Rust** 1.75+
+- **Rust** 1.98+（CI 釘 1.98.1，避免 rustfmt 小版本漂移讓 CI 無徵兆飄紅）
 - **mihomo** v1.19+（內核，託管下載或 bundle 自帶）
 - **PowerShell**（安裝腳本用）
 
