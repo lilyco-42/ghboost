@@ -55,8 +55,10 @@ object LocalProxySetup {
      * 永远不会被更新（`ensureConfig` 默认不覆盖），新加的字段等于不存在。
      *
      * v1 → v2：修掉 `GEOIP,TW,DIRECT` 导致内核起不来（见 [defaultConfig] 注释）。
+     * v2 → v3：provider 路径改成绝对路径 —— 相对路径按进程 CWD 解析，
+     *   在 Android 上永远找不到，代理组会静默退回 DIRECT（走了直连不走节点）。
      */
-    private const val CONFIG_VERSION = 2
+    private const val CONFIG_VERSION = 3
 
     /** 配置里用来标记版本的注释行，形如 `# ghboost-config-version: 2`。 */
     private const val VERSION_MARKER = "# ghboost-config-version:"
@@ -87,6 +89,9 @@ object LocalProxySetup {
         val mmdb = ensureGeoData(context, root)
         if (mmdb != null) changed = true
 
+        // provider 檔案路徑要在寫 config 之前算出來 —— config 裡要引用它的**絕對路徑**。
+        val providerFile = File(root, "providers/ghboost.yaml")
+
         val config = File(root, "configs/config.yaml")
         // 版本不符就重写。只判断「文件是否存在」是不够的：配置内容会随版本演进，
         // 老使用者盘上的旧配置会永远卡在旧格式上（这次的 GEOIP 崩溃就是这来的）。
@@ -100,7 +105,7 @@ object LocalProxySetup {
 
         if (existingVersion != CONFIG_VERSION) {
             config.parentFile?.mkdirs()
-            config.writeText(defaultConfig(mmdb?.absolutePath))
+            config.writeText(defaultConfig(mmdb?.absolutePath, providerFile.absolutePath))
             changed = true
             Log.i(
                 TAG,
@@ -111,14 +116,13 @@ object LocalProxySetup {
             Log.i(TAG, "config up to date (v$CONFIG_VERSION): ${config.absolutePath}")
         }
 
-        val provider = File(root, "providers/ghboost.yaml")
-        if (!provider.exists()) {
-            provider.parentFile?.mkdirs()
-            provider.writeText(placeholderProvider())
+        if (!providerFile.exists()) {
+            providerFile.parentFile?.mkdirs()
+            providerFile.writeText(placeholderProvider())
             changed = true
-            Log.i(TAG, "wrote ${provider.absolutePath}")
+            Log.i(TAG, "wrote ${providerFile.absolutePath}")
         } else {
-            Log.i(TAG, "provider exists, left untouched: ${provider.absolutePath}")
+            Log.i(TAG, "provider exists, left untouched: ${providerFile.absolutePath}")
         }
 
         return changed
@@ -274,7 +278,7 @@ object LocalProxySetup {
      * @param mmdbPath GeoIP 库的绝对路径；为 null 时**不能**用 GEOIP/GEOSITE 规则
      *   （meow 会在加载配置时直接失败：`Failed to load GeoIP database`）。
      */
-    private fun defaultConfig(mmdbPath: String?): String {
+    private fun defaultConfig(mmdbPath: String?, providerPath: String): String {
         // 用占位符替换而不是字符串插值：插进来的多行内容会打乱
         // `trimIndent()` 的公共缩进推断，结果 YAML 缩进错乱、内核解析失败。
         val template = """
@@ -323,10 +327,14 @@ object LocalProxySetup {
             - https://1.1.1.1/dns-query
 
         # 节点从 provider 来；订阅 URL 写在 provider 里
+        #
+        # ⚠️ path **必须绝对路径**：meow 是直接 `fs::read_to_string(path)`，
+        # 相对路径会按**进程 CWD**（Android 上是 `/`）解析 → 找不到文件 →
+        # provider 为空 → 代理组退回 DIRECT（表现成「VPN 连上了但不走节点」）。
         proxy-providers:
           ghboost:
             type: file
-            path: ./providers/ghboost.yaml
+            path: "$providerPath"
             health-check:
               enable: true
               url: https://www.gstatic.com/generate_204

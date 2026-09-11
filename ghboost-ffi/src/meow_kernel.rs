@@ -222,6 +222,13 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
             config.rules.len(),
             config.general.mode
         ));
+        // 把节点名打出来：provider 的 path 解析失败时，这里会只剩 DIRECT/REJECT，
+        // 一眼就能看出「节点没加载进来」（否则表现成「VPN 连上了但不走节点」）。
+        {
+            let mut names: Vec<String> = config.proxies.keys().map(|k| k.to_string()).collect();
+            names.sort();
+            logcat::info(&format!("proxies: {}", names.join(", ")));
+        }
 
         // 与 meow-app 的 VPN_PLATFORM 分支一致：Android 上无条件装。
         // 理由见文件头 —— 这是防 DNS 死循环的正确性要求，不是优化。
