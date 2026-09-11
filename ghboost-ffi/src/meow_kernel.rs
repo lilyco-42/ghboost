@@ -73,9 +73,16 @@ const LISTEN_ADDR: &str = "127.0.0.1:1080";
 /// 监听器在 meow 里的名字，只用于日志与 `GET /listeners` 快照。
 const LISTENER_NAME: &str = "ghboost-mixed";
 
-/// 等内核 bind 上 1080 的上限。实测冷启 ~0.7s；
-/// 给 5s 余量，同时不至于让调用方（VpnService 线程）等太久。
-const READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// 等内核 bind 上 1080 的上限。
+///
+/// 实测**冷启 0.7s ~ 7.3s**（波动很大）：慢的那次是解析 7.8MB 的 GeoIP 库
+/// （`load_config` 里做），模拟器上尤其明显。所以不能给太小 ——
+/// 给 15s 余量；真机上通常 1~2s。
+///
+/// 为什么不改成「不等待 + 连接重试」：那要改 tun2socks 的连接路径，
+/// 而这里等一次就能把顺序问题彻底解决。代价是 Start 会阻塞这段时间，
+/// 调用方是前台服务的 onStartCommand，15s 远低于其 ANR 阈值。
+const READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 /// 内核**真正开始监听** 1080 了没有。
