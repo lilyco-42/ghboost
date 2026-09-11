@@ -55,6 +55,41 @@ use std::sync::{Arc, Mutex};
 use meow_listener::MixedListener;
 use meow_tunnel::Tunnel;
 
+/// 把消息写进 Android logcat。
+///
+/// **为什么不能用 `eprintln!`**：Android 上 native 库的 stderr 默认进
+/// `/dev/null`，`adb logcat` 完全看不到。内核启动失败时只有一行 eprintln，
+/// 结果就是「VPN 显示已连接、内核却没在监听、且没有任何线索」——
+/// 这次实测就卡在这里：`nc 127.0.0.1 1080` 返回 Connection refused，
+/// 但 logcat 里一个字的错误都没有。诊断能力必须内建。
+mod logcat {
+    use std::ffi::{c_char, c_int, CString};
+
+    extern "C" {
+        fn __android_log_print(prio: c_int, tag: *const c_char, fmt: *const c_char, ...) -> c_int;
+    }
+
+    const INFO: c_int = 4;
+    const ERROR: c_int = 6;
+
+    fn write(prio: c_int, msg: &str) {
+        let Ok(tag) = CString::new("GhBoostMeow") else { return };
+        let Ok(fmt) = CString::new("%s") else { return };
+        // 消息里可能有 NUL（理论上不该有），有就截断，绝不 panic。
+        let Ok(body) = CString::new(msg.replace('\0', " ")) else { return };
+        unsafe {
+            __android_log_print(prio, tag.as_ptr(), fmt.as_ptr(), body.as_ptr());
+        }
+    }
+
+    pub fn info(msg: &str) {
+        write(INFO, msg);
+    }
+    pub fn error(msg: &str) {
+        write(ERROR, msg);
+    }
+}
+
 /// 本地 SOCKS5/mixed 入口。
 ///
 /// **必须**与 `tun2socks::DEFAULT_SOCKS5` 一致 —— 那是 tun2socks 唯一会去连的
@@ -99,8 +134,10 @@ pub fn start(config_path: &str) -> Result<(), String> {
     if RUNNING.swap(true, Ordering::SeqCst) {
         return Err("meow kernel already running".into());
     }
+    logcat::info(&format!("start requested, config={config_path}"));
 
     meow_common::set_socket_protector(Arc::new(VpnSocketProtector));
+    logcat::info("socket protector installed");
 
     let notify = Arc::new(tokio::sync::Notify::new());
     match SHUTDOWN.lock() {
@@ -168,16 +205,23 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("meow: build runtime: {e}");
+            logcat::error(&format!("build runtime: {e}"));
             cleanup();
             return;
         }
     };
 
     let res: Result<(), String> = rt.block_on(async {
+        logcat::info(&format!("loading config {config_path}"));
         let config = meow_config::load_config(config_path)
             .await
             .map_err(|e| format!("load {config_path}: {e}"))?;
+        logcat::info(&format!(
+            "config ok: {} proxies, {} rules, mode={:?}",
+            config.proxies.len(),
+            config.rules.len(),
+            config.general.mode
+        ));
 
         // 与 meow-app 的 VPN_PLATFORM 分支一致：Android 上无条件装。
         // 理由见文件头 —— 这是防 DNS 死循环的正确性要求，不是优化。
@@ -187,6 +231,7 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
                 config.dns.proxy_resolver.clone(),
             ),
         ));
+        logcat::info("host resolver installed");
 
         let tunnel = Tunnel::new(Arc::clone(&config.dns.resolver));
         tunnel.set_mode(config.general.mode);
@@ -195,6 +240,7 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
         tunnel.update_proxies(config.proxies);
         tunnel.update_rules(config.rules);
         tunnel.spawn_background_tasks();
+        logcat::info("tunnel ready");
 
         let addr: SocketAddr = LISTEN_ADDR
             .parse()
@@ -209,19 +255,20 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
             MixedListener::new(tunnel.clone(), addr, LISTENER_NAME.to_string());
         let listen_task = tokio::spawn(async move {
             if let Err(e) = listener.run_on(socket).await {
-                eprintln!("meow: listener exited: {e}");
+                logcat::error(&format!("listener exited: {e}"));
             }
         });
 
-        eprintln!("meow: listening on {addr}");
+        logcat::info(&format!("LISTENING on {addr}"));
 
         shutdown.notified().await;
         listen_task.abort();
+        logcat::info("shutdown signalled");
         Ok(())
     });
 
     if let Err(e) = res {
-        eprintln!("meow: kernel stopped with error: {e}");
+        logcat::error(&format!("kernel stopped with error: {e}"));
     }
     cleanup();
 }
