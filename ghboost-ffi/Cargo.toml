@@ -18,6 +18,28 @@ lwip = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync"] }
 futures = "0.3"
 
+# ── 内嵌代理内核（仅 Android）────────────────────────────────────────────
+# 用 meow-rs（MIT）替代 mihomo（GPL-3.0）。客户端是 MIT，把 GPL 以「库」的
+# 形式链进来会让整个客户端被传染，与「客户端 MIT 开源」的产品前提冲突；
+# meow-rs 是同一件事的 MIT 实现（协议 / 规则 / 订阅 / 健康检查 / REST API 齐备）。
+#
+# 为什么必须是「库」而不是 spawn 子进程：`VpnService.protect(fd)` 只能保护
+# **本进程已打开的 fd**，没有任何进程级/子进程级 API。spawn 出去的内核，
+# 出站 socket 一律保护不了 → 被自己的 TUN 卷回 → 死循环 → 开 VPN 就全网断。
+# meow-common 自带 `SocketProtector` 钩子，内核每建一个出站 socket 就回调
+# 一次，正好接到我们的 `protect::protect`。同进程 + 回调是唯一可行形态。
+#
+# `minimal` = ss + trojan + dns-server + listener-mixed。注意 meow-proxy
+# 无条件启用 meow-transport 的 `tls` feature，所以 BoringSSL（boring-sys，
+# 需要 cmake + C++ 编译器）是**硬依赖**，Android 侧由 NDK 工具链提供。
+[target.'cfg(target_os = "android")'.dependencies]
+meow-app = { version = "0.21", default-features = false, features = ["minimal"] }
+meow-common = "0.21"
+meow-config = "0.21"
+meow-dns = "0.21"
+meow-listener = { version = "0.21", default-features = false, features = ["listener-mixed"] }
+meow-tunnel = "0.21"
+
 [features]
 default = ["android"]
 android = ["jni"]
