@@ -26,6 +26,7 @@ mod android {
     use jni::sys::{jboolean, jint, jstring};
     use jni::JNIEnv;
 
+    use crate::meow_kernel;
     use crate::tun2socks;
     use lilyco_ghboost as ghboost;
 
