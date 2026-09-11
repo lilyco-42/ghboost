@@ -84,7 +84,7 @@ static TUN_PKTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 const DEFAULT_SOCKS5: &str = "127.0.0.1:1080";
 const SOCKS5_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn start(fd: RawFd, _dns_port: u16) -> Result<(), String> {
+pub fn start(fd: RawFd, dns_port: u16) -> Result<(), String> {
     if RUNNING.swap(true, Ordering::SeqCst) {
         return Err("tun2socks already running".into());
     }
@@ -147,7 +147,7 @@ fn cleanup() {
     *SHUTDOWN.lock().unwrap() = None;
 }
 
-fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
+fn run_thread(fd: RawFd, socks5: SocketAddrV4, dns_port: u16, notify: Arc<Notify>) {
     crate::logcat::info(&format!("tun2socks: thread start, tun fd={fd}, socks5={socks5}"));
 
     // Android：先等内嵌内核真正监听 1080，再开始转发。
