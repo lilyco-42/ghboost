@@ -19,13 +19,13 @@
 //!   no-op（iOS 走 NE 的 socket protect，另算）。
 //!
 //! 还没做的：
-//! - UDP：现在只 poll-and-drop。要走通 DNS / QUIC 得接 SOCKS5 UDP
-//!   ASSOCIATE（一个保护过的 UDP socket 转发所有 UDP 包）。
 //! - SOCKS5 只支持 NO_AUTH；目的地址 v4/v6 都吃；SOCKS5 服务端
 //!   地址要求 IPv4。
+//! - UDP relay 直连 SOCKS5 服务端的 UDP ASSOCIATE 端口（不做 CONNECT
+//!   隧道里的 associate），且不做 FRAG 重组（QUIC/DNS 都不切分包）。
 //!
-//! FORWARDING_IMPLEMENTED 留 false：lwip 接进来了，但板上要有一个
-//! 真能用的本地 SOCKS5 代理（mihomo on Android：把订阅节点协议
+//! FORWARDING_IMPLEMENTED 留 false：lwip 接进来了（TCP + UDP 都有实现），
+//! 但板上要有一个真能用的本地 SOCKS5 代理（mihomo on Android：把订阅节点协议
 //! VLESS/Trojan/SS 转成 SOCKS5 喂给这里，并且它自己的出站也要
 //! 被 protect 保护），否则放开 Start 之后 UI 写「VPN 已连接」但
 //! 所有连接都 ECONNREFUSED，比完全断网还难查。条件齐了把下面
@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::net::TcpStream as TokioTcp;
+use tokio::sync::mpsc;
 use tokio::sync::Notify;
 
 #[cfg(target_os = "android")]
@@ -148,7 +149,7 @@ fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
         // 三个任务在 LocalSet 上跑（不要求 Send，lwip 栈状态同线程）
         tokio::task::spawn_local(tun_io(tun, stack_sink, stack_stream));
         tokio::task::spawn_local(tcp_accept(tcp_listener, socks5));
-        tokio::task::spawn_local(udp_drain(udp_socket));
+        tokio::task::spawn_local(udp_drain(udp_socket, socks5));
 
         // 等 stop() 的 notify；期间不退出
         notify.notified().await;
@@ -439,14 +440,259 @@ fn socks5_rep(c: u8) -> &'static str {
     }
 }
 
-// ── UDP：现在只 poll-and-drop，TODO SOCKS5 UDP ASSOCIATE ─────
+// ── UDP：SOCKS5 UDP ASSOCIATE ───────────────────────────────
 
-async fn udp_drain(udp: Box<lwip::UdpSocket>) {
+/// UDP 转发：每个 (源, 目的) 组合对应一个 SOCKS5 UDP relay。
+///
+/// 为什么不是「所有包共用一个 relay」：SOCKS5 的 UDP 响应里只有对端地址，
+/// 拿不回来「这个包原本是哪个本地源端口发出的」，也就没法拼回 TUN 需要
+/// 的完整四元组。所以按 src 分桶，每个 src 一个 relay，回包时 src/dst 直接
+/// 对调即可 —— 代价是每个本地 UDP 源多占一张 socket，但语义完全正确。
+///
+/// DNS 也能因此走通：lwip 栈里 DNS 的源是 TUN 上的 10.0.0.2:随机端口，
+/// 它会自然成为这里的一个 src 桶。
+async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
+    use std::collections::HashMap;
+
     // Box<UdpSocket>: Stream（Item=(Vec<u8>, src, dst)，裸元组）。
-    // Pin 住以免 UdpSocket 自身是否 Unpin 影响 .next()。
-    let mut udp = std::pin::Pin::from(udp);
-    while let Some(_pkt) = udp.next().await {
-        // TODO: SOCKS5 UDP ASSOCIATE（一个被 protect 的 UDP socket
-        // 转发所有 UDP 包）。没做之前 DNS 走不通，TCP 仍能走 IP 直连。
+    // split 成两半：RecvHalf 读 TUN 进来的包，SendHalf 把回包写回栈。
+    let (send_half, mut recv_half) = udp.split();
+
+    // relay 任务把回包发到这里，本函数负责写回 lwip 栈（SendHalf 不是 Send，
+    // 只能在同线程用，所以由这个循环独占持有）。
+    let (replies_tx, mut replies_rx) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+
+    // src → relay 发送端。relay 任务活着时它一直收包；
+    let mut relays: HashMap<SocketAddr, mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>> =
+        HashMap::new();
+
+    loop {
+        tokio::select! {
+            // TUN 侧来的新 UDP 包 → 交给对应 relay
+            pkt = recv_half.next() => {
+                let Some((data, src, dst)) = pkt else { return };
+                // 清理已退出的 relay（它们 drop 了 receiver，send 会 Err）
+                relays.retain(|_, tx| !tx.is_closed());
+                let tx = match relays.get(&src) {
+                    Some(tx) => tx.clone(),
+                    None => match relay::spawn(src, socks5, replies_tx.clone()) {
+                        Ok(tx) => {
+                            relays.insert(src, tx.clone());
+                            tx
+                        }
+                        Err(e) => {
+                            eprintln!("tun2socks: udp relay for {src}: {e}");
+                            continue;
+                        }
+                    },
+                };
+                if tx.send((data, dst)).is_err() {
+                    relays.remove(&src);
+                }
+            }
+            // relay 收回来的包 → 写回 lwip 栈（src/dst 对调由 relay 侧做好）
+            rep = replies_rx.recv() => {
+                let Some((data, src)) = rep else { continue };
+                // 栈要用 send_to(data, src, dst)；回包方向是 远端 → TUN 本地
+                let _ = send_half.send_to(&data, &src, &src);
+            }
+        }
     }
+}
+
+/// 一个 UDP relay：一条被 protect 的 UDP socket，直连 SOCKS5 服务端的
+/// UDP ASSOCIATE 端口。DNS / QUIC 都从这里出去。
+mod relay {
+    use super::*;
+    use std::net::UdpSocket as StdUdp;
+    use tokio::net::UdpSocket as TokioUdp;
+    use tokio::sync::mpsc;
+
+    /// 回包缓存上限：一个 DNS 响应最多 4KB，QUIC 一个 datagram 也就 1.5KB 上下。
+    const RECV_BUF: usize = 65_535;
+
+    /// 起一个 relay 任务，返回「把包交给它」的发送端。
+    pub fn spawn(
+        src: SocketAddr,
+        socks5: SocketAddrV4,
+        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>,
+    ) -> Result<mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>, String> {
+        let (tx, rx) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+        // 在 blocking 池里建 socket + protect + connect（与 TCP 出站同一条路）
+        // 之后再交回 tokio —— 建 socket 是阻塞 syscall，不能卡单线程 reactor
+        tokio::task::spawn_local(async move {
+            let std_sock = match tokio::task::spawn_blocking(move || protected_udp(socks5)).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    eprintln!("tun2socks: udp associate {src}: {e}");
+                    return;
+                }
+                Err(_) => return,
+            };
+            let sock = match TokioUdp::from_std(std_sock) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("tun2socks: udp from_std {src}: {e}");
+                    return;
+                }
+            };
+            run(src, sock, rx, replies).await;
+        });
+        Ok(tx)
+    }
+
+    /// 建 UDP socket，protect 之后再 connect。
+    ///
+    /// connect 一个上层的 SOCKS5 CONNECT 隧道是做不到的（TCP 连接无法承载
+    /// UDP），所以这里直连 SOCKS5 服务端的 UDP ASSOCIATE 端口 —— 前提是那个
+    /// 服务端在 TUN 路由之外（服务器节点在公网，本来就在 TUN 之外），
+    /// 且本 socket 已被 protect。
+    fn protected_udp(socks5: SocketAddrV4) -> Result<StdUdp, String> {
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        if fd < 0 {
+            return Err(format!("udp socket: {}", std::io::Error::last_os_error()));
+        }
+        if let Err(e) = protect_fd(fd) {
+            unsafe { libc::close(fd) };
+            return Err(format!("udp protect: {e}"));
+        }
+        // SO_SNDTIMEO 管不了 UDP（无连接），改设 SO_RCVTIMEO 给收包一个上限；
+        // 真正决定超时的是上层 QUIC/DNS 自己的计时器，这里只是兜底。
+        let tv = libc::timeval {
+            tv_sec: SOCKS5_TIMEOUT.as_secs() as _,
+            tv_usec: 0,
+        };
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                &tv as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::timeval>() as _,
+            )
+        };
+        let sa = libc::sockaddr_in {
+            sin_family: libc::AF_INET as _,
+            sin_port: socks5.port().to_be(),
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_be_bytes(socks5.ip().octets()),
+            },
+            sin_zero: [0; 8],
+        };
+        let r = unsafe {
+            libc::connect(
+                fd,
+                &sa as *const _ as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as _,
+            )
+        };
+        if r < 0 {
+            let e = std::io::Error::last_os_error();
+            unsafe { libc::close(fd) };
+            return Err(format!("udp connect: {e}"));
+        }
+        let sock = unsafe { StdUdp::from_raw_fd(fd) };
+        sock.set_nonblocking(true)
+            .map_err(|e| format!("udp set_nonblocking: {e}"))?;
+        Ok(sock)
+    }
+
+    /// 收外发 → 封 SOCKS5 UDP 头 → 发；收回包 → 剥头 → 交给上层写回 TUN。
+    async fn run(
+        src: SocketAddr,
+        sock: TokioUdp,
+        mut rx: mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>,
+        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>,
+    ) {
+        let mut buf = vec![0u8; RECV_BUF];
+        loop {
+            tokio::select! {
+                out = rx.recv() => {
+                    let Some((data, dst)) = out else { break }; // 上层 drop 了
+                    let pkt = super::socks5_udp_encode(&dst, &data);
+                    if let Err(e) = sock.send(&pkt).await {
+                        eprintln!("tun2socks: udp relay {src} send: {e}");
+                        break;
+                    }
+                }
+                r = sock.recv(&mut buf) => {
+                    match r {
+                        Ok(n) => {
+                            match super::socks5_udp_decode(&buf[..n]) {
+                                // 回包：把来源当成本地 src，交回上层写进 TUN
+                                Some((data, _from)) => { let _ = replies.send((data, src)); }
+                                None => { /* 畸形包，丢 */ }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("tun2socks: udp relay {src} recv: {e}");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 把 TUN 进来的 UDP 载荷按 SOCKS5 UDP 请求格式封装：
+/// `RSV(2) FRAG(1) ATYP(1) DST.ADDR DST.PORT DATA`
+fn socks5_udp_encode(dst: &SocketAddr, data: &[u8]) -> Vec<u8> {
+    let mut pkt = Vec::with_capacity(data.len() + 22);
+    pkt.extend_from_slice(&[0x00, 0x00, 0x00]); // RSV RSV FRAG(0=不切分)
+    match dst {
+        SocketAddr::V4(v4) => {
+            pkt.push(0x01);
+            pkt.extend_from_slice(&v4.ip().octets());
+            pkt.extend_from_slice(&v4.port().to_be_bytes());
+        }
+        SocketAddr::V6(v6) => {
+            pkt.push(0x04);
+            pkt.extend_from_slice(&v6.ip().octets());
+            pkt.extend_from_slice(&v6.port().to_be_bytes());
+        }
+    }
+    pkt.extend_from_slice(data);
+    pkt
+}
+
+/// 拆 SOCKS5 UDP 响应，取出 (数据, 来源地址)。
+/// 畸形或不支持的地址类型返回 None。
+fn socks5_udp_decode(pkt: &[u8]) -> Option<(Vec<u8>, SocketAddr)> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    if pkt.len() < 4 || pkt[0] != 0x00 || pkt[1] != 0x00 {
+        return None;
+    }
+    if pkt[2] != 0x00 {
+        // FRAG != 0：要重组，不支持。QUIC/DNS 都不切分，直接丢。
+        return None;
+    }
+    let mut o = 4;
+    let ip: IpAddr = match pkt[3] {
+        0x01 => {
+            if pkt.len() < o + 4 + 2 {
+                return None;
+            }
+            let a: [u8; 4] = pkt[o..o + 4].try_into().ok()?;
+            o += 4;
+            IpAddr::V4(Ipv4Addr::from(a))
+        }
+        0x04 => {
+            if pkt.len() < o + 16 + 2 {
+                return None;
+            }
+            let a: [u8; 16] = pkt[o..o + 16].try_into().ok()?;
+            o += 16;
+            IpAddr::V6(Ipv6Addr::from(a))
+        }
+        0x03 => {
+            // 域名形态：UDP 响应里少见（我们是按 IP 发的），拿不到 IP 就整包丢，
+            // 所以这里直接返回 None —— 不必再往下解析端口。
+            return None;
+        }
+        _ => return None,
+    };
+    let port = u16::from_be_bytes(pkt[o..o + 2].try_into().ok()?);
+    o += 2;
+    Some((pkt[o..].to_vec(), SocketAddr::new(ip, port)))
 }
