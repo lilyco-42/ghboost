@@ -51,6 +51,20 @@ object LocalProxySetup {
     private const val PLACEHOLDER_MARKER = "DIRECT-PLACEHOLDER"
 
     /**
+     * 配置格式版本。**改了配置内容就要 +1** —— 否则老使用者盘上那份旧配置
+     * 永远不会被更新（`ensureConfig` 默认不覆盖），新加的字段等于不存在。
+     *
+     * v1 → v2：修掉 `GEOIP,TW,DIRECT` 导致内核起不来（见 [defaultConfig] 注释）。
+     */
+    private const val CONFIG_VERSION = 2
+
+    /** 配置里用来标记版本的注释行，形如 `# ghboost-config-version: 2`。 */
+    private const val VERSION_MARKER = "# ghboost-config-version:"
+
+    /** GeoIP 库文件名（放在 assets 里，首次启动时复制出来）。 */
+    private const val MMDB_ASSET = "Country.mmdb"
+
+    /**
      * 建立目录结构并（在不覆盖既有文件的前提下）写入配置。
      *
      * @return true 表示至少改动了盘上的东西；false 表示一切都已存在，
@@ -68,14 +82,33 @@ object LocalProxySetup {
             }
         }
 
+        // GeoIP 库：从 assets 复制到 filesDir。没有它就**不能用 GEOIP/GEOSITE 规则**
+        // —— 内核会在加载配置时直接失败（实测：Failed to load GeoIP database）。
+        val mmdb = ensureGeoData(context, root)
+        if (mmdb != null) changed = true
+
         val config = File(root, "configs/config.yaml")
-        if (!config.exists()) {
-            config.parentFile?.mkdirs()
-            config.writeText(defaultConfig())
-            changed = true
-            Log.i(TAG, "wrote ${config.absolutePath}")
+        // 版本不符就重写。只判断「文件是否存在」是不够的：配置内容会随版本演进，
+        // 老使用者盘上的旧配置会永远卡在旧格式上（这次的 GEOIP 崩溃就是这来的）。
+        val existingVersion = if (config.isFile) {
+            runCatching { config.readLines().firstOrNull { it.startsWith(VERSION_MARKER) } }
+                .getOrNull()
+                ?.removePrefix(VERSION_MARKER)?.trim()?.toIntOrNull()
         } else {
-            Log.i(TAG, "config exists, left untouched: ${config.absolutePath}")
+            null
+        }
+
+        if (existingVersion != CONFIG_VERSION) {
+            config.parentFile?.mkdirs()
+            config.writeText(defaultConfig(mmdb?.absolutePath))
+            changed = true
+            Log.i(
+                TAG,
+                "wrote ${config.absolutePath} (version $existingVersion -> $CONFIG_VERSION, " +
+                    "geodata=${mmdb != null})",
+            )
+        } else {
+            Log.i(TAG, "config up to date (v$CONFIG_VERSION): ${config.absolutePath}")
         }
 
         val provider = File(root, "providers/ghboost.yaml")
@@ -108,6 +141,36 @@ object LocalProxySetup {
 
     /** 配置根目录，给将来的 UI（例如「打开设定」）用。 */
     fun configRoot(context: Context): File = File(context.filesDir, "mihomo")
+
+    /**
+     * 把 GeoIP 库从 assets 复制出来（幂等）。返回可用的路径，没有则 null。
+     *
+     * **为什么必须复制**：meow 的 `geodata.mmdb-path` 要一个**文件路径**，
+     * 而 assets 里的东西不是普通文件、读不到真实路径，所以必须先落地。
+     * 没有这个库就不能用 `GEOIP,TW,DIRECT` —— 内核加载配置时会直接失败。
+     */
+    private fun ensureGeoData(context: Context, root: File): File? {
+        val dst = File(root, MMDB_ASSET)
+        if (dst.isFile && dst.length() > 0) return dst
+
+        return try {
+            context.assets.open(MMDB_ASSET).use { input ->
+                dst.parentFile?.mkdirs()
+                dst.outputStream().use { out -> input.copyTo(out) }
+            }
+            if (dst.length() > 0) {
+                Log.i(TAG, "extracted $MMDB_ASSET -> ${dst.absolutePath} (${dst.length()} bytes)")
+                dst
+            } else {
+                Log.w(TAG, "$MMDB_ASSET extracted but empty")
+                null
+            }
+        } catch (e: Exception) {
+            // 没打包这个 asset 也不该让 App 挂掉：退回「不用 GEO 规则」的配置。
+            Log.w(TAG, "$MMDB_ASSET not bundled, GeoIP rules will be disabled", e)
+            null
+        }
+    }
 
     /**
      * 从外部目录导入节点清单（可选）。
@@ -205,8 +268,18 @@ object LocalProxySetup {
         return !text.contains(PLACEHOLDER_MARKER)
     }
 
-    private fun defaultConfig(): String = """
+    /**
+     * 生成出厂配置。
+     *
+     * @param mmdbPath GeoIP 库的绝对路径；为 null 时**不能**用 GEOIP/GEOSITE 规则
+     *   （meow 会在加载配置时直接失败：`Failed to load GeoIP database`）。
+     */
+    private fun defaultConfig(mmdbPath: String?): String {
+        // 用占位符替换而不是字符串插值：插进来的多行内容会打乱
+        // `trimIndent()` 的公共缩进推断，结果 YAML 缩进错乱、内核解析失败。
+        val template = """
         # GhBoost on Android — mihomo 配置
+        $VERSION_MARKER $CONFIG_VERSION
         #
         # 这个文件由 App 首次启动时自动生成，之后**不会再被覆盖**，
         # 你可以放心改。要恢复原样就把整个 mihomo/ 目录删掉再开一次 App。
@@ -229,11 +302,8 @@ object LocalProxySetup {
         # 只绑本机；不设 secret，因为根本不出 127.0.0.1
         external-controller: 127.0.0.1:$CONTROLLER_PORT
 
-        # 地理数据：用官方 GeoIP / GeoSite，规则里引用 GEOIP,TW / GEOSITE,github
-        geodata-mode: true
-        geox-url:
-          geoip: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"
-          geosite: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+        # 注意：mihomo 的 `geodata-mode` / `geox-url` 在 meow 里**不支持**
+        # （会被忽略并打警告）。地理数据只认下面的 `geodata.mmdb-path`。
 
         profile:
           store-selected: true
@@ -272,15 +342,66 @@ object LocalProxySetup {
             proxies:
               - DIRECT
 
+        @GEODATA@
+
         rules:
-          # 中国台湾地区本地服务、网银直连（与桌面端规则一致）
-          - GEOIP,TW,DIRECT
-          - GEOSITE,category-ads-all,REJECT
-          - GEOSITE,github,PROXY
-          - GEOSITE,google,PROXY
-          - GEOSITE,youtube,PROXY
-          - MATCH,PROXY
-    """.trimIndent()
+        @RULES@
+        """.trimIndent()
+
+        return template
+            .replace("@GEODATA@", geodataBlock(mmdbPath))
+            .replace("@RULES@", rulesBlock(mmdbPath))
+    }
+
+    /**
+     * `geodata:` 块。
+     *
+     * **必须给出真实存在的文件路径** —— meow 会在加载配置时就打开它，
+     * 缺失直接导致内核启动失败（实测：`Failed to load GeoIP database at
+     * ./meow/Country.mmdb`）。注意 mihomo 的 `geodata-mode` / `geox-url`
+     * 在 meow 里是**不支持**的字段（会被忽略并告警），别照抄。
+     */
+    private fun geodataBlock(mmdbPath: String?): String =
+        if (mmdbPath != null) {
+            """
+            geodata:
+              mmdb-path: "$mmdbPath"
+            """.trimIndent()
+        } else {
+            "# geodata 未启用：assets 里没有 $MMDB_ASSET"
+        }
+
+    /**
+     * 规则列表。
+     *
+     * 有 GeoIP 库才用 `GEOIP` / `GEOSITE`（台湾本地站点、网银直连 —— 与桌面端一致）；
+     * 没有就退回纯域名规则。**绝不能**在没有库的情况下写 GEO 规则，
+     * 那会让内核连启动都做不到。
+     */
+    private fun rulesBlock(mmdbPath: String?): String =
+        if (mmdbPath != null) {
+            """
+              # 中国台湾地区本地服务、网银直连（与桌面端规则一致）
+              - GEOIP,TW,DIRECT
+              - GEOSITE,category-ads-all,REJECT
+              - GEOSITE,github,PROXY
+              - GEOSITE,google,PROXY
+              - GEOSITE,youtube,PROXY
+              - MATCH,PROXY
+            """.trimIndent()
+        } else {
+            """
+              # 没有 GeoIP 库 → 不能用 GEOIP/GEOSITE，退回域名规则
+              - DOMAIN-SUFFIX,github.com,PROXY
+              - DOMAIN-SUFFIX,githubusercontent.com,PROXY
+              - DOMAIN-SUFFIX,google.com,PROXY
+              - DOMAIN-SUFFIX,gstatic.com,PROXY
+              - DOMAIN-SUFFIX,googleapis.com,PROXY
+              - DOMAIN-SUFFIX,youtube.com,PROXY
+              - DOMAIN-SUFFIX,googlevideo.com,PROXY
+              - MATCH,PROXY
+            """.trimIndent()
+        }
 
     private fun placeholderProvider(): String = """
         # GhBoost 节点清单（占位）
