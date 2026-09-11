@@ -73,7 +73,19 @@ const LISTEN_ADDR: &str = "127.0.0.1:1080";
 /// 监听器在 meow 里的名字，只用于日志与 `GET /listeners` 快照。
 const LISTENER_NAME: &str = "ghboost-mixed";
 
+/// 等内核 bind 上 1080 的上限。实测冷启 ~0.7s；
+/// 给 5s 余量，同时不至于让调用方（VpnService 线程）等太久。
+const READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 static RUNNING: AtomicBool = AtomicBool::new(false);
+/// 内核**真正开始监听** 1080 了没有。
+///
+/// 为什么需要：`start()` 只是把线程拉起来，内核还要读配置、建隧道才能 bind。
+/// 这中间有 ~0.7s（实测）的空窗期 —— 而 tun2socks 一起来就往 1080 送流量，
+/// 撞在空窗里的连接会直接失败（实测 logcat 时序：
+/// `tun: TCP conn` 在 `LISTENING` **之前** 200ms 就出现了）。
+/// 所以 Start 必须等内核就绪再放 tun2socks 出去。
+static LISTENING: AtomicBool = AtomicBool::new(false);
 /// 用 Notify 而不是 Condvar：整条链是 async，锁跨 await 容易死锁。
 static SHUTDOWN: Mutex<Option<Arc<tokio::sync::Notify>>> = Mutex::new(None);
 static THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
@@ -142,6 +154,24 @@ pub fn start(config_path: &str) -> Result<(), String> {
         }
     }
 
+    // 等内核真正 bind 上 1080 再返回。实测空窗期约 0.7s，期间 tun2socks
+    // 送来的连接会全部失败（logcat 时序可证：`tun: TCP conn` 早于 `LISTENING`）。
+    let deadline = std::time::Instant::now() + READY_TIMEOUT;
+    while !LISTENING.load(Ordering::SeqCst) {
+        if !RUNNING.load(Ordering::SeqCst) {
+            // 线程已经收工（配置错误等），别干等
+            return Err("meow kernel exited during startup (see logcat)".into());
+        }
+        if std::time::Instant::now() >= deadline {
+            // 超时不当作失败：可能只是机器慢。但必须留痕，方便和日志对照。
+            logcat::error(&format!(
+                "kernel not listening after {READY_TIMEOUT:?}, releasing caller anyway"
+            ));
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
     Ok(())
 }
 
@@ -165,6 +195,7 @@ pub fn stop() {
 
 fn cleanup() {
     RUNNING.store(false, Ordering::SeqCst);
+    LISTENING.store(false, Ordering::SeqCst);
     // protector 指向已失效的 VpnService 就危险，宁可清掉：
     // 没有 protector 时 meow 的 dial 会直接报错，而不是静默走错路。
     meow_common::clear_socket_protector();
@@ -271,6 +302,8 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
         });
 
         logcat::info(&format!("LISTENING on {addr}"));
+        // 到这里 1080 已经在听了 —— 通知 start() 可以放行 tun2socks。
+        LISTENING.store(true, Ordering::SeqCst);
 
         shutdown.notified().await;
         listen_task.abort();
