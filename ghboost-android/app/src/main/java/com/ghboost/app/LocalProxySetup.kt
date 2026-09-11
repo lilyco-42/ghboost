@@ -56,8 +56,12 @@ object LocalProxySetup {
      *
      * v1 → v2：修掉 `GEOIP,TW,DIRECT` 导致内核起不来（见 [defaultConfig] 注释）。
      * v2 → v3：provider 路径改絕對路徑（當時以為是 CWD 問題）。
-     * v3 → v4：**改回相對路徑，但把 provider 搬進 configs/** —— 真正的原因是
+     * v3 → v4：改回相對路徑，但把 provider 搬進 configs 目錄 —— 真正的原因是
      *   meow 要求 provider path 不得逃出 config 目錄，不是 CWD。
+     *
+     * ⚠️ 注意：Kotlin 的區塊註釋**會嵌套**，KDoc 裡千萬不要出現連續的
+     *   「斜線+星號+星號」（例如寫 `configs/` 後面接粗體標記），
+     *   那會被當成嵌套註釋的開始，導致整個文件的註釋不閉合、語法全崩。
      */
     private const val CONFIG_VERSION = 4
 
