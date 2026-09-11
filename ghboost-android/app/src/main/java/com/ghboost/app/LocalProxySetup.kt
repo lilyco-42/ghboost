@@ -127,16 +127,46 @@ object LocalProxySetup {
      * @return true 表示这次真的导入了新内容
      */
     fun importExternalNodes(context: Context): Boolean {
-        val ext = context.getExternalFilesDir(null) ?: return false
-        val src = File(ext, "ghboost/providers.yaml")
-        if (!src.isFile) return false
+        val ext = context.getExternalFilesDir(null)
+        if (ext == null) {
+            // 外部存储没挂载时这里会是 null —— 不是「没有节点」，是「看不到」。
+            // 必须区分，否则使用者放了文件却毫无反馈。
+            Log.i(TAG, "import: getExternalFilesDir() == null (external storage unavailable)")
+            return false
+        }
 
-        val text = runCatching { src.readText() }.getOrNull() ?: return false
+        // 两个候选：优先**直接放在 files/ 下**的那个。
+        // 原因：files/ 本身由 App 创建（属主就是 App），一定能进；
+        // 而 `ghboost/` 这种子目录如果是用 adb / 文件管理器建的，
+        // 属主是 shell、权限 2770，App 可能连目录都进不去 → 文件「看得见列不出」。
+        // 这是实测踩到的坑，不是理论顾虑。
+        val candidates = listOf(
+            File(ext, "ghboost-providers.yaml"),
+            File(ext, "ghboost/providers.yaml"),
+        )
+
+        for (src in candidates) {
+            Log.i(TAG, "import: try ${src.absolutePath} exists=${src.isFile}")
+        }
+
+        val src = candidates.firstOrNull { it.isFile } ?: return false
+
+        val text = runCatching { src.readText() }.getOrNull()
+        if (text == null) {
+            Log.w(TAG, "import: ${src.absolutePath} exists but unreadable")
+            return false
+        }
+        Log.i(TAG, "import: read ${text.length} chars from ${src.absolutePath}")
+
         // 空文件、或只是把占位又抄了一遍 —— 都不算「有节点」。
-        if (text.isBlank() || text.contains(PLACEHOLDER_MARKER)) return false
+        if (text.isBlank() || text.contains(PLACEHOLDER_MARKER)) {
+            Log.i(TAG, "import: content is blank or still the placeholder, ignoring")
+            return false
+        }
 
         val dst = File(configRoot(context), "providers/ghboost.yaml")
         if (dst.isFile && runCatching { dst.readText() }.getOrNull() == text) {
+            Log.i(TAG, "import: already up to date")
             return false
         }
 
@@ -153,7 +183,7 @@ object LocalProxySetup {
 
     /** 外部导入文件应该放的位置，给 UI 显示用。 */
     fun externalImportPath(context: Context): String =
-        File(context.getExternalFilesDir(null) ?: context.filesDir, "ghboost/providers.yaml")
+        File(context.getExternalFilesDir(null) ?: context.filesDir, "ghboost-providers.yaml")
             .absolutePath
 
     /**
