@@ -18,8 +18,9 @@ import java.io.File
  * Flow:
  *   1. Builder.establish() → TUN fd
  *   2. GhBoostCore.nativeStartTun2Socks(this, fd, DNS_PORT)
- *   3. Rust stack reads/writes the TUN fd, proxies via SOCKS5
- *      （第 3 步目前还是占位实现，见 DNS_PORT 的注释）
+ *   3. Rust lwip 栈读写 TUN fd，TCP 经 SOCKS5 出站转发
+ *      （UDP 尚未转发；且 Start 按钮仍锁着，见 tun2socks.rs 的
+ *        FORWARDING_IMPLEMENTED —— 要等本地 SOCKS5 代理就位）
  */
 class GhBoostVpnService : VpnService() {
 
@@ -29,11 +30,14 @@ class GhBoostVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1
 
         /**
-         * tun2socks 本地监听的 DNS 端口。
+         * 交给 Rust 侧的 DNS 端口提示值。
          *
-         * 注意：Rust 侧的 `tun2socks::start` 目前还是**占位实现**（只置了个 RUNNING
-         * 标志，没有真正的 lwip 协议栈），所以这个值暂时不会影响实际行为。
-         * 等真接上 lwip 时，这里要和 `.addDnsServer()` 配成对。
+         * Rust 侧 `tun2socks::start` 已接上 lwip 协议栈，DNS 由栈内的
+         * TCP/UDP 处理，这个值目前**被忽略**（参数名 `_dns_port`），
+         * 保留是为了将来把 DNS 劫持到本地 resolver 时用。
+         * 注意 `.addDnsServer()` 给的是 8.8.8.8/8.8.4.4 —— 要让它们
+         * 生效，UDP 转发（SOCKS5 UDP ASSOCIATE）得先做出来，见
+         * ghboost-ffi/src/tun2socks.rs 的 `udp_drain`。
          */
         private const val DNS_PORT = 5353
     }
