@@ -734,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "ghboost-tray"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "lilyco-ghboost",
  "serde_json",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "lilyco-ghboost"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "async-stream",
  "axum",
