@@ -212,6 +212,26 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
     };
 
     let res: Result<(), String> = rt.block_on(async {
+        // 先确认 provider 檔案到底在不在、多大 —— 這是「節點沒生效」最常見的原因
+        // （meow 對 provider path 有校驗，而且解析失敗時不一定有明顯報錯）。
+        {
+            let cfg_dir = std::path::Path::new(config_path)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let prov = cfg_dir.join("providers/ghboost.yaml");
+            match std::fs::metadata(&prov) {
+                Ok(m) => logcat::info(&format!(
+                    "provider file OK: {} ({} bytes)",
+                    prov.display(),
+                    m.len()
+                )),
+                Err(e) => logcat::error(&format!(
+                    "provider file MISSING: {} ({e})",
+                    prov.display()
+                )),
+            }
+        }
+
         logcat::info(&format!("loading config {config_path}"));
         let config = meow_config::load_config(config_path)
             .await
@@ -222,12 +242,22 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
             config.rules.len(),
             config.general.mode
         ));
-        // 把节点名打出来：provider 的 path 解析失败时，这里会只剩 DIRECT/REJECT，
-        // 一眼就能看出「节点没加载进来」（否则表现成「VPN 连上了但不走节点」）。
+        // 把節點名打出來：provider 沒載進來時這裡會只剩內建的
+        // DIRECT/GLOBAL/PROXY/REJECT/REJECT-DROP，一眼可辨。
         {
             let mut names: Vec<String> = config.proxies.keys().map(|k| k.to_string()).collect();
             names.sort();
             logcat::info(&format!("proxies: {}", names.join(", ")));
+        }
+        // provider 的節點不在 `proxies` 裡，而是在這裡 —— 兩個都要看才知道
+        // 「是 provider 沒載入」還是「載入了但組沒引用對」。
+        {
+            let mut provs: Vec<String> = config.proxy_providers.keys().cloned().collect();
+            provs.sort();
+            logcat::info(&format!(
+                "proxy_providers: [{}]",
+                provs.join(", ")
+            ));
         }
 
         // 与 meow-app 的 VPN_PLATFORM 分支一致：Android 上无条件装。

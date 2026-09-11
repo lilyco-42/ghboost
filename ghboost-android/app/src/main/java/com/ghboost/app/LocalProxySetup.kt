@@ -51,19 +51,21 @@ object LocalProxySetup {
     private const val PLACEHOLDER_MARKER = "DIRECT-PLACEHOLDER"
 
     /**
-     * 配置格式版本。**改了配置内容就要 +1** —— 否则老使用者盘上那份旧配置
+     * 配置格式版本。改了配置内容就要 +1 —— 否则老使用者盘上那份旧配置
      * 永远不会被更新（`ensureConfig` 默认不覆盖），新加的字段等于不存在。
      *
-     * v1 → v2：修掉 `GEOIP,TW,DIRECT` 导致内核起不来（见 [defaultConfig] 注释）。
-     * v2 → v3：provider 路径改絕對路徑（當時以為是 CWD 問題）。
-     * v3 → v4：改回相對路徑，但把 provider 搬進 configs 目錄 —— 真正的原因是
-     *   meow 要求 provider path 不得逃出 config 目錄，不是 CWD。
+     * v1 → v2：修掉 GEOIP,TW,DIRECT 导致内核起不来（见 [defaultConfig] 注释）。
+     * v2 → v3：provider 路径改绝对路径（当时以为是 CWD 问题）。
+     * v3 → v4：改回相对路径，但把 provider 搬进 configs 目录 —— 真正的原因是
+     *   meow 要求 provider path 不得逃出 config 目录，不是 CWD。
+     * v4 → v5：代理组 select 改成 url-test。`select` 默认选列表第一个，
+     *   而列表里是 DIRECT，所以流量全走直连（见 [defaultConfig] 注释）。
      *
-     * ⚠️ 注意：Kotlin 的區塊註釋**會嵌套**，KDoc 裡千萬不要出現連續的
-     *   「斜線+星號+星號」（例如寫 `configs/` 後面接粗體標記），
-     *   那會被當成嵌套註釋的開始，導致整個文件的註釋不閉合、語法全崩。
+     * ⚠️ 注意：Kotlin 的区块注释会嵌套，KDoc 里千万不要出现连续的
+     *   「斜线 + 星号 + 星号」（例如写 `configs/` 后面接粗体标记），
+     *   那会被当成嵌套注释的开始，导致整个文件的注释不闭合、语法全崩。
      */
-    private const val CONFIG_VERSION = 4
+    private const val CONFIG_VERSION = 5
 
     /** 配置里用来标记版本的注释行，形如 `# ghboost-config-version: 2`。 */
     private const val VERSION_MARKER = "# ghboost-config-version:"
@@ -366,13 +368,19 @@ object LocalProxySetup {
 
         proxies: []
 
+        # ⚠️ 必须用 url-test 而不是 select：
+        # `select` 默认选**列表里的第一个**，而我们把 DIRECT 写进了 proxies，
+        # 结果默认就选中 DIRECT —— 表现为「VPN 连上了、但流量全走直连不走节点」。
+        # url-test 会自动挑延迟最低的节点，既避开这个坑，也更符合「傻瓜式」。
+        # 注意：这里**不要**再列 DIRECT，否则它会被当成候选节点之一。
         proxy-groups:
           - name: PROXY
-            type: select
+            type: url-test
             use:
               - ghboost
-            proxies:
-              - DIRECT
+            url: https://www.gstatic.com/generate_204
+            interval: 300
+            tolerance: 50
 
         @GEODATA@
 
