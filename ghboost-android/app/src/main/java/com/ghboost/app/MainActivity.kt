@@ -87,8 +87,16 @@ class MainActivity : AppCompatActivity() {
                     Log.w("GhBoost", "ensureConfig failed", e)
                     false
                 }
+                // 私有目录里的 providers/ghboost.yaml 使用者碰不到，
+                // 所以允许从 App 的外部目录导入一份（插数据线或用文件管理器都能放）。
+                val imported = try {
+                    LocalProxySetup.importExternalNodes(this@MainActivity)
+                } catch (e: Exception) {
+                    Log.w("GhBoost", "importExternalNodes failed", e)
+                    false
+                }
                 val configReady = LocalProxySetup.hasUsableConfig(this@MainActivity)
-                // 光有設定檔不夠：占位節點等於「沒有節點」，開了會連不上任何網站。
+                // 光有设定档不够：占位节点等于「没有节点」，开了会连不上任何网站。
                 val nodesReady = LocalProxySetup.hasRealNodes(this@MainActivity)
 
                 tunReady = forwardingReady && nodesReady
@@ -104,7 +112,8 @@ class MainActivity : AppCompatActivity() {
                             tvStatus.text = "還差節點：填好節點清單才能開始加速"
                     }
                     tvNodes.text = if (tunReady) {
-                        "代理核心已就緒，按 Start 開始加速。"
+                        if (imported) "已從外部檔案匯入節點。按 Start 開始加速。"
+                        else "代理核心已就緒，按 Start 開始加速。"
                     } else {
                         buildConfigHint(configChanged, configReady, forwardingReady)
                     }
@@ -167,7 +176,11 @@ class MainActivity : AppCompatActivity() {
             } else {
                 "本機代理設定檔已就緒（Socks5 127.0.0.1:${LocalProxySetup.SOCKS5_PORT}）。"
             }
-            lines += "把訂閱節點填進 providers/ghboost.yaml 才算真的能加速。"
+            // 别说「填进 providers/ghboost.yaml」——那在 app 私有目录，使用者碰不到。
+            // 要给出**真的能走**的那条路。
+            lines += "把節點檔案放到："
+            lines += LocalProxySetup.externalImportPath(this)
+            lines += "再重開 App 就會自動匯入。"
         } else {
             lines += "沒能寫入代理設定檔，請確認 App 儲存空間是否可用。"
         }

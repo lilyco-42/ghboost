@@ -110,6 +110,53 @@ object LocalProxySetup {
     fun configRoot(context: Context): File = File(context.filesDir, "mihomo")
 
     /**
+     * 从外部目录导入节点清单（可选）。
+     *
+     * **为什么需要这条路**：`providers/ghboost.yaml` 在 app 私有目录
+     * （`/data/data/.../files/`），使用者**根本碰不到** —— 普通 App 没有 root，
+     * 也没有文件管理器权限。所以「把訂閱節點填進 providers/ghboost.yaml」
+     * 这句文案本来是个死路：看得到、做不到。
+     *
+     * 给一条真能走的路：把节点文件放到 App 自己的**外部**目录
+     * （不需要任何权限，插上数据线或用文件管理器都能放）：
+     *
+     *     /sdcard/Android/data/com.ghboost.app/files/ghboost/providers.yaml
+     *
+     * 下次开 App 时自动导入。内容与现状一致就不动，避免每次启动都写盘。
+     *
+     * @return true 表示这次真的导入了新内容
+     */
+    fun importExternalNodes(context: Context): Boolean {
+        val ext = context.getExternalFilesDir(null) ?: return false
+        val src = File(ext, "ghboost/providers.yaml")
+        if (!src.isFile) return false
+
+        val text = runCatching { src.readText() }.getOrNull() ?: return false
+        // 空文件、或只是把占位又抄了一遍 —— 都不算「有节点」。
+        if (text.isBlank() || text.contains(PLACEHOLDER_MARKER)) return false
+
+        val dst = File(configRoot(context), "providers/ghboost.yaml")
+        if (dst.isFile && runCatching { dst.readText() }.getOrNull() == text) {
+            return false
+        }
+
+        return try {
+            dst.parentFile?.mkdirs()
+            dst.writeText(text)
+            Log.i(TAG, "imported nodes: ${src.absolutePath} -> ${dst.absolutePath}")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "import nodes failed", e)
+            false
+        }
+    }
+
+    /** 外部导入文件应该放的位置，给 UI 显示用。 */
+    fun externalImportPath(context: Context): String =
+        File(context.getExternalFilesDir(null) ?: context.filesDir, "ghboost/providers.yaml")
+            .absolutePath
+
+    /**
      * 节点清单里是否有**真实节点**（而不是出厂占位）。
      *
      * 为什么需要这个判断：内嵌内核本身能跑起来，但如果节点清单还是那个
