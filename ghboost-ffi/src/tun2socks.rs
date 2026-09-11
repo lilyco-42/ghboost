@@ -58,7 +58,7 @@
 //! 本常量 + `LocalProxySetup.hasRealNodes()`。别只依赖这里。
 
 use futures::{SinkExt, StreamExt};
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -116,7 +116,7 @@ pub fn start(fd: RawFd, _dns_port: u16) -> Result<(), String> {
 
     let join = std::thread::Builder::new()
         .name("ghboost-tun2socks".into())
-        .spawn(move || run_thread(owned_fd_raw, socks5_v4, notify));
+        .spawn(move || run_thread(owned_fd_raw, socks5_v4, dns_port, notify));
 
     if let Err(e) = join {
         unsafe {
@@ -212,7 +212,11 @@ fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
         // 三个任务在 LocalSet 上跑（不要求 Send，lwip 栈状态同线程）
         tokio::task::spawn_local(tun_io(tun, stack_sink, stack_stream));
         tokio::task::spawn_local(tcp_accept(tcp_listener, socks5));
-        tokio::task::spawn_local(udp_drain(udp_socket, socks5));
+        // meow 的 DNS 监听口（与 LocalProxySetup 的 `dns.listen` 一致）：
+        // tun2socks 会把 TUN 里所有 UDP/53 直接转给它，由 fake-ip 解析。
+        let dns_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, dns_port);
+
+        tokio::task::spawn_local(udp_drain(udp_socket, socks5, dns_addr));
         crate::logcat::info("tun2socks: lwip stack up, 3 tasks spawned");
 
         // 等 stop() 的 notify；期间不退出
@@ -534,7 +538,7 @@ fn socks5_rep(c: u8) -> &'static str {
 /// 一开始这里写成 `send_to(&data, &src, &src)`（两个参数都填本地地址），
 /// 结果 IP 头变成 `10.0.0.2 -> 10.0.0.2`，内核拿到后查不到对应 socket，
 /// **所有 UDP 回包被静默丢弃** —— DNS 永远超时。修法是把方向信息一路带下来。
-async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
+async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4, dns_addr: SocketAddrV4) {
     use std::collections::HashMap;
 
     // Box<UdpSocket>: Stream（Item=(Vec<u8>, src, dst)，裸元组）。
@@ -552,6 +556,9 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
     // src → relay 发送端。relay 任务活着时它一直收包；
     let mut relays: HashMap<SocketAddr, mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>> =
         HashMap::new();
+    // DNS 专用 relay：按 (本地源, DNS 服务器) 分桶，回包才能正确改写来源。
+    let mut dns_relays: HashMap<(SocketAddr, SocketAddr), mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>> =
+        HashMap::new();
 
     loop {
         tokio::select! {
@@ -560,6 +567,36 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
                 let Some((data, src, dst)) = pkt else { return };
                 // 清理已退出的 relay（它们 drop 了 receiver，send 会 Err）
                 relays.retain(|_, tx| !tx.is_closed());
+                dns_relays.retain(|_, tx| !tx.is_closed());
+
+                // DNS（UDP/53）：直接丢给 meow 的 DNS 监听口（fake-ip 在那里做），
+                // **不走 SOCKS5** —— 否则 meow 的 SOCKS5 入站只会把包 relay 到
+                // 8.8.8.8:53，既不触发 fake-ip 映射、也连不上节点（已实测：
+                // 0 个上游 DNS 查询、0 个节点连接）。meow 的 DNS 监听口在
+                // 127.0.0.1:<dns_port>，与 LocalProxySetup 的 `dns.listen` 一致。
+                if dst.port() == 53 {
+                    let key = (src, dst);
+                    let tx = match dns_relays.get(&key) {
+                        Some(tx) => tx.clone(),
+                        None => match dns_relay::spawn(src, dst, dns_addr, replies_tx.clone()) {
+                            Ok(tx) => {
+                                dns_relays.insert(key, tx.clone());
+                                tx
+                            }
+                            Err(e) => {
+                                crate::logcat::error(&format!(
+                                    "tun2socks: dns relay for {src}->{dst}: {e}"
+                                ));
+                                continue;
+                            }
+                        },
+                    };
+                    if tx.send((data, dst)).is_err() {
+                        dns_relays.remove(&key);
+                    }
+                    continue;
+                }
+
                 let tx = match relays.get(&src) {
                     Some(tx) => tx.clone(),
                     None => match relay::spawn(src, socks5, replies_tx.clone()) {
@@ -712,6 +749,106 @@ mod relay {
                         }
                         Err(e) => {
                             crate::logcat::error(&format!("tun2socks: udp relay {local} recv: {e}"));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// DNS 专用 relay：拦截 TUN 里 dst.port()==53 的 UDP，直接（plain UDP，已 protect）
+/// 发给 meow 的 DNS 监听口（默认 127.0.0.1:1053，fake-ip 在那里完成），**不走
+/// SOCKS5**。回包把来源改写为原本的 DNS 服务器地址（如 8.8.8.8:53），App 才认。
+///
+/// 为什么不能走 SOCKS5 UDP ASSOCIATE：meow 的 fake-ip 映射只在它的 DNS 监听口做；
+/// 走 SOCKS5 入站（1080）时，meow 拿到的是「把这个 UDP 包 relay 到 8.8.8.8:53」
+/// 的请求，并不会触发 fake-ip，也不会去连节点 —— 表现就是 DNS 永远解析不出来
+/// （设备实测：上游 DNS 查询 0 个、节点连接 0 个）。
+///
+/// 与 `relay`（SOCKS5）最大的区别：这里转发的是**裸 DNS 报文**到 meow 的 DNS
+/// 服务器，而不是套一层 SOCKS5 UDP 头；回包来源是固定的 meow DNS 口
+/// （127.0.0.1:<dns_port>），我们要把它伪装成 App 当初查询的那个 DNS 服务器。
+mod dns_relay {
+    use super::*;
+    use std::net::UdpSocket as StdUdp;
+    use tokio::net::UdpSocket as TokioUdp;
+    use tokio::sync::mpsc;
+
+    pub fn spawn(
+        local: SocketAddr,
+        dns_server: SocketAddr,
+        dns_addr: SocketAddrV4,
+        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr, SocketAddr)>,
+    ) -> Result<mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>, String> {
+        let (tx, rx) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+        // 建 socket 是阻塞 syscall，不能卡单线程 reactor（与 TCP/UDP 出站同一条路）
+        tokio::task::spawn_local(async move {
+            let std_sock = match tokio::task::spawn_blocking(protected_udp).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    crate::logcat::error(&format!(
+                        "tun2socks: dns relay {local}->{dns_server}: {e}"
+                    ));
+                    return;
+                }
+                Err(_) => return,
+            };
+            let sock = match TokioUdp::from_std(std_sock) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::logcat::error(&format!("tun2socks: dns from_std {local}: {e}"));
+                    return;
+                }
+            };
+            run(local, dns_server, dns_addr, sock, rx, replies).await;
+        });
+        Ok(tx)
+    }
+
+    /// 建一个已 protect 的 UDP socket（不需要 connect：用 send_to 直发 meow DNS 口）。
+    fn protected_udp() -> Result<StdUdp, String> {
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        if fd < 0 {
+            return Err(format!("udp socket: {}", std::io::Error::last_os_error()));
+        }
+        if let Err(e) = protect_fd(fd) {
+            unsafe { libc::close(fd) };
+            return Err(format!("udp protect: {e}"));
+        }
+        let sock = unsafe { StdUdp::from_raw_fd(fd) };
+        sock.set_nonblocking(true)
+            .map_err(|e| format!("udp set_nonblocking: {e}"))?;
+        Ok(sock)
+    }
+
+    async fn run(
+        local: SocketAddr,
+        dns_server: SocketAddr,
+        dns_addr: SocketAddrV4,
+        sock: TokioUdp,
+        mut rx: mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>,
+        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr, SocketAddr)>,
+    ) {
+        let mut buf = vec![0u8; 65_535];
+        loop {
+            tokio::select! {
+                out = rx.recv() => {
+                    let Some((data, _dst)) = out else { break }; // 上层 drop 了
+                    if let Err(e) = sock.send_to(&data, dns_addr).await {
+                        crate::logcat::error(&format!("tun2socks: dns relay {local} send: {e}"));
+                        break;
+                    }
+                }
+                r = sock.recv(&mut buf) => {
+                    match r {
+                        Ok(n) => {
+                            // 回包来源改写为原本的 DNS 服务器，去处是本地源端口。
+                            let _ = replies.send((buf[..n].to_vec(), dns_server, local));
+                        }
+                        Err(e) => {
+                            crate::logcat::error(&format!("tun2socks: dns relay {local} recv: {e}"));
                             break;
                         }
                     }
