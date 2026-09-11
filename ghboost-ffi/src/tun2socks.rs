@@ -77,6 +77,10 @@ static SHUTDOWN: Mutex<Option<Arc<Notify>>> = Mutex::new(None);
 
 pub const FORWARDING_IMPLEMENTED: bool = true;
 
+/// 从 TUN 读到的包数。用来判断「VPN 到底有没有把流量交给我们」——
+/// 这是区分「TUN 半段没工作」和「内核半段没工作」的唯一依据。
+static TUN_PKTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 const DEFAULT_SOCKS5: &str = "127.0.0.1:1080";
 const SOCKS5_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -144,6 +148,7 @@ fn cleanup() {
 }
 
 fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
+    crate::logcat::info(&format!("tun2socks: thread start, tun fd={fd}, socks5={socks5}"));
     // TUN fd 设成非阻塞，AsyncFd 的 readable/writable 才能 EAGAIN
     unsafe {
         let f = libc::fcntl(fd, libc::F_GETFL);
@@ -158,7 +163,7 @@ fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("tun2socks: build runtime: {e}");
+            crate::logcat::error(&format!("tun2socks: build runtime: {e}"));
             cleanup();
             return;
         }
@@ -176,13 +181,14 @@ fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
         tokio::task::spawn_local(tun_io(tun, stack_sink, stack_stream));
         tokio::task::spawn_local(tcp_accept(tcp_listener, socks5));
         tokio::task::spawn_local(udp_drain(udp_socket, socks5));
+        crate::logcat::info("tun2socks: lwip stack up, 3 tasks spawned");
 
         // 等 stop() 的 notify；期间不退出
         notify.notified().await;
         Ok::<(), String>(())
     }));
     if let Err(e) = res {
-        eprintln!("tun2socks: {e}");
+        crate::logcat::error(&format!("tun2socks: {e}"));
     }
     // run_until 返回 → LocalSet drop → 三个 spawn_local 任务取消
     // → 它们的 future drop → lwip 类型 drop；AsyncFd<OwnedFd> drop
@@ -239,6 +245,11 @@ async fn read_one_pkt(tun: &AsyncFd<OwnedFd>) -> Result<Vec<u8>, ()> {
             continue;
         }
         guard.clear_ready();
+        // 只打前几个和每 100 个，避免刷屏；但足以证明 TUN 侧有流量进来。
+        let c = TUN_PKTS.fetch_add(1, Ordering::Relaxed) + 1;
+        if c <= 5 || c % 100 == 0 {
+            crate::logcat::info(&format!("tun: read pkt #{c} ({n} bytes)"));
+        }
         return Ok(buf[..n as usize].to_vec());
     }
 }
@@ -272,6 +283,7 @@ async fn tcp_accept(mut tcp_listener: lwip::TcpListener, socks5: SocketAddrV4) {
     // `(TcpStream, local, remote)`，不是 Result（与 NetStack 的 Stream
     // 不同——后者 Item 才是 Result<Vec<u8>, io::Error>）。
     while let Some((stream, _local, remote)) = tcp_listener.next().await {
+        crate::logcat::info(&format!("tun: TCP conn -> {remote}"));
         tokio::task::spawn_local(handle_conn(stream, remote, socks5));
     }
 }
@@ -286,7 +298,7 @@ async fn handle_conn(
     let std_stream = match tokio::task::spawn_blocking(move || protected_connect(socks5)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            eprintln!("tun2socks: connect {remote} via {socks5}: {e}");
+            crate::logcat::error(&format!("tun2socks: connect {remote} via {socks5}: {e}"));
             return; // lwip stream drop → RST
         }
         Err(_) => return, // blocking 任务 panic
@@ -524,7 +536,7 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
                             tx
                         }
                         Err(e) => {
-                            eprintln!("tun2socks: udp relay for {src}: {e}");
+                            crate::logcat::error(&format!("tun2socks: udp relay for {src}: {e}"));
                             continue;
                         }
                     },
@@ -538,7 +550,7 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
                 let Some((data, from, to)) = rep else { continue };
                 // 四元组必须原样给出，否则内核认不出这是谁的包（见函数头注释）
                 if let Err(e) = send_half.send_to(&data, &from, &to) {
-                    eprintln!("tun2socks: udp reply {from} -> {to}: {e}");
+                    crate::logcat::error(&format!("tun2socks: udp reply {from} -> {to}: {e}"));
                 }
             }
         }
@@ -569,7 +581,7 @@ mod relay {
             let std_sock = match tokio::task::spawn_blocking(move || protected_udp(socks5)).await {
                 Ok(Ok(s)) => s,
                 Ok(Err(e)) => {
-                    eprintln!("tun2socks: udp associate {local}: {e}");
+                    crate::logcat::error(&format!("tun2socks: udp associate {local}: {e}"));
                     return;
                 }
                 Err(_) => return,
@@ -577,7 +589,7 @@ mod relay {
             let sock = match TokioUdp::from_std(std_sock) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("tun2socks: udp from_std {local}: {e}");
+                    crate::logcat::error(&format!("tun2socks: udp from_std {local}: {e}"));
                     return;
                 }
             };
@@ -650,7 +662,7 @@ mod relay {
                     let Some((data, dst)) = out else { break }; // 上层 drop 了
                     let pkt = super::socks5_udp_encode(&dst, &data);
                     if let Err(e) = sock.send(&pkt).await {
-                        eprintln!("tun2socks: udp relay {local} send: {e}");
+                        crate::logcat::error(&format!("tun2socks: udp relay {local} send: {e}"));
                         break;
                     }
                 }
@@ -667,7 +679,7 @@ mod relay {
                             }
                         }
                         Err(e) => {
-                            eprintln!("tun2socks: udp relay {local} recv: {e}");
+                            crate::logcat::error(&format!("tun2socks: udp relay {local} recv: {e}"));
                             break;
                         }
                     }

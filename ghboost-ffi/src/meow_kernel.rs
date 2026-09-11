@@ -55,40 +55,14 @@ use std::sync::{Arc, Mutex};
 use meow_listener::MixedListener;
 use meow_tunnel::Tunnel;
 
-/// 把消息写进 Android logcat。
+/// 日志走 crate 级的 [`crate::logcat`]（Android → logcat，其它平台 → stderr）。
 ///
 /// **为什么不能用 `eprintln!`**：Android 上 native 库的 stderr 默认进
 /// `/dev/null`，`adb logcat` 完全看不到。内核启动失败时只有一行 eprintln，
 /// 结果就是「VPN 显示已连接、内核却没在监听、且没有任何线索」——
 /// 这次实测就卡在这里：`nc 127.0.0.1 1080` 返回 Connection refused，
 /// 但 logcat 里一个字的错误都没有。诊断能力必须内建。
-mod logcat {
-    use std::ffi::{c_char, c_int, CString};
-
-    extern "C" {
-        fn __android_log_print(prio: c_int, tag: *const c_char, fmt: *const c_char, ...) -> c_int;
-    }
-
-    const INFO: c_int = 4;
-    const ERROR: c_int = 6;
-
-    fn write(prio: c_int, msg: &str) {
-        let Ok(tag) = CString::new("GhBoostMeow") else { return };
-        let Ok(fmt) = CString::new("%s") else { return };
-        // 消息里可能有 NUL（理论上不该有），有就截断，绝不 panic。
-        let Ok(body) = CString::new(msg.replace('\0', " ")) else { return };
-        unsafe {
-            __android_log_print(prio, tag.as_ptr(), fmt.as_ptr(), body.as_ptr());
-        }
-    }
-
-    pub fn info(msg: &str) {
-        write(INFO, msg);
-    }
-    pub fn error(msg: &str) {
-        write(ERROR, msg);
-    }
-}
+use crate::logcat;
 
 /// 本地 SOCKS5/mixed 入口。
 ///

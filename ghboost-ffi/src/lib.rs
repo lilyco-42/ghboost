@@ -6,6 +6,10 @@
 
 pub mod tun2socks;
 
+/// 日志出口。Android 上必须走 logcat —— native 的 stderr 会进 `/dev/null`，
+/// 出了事 logcat 里一个字都看不到（实测踩过）。
+pub mod logcat;
+
 #[cfg(target_os = "android")]
 pub mod protect;
 
