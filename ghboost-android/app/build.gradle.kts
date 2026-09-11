@@ -13,8 +13,8 @@ android {
         targetSdk = 35
         // 與 Cargo.toml 的版本保持一致（每次發版一起改）。
         // versionCode 必須**單調遞增**，否則已安裝的使用者升不了級。
-        versionCode = 13
-        versionName = "0.3.13"
+        versionCode = 14
+        versionName = "0.3.14"
     }
 
     // 簽章必須**每次建置都同一把key**，否則使用者更新時會撞
