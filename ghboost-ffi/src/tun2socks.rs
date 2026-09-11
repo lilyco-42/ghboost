@@ -241,14 +241,10 @@ async fn write_all_tun(tun: &AsyncFd<OwnedFd>, pkt: &[u8]) -> Result<(), ()> {
 // ── TCP 接受 → SOCKS5 出站 ──────────────────────────────────
 
 async fn tcp_accept(mut tcp_listener: lwip::TcpListener, socks5: SocketAddrV4) {
-    while let Some(ev) = tcp_listener.next().await {
-        let (stream, _local, remote) = match ev {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("tun2socks tcp_listener: {e:?}");
-                continue;
-            }
-        };
+    // 注意：lwip::TcpListener 的 Stream::Item 就是**裸元组**
+    // `(TcpStream, local, remote)`，不是 Result（与 NetStack 的 Stream
+    // 不同——后者 Item 才是 Result<Vec<u8>, io::Error>）。
+    while let Some((stream, _local, remote)) = tcp_listener.next().await {
         tokio::task::spawn_local(handle_conn(stream, remote, socks5));
     }
 }
@@ -445,9 +441,9 @@ fn socks5_rep(c: u8) -> &'static str {
 
 // ── UDP：现在只 poll-and-drop，TODO SOCKS5 UDP ASSOCIATE ─────
 
-async fn udp_drain(mut udp: Box<lwip::UdpSocket>) {
-    // Box<UdpSocket>: Stream（Item=(Vec<u8>, src, dst)）。Pin 住以免
-    // UdpSocket 自身是否 Unpin 影响 .next()（Pin<Box<_>> 永远 Unpin）。
+async fn udp_drain(udp: Box<lwip::UdpSocket>) {
+    // Box<UdpSocket>: Stream（Item=(Vec<u8>, src, dst)，裸元组）。
+    // Pin 住以免 UdpSocket 自身是否 Unpin 影响 .next()。
     let mut udp = std::pin::Pin::from(udp);
     while let Some(_pkt) = udp.next().await {
         // TODO: SOCKS5 UDP ASSOCIATE（一个被 protect 的 UDP socket
