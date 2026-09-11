@@ -71,13 +71,24 @@ class MainActivity : AppCompatActivity() {
                     false
                 }
 
+                // 本機代理設定檔（mihomo）。第一次開啟時寫入，之後不覆蓋。
+                // 這一步不依賴 tun2socks 是否就緒：先把檔案備好，等原生端
+                // 能拉起 mihomo 時直接就能用，也讓進階使用者現在就能自己改。
+                val configChanged = try {
+                    LocalProxySetup.ensureConfig(this@MainActivity)
+                } catch (e: Exception) {
+                    Log.w("GhBoost", "ensureConfig failed", e)
+                    false
+                }
+                val configReady = LocalProxySetup.hasUsableConfig(this@MainActivity)
+
                 withContext(Dispatchers.Main) {
                     tvVersion.text = "ghboost v$pretty"
                     if (tunReady) {
                         tvStatus.text = "Ready"
                     } else {
                         tvStatus.text = "Android 端尚未完成：開啟會斷網，先別按 Start"
-                        tvNodes.text = "TUN 轉發（tun2socks）還沒接上，現在按 Start 只會讓整支手機連不上網。"
+                        tvNodes.text = buildConfigHint(configChanged, configReady)
                     }
                     updateButtons()
                 }
@@ -110,6 +121,28 @@ class MainActivity : AppCompatActivity() {
                 NOTIFICATION_PERMISSION_REQUEST_CODE
             )
         }
+    }
+
+    /**
+     * 断网闸门还没打开时，给使用者的说明。
+     *
+     * 重点不是解释技术细节，而是让他知道「我做了什么」以及「现在能做什么」——
+     * 一个只说「还没完成」的画面等于死路，使用者下一步只能卸载。
+     */
+    private fun buildConfigHint(configChanged: Boolean, configReady: Boolean): String {
+        val lines = mutableListOf<String>()
+        lines += "TUN 轉發尚未啟用，現在按 Start 只會讓手機連不上網，所以按鈕先鎖著。"
+        if (configReady) {
+            lines += if (configChanged) {
+                "已在本機寫好代理設定檔（mihomo，Socks5 127.0.0.1:${LocalProxySetup.SOCKS5_PORT}）。"
+            } else {
+                "本機代理設定檔已就緒（mihomo，Socks5 127.0.0.1:${LocalProxySetup.SOCKS5_PORT}）。"
+            }
+            lines += "目前節點清單還是空白的，請把你的訂閱節點填進去才算真的能加速。"
+        } else {
+            lines += "沒能寫入代理設定檔，請確認 App 儲存空間是否可用。"
+        }
+        return lines.joinToString("\n")
     }
 
     private fun scanNodes() {
