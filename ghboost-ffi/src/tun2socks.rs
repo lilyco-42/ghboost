@@ -18,6 +18,29 @@
 //! - `protect` 是 Android 上唯一非 root 治回环的办法；其它平台留
 //!   no-op（iOS 走 NE 的 socket protect，另算）。
 //!
+//! ## lwip 在这个 crate 里的行为模型（很重要，决定了怎么写回包）
+//!
+//! crate 自带的 `old-src/custom/lwipopts.h` 打开了 `TUN2SOCKS 1`，
+//! 它把 lwIP 内核改成了「无路由、单接口」模式：
+//!
+//! - `LWIP_HAVE_LOOPIF 1` + `netif_init()` 建的**唯一 netif 是 loopif**，
+//!   地址固定 `127.0.0.1/8`，`netif_loopif_init` 把
+//!   `netif->output` 设成 `netif_loop_output_ipv4`，但 **`netif->mtu` 留 0**
+//!   （见 `ip4_output_if_src` 里 `netif->mtu && ...` 的分片判断）。
+//! - `ip4_route()` 被改成**无条件 `return netif_list`** —— 不做任何路由。
+//! - `ip4_input_accept()` 被改成**无条件 `return 1`** —— 收下所有包。
+//! - `udp_input` 里「取第一个 pcb 就 break」，所以 `UdpSocket::new()`
+//!   拿到的是那个吃下所有 UDP 的默认 pcb。
+//! - `udp_recv_cb` 被加了两个参数，把 `ip_current_dest_addr()` 也传上来 ——
+//!   **因为默认 pcb 的地址跟包的目的地址无关，不传就拿不到原本的去向**。
+//!
+//! 结论：IP 的源/目的地址**必须由我们显式给出**。回包时
+//! `SendHalf::send_to(data, src, dst)` 的两个地址就是 IP 头里真正的
+//! 源/目的；`udp_sendto_if_src` 走的是 `ip_output_if_src`
+//! （**不是**会把 any 替换成 netif 地址的 `ip_output_if`），所以原样生效。
+//! 一旦给错（例如两头都填本地地址），内核查不到对应 socket，
+//! **包会被静默丢弃** —— 没有报错、没有日志，只有「DNS 一直超时」。
+//!
 //! 还没做的：
 //! - SOCKS5 只支持 NO_AUTH；目的地址 v4/v6 都吃；SOCKS5 服务端
 //!   地址要求 IPv4。
@@ -442,15 +465,28 @@ fn socks5_rep(c: u8) -> &'static str {
 
 // ── UDP：SOCKS5 UDP ASSOCIATE ───────────────────────────────
 
-/// UDP 转发：每个 (源, 目的) 组合对应一个 SOCKS5 UDP relay。
+/// UDP 转发：每个「本地源地址」一个 SOCKS5 UDP relay。
 ///
 /// 为什么不是「所有包共用一个 relay」：SOCKS5 的 UDP 响应里只有对端地址，
 /// 拿不回来「这个包原本是哪个本地源端口发出的」，也就没法拼回 TUN 需要
-/// 的完整四元组。所以按 src 分桶，每个 src 一个 relay，回包时 src/dst 直接
-/// 对调即可 —— 代价是每个本地 UDP 源多占一张 socket，但语义完全正确。
+/// 的完整四元组。所以按 src 分桶，每个 src 一个 relay，回包时把地址对调
+/// 即可 —— 代价是每个本地 UDP 源多占一张 socket，但语义完全正确。
 ///
 /// DNS 也能因此走通：lwip 栈里 DNS 的源是 TUN 上的 10.0.0.2:随机端口，
 /// 它会自然成为这里的一个 src 桶。
+///
+/// ## 回包为什么必须显式给出「原始四元组」
+///
+/// lwip 的 tun2socks 模式（`lwipopts.h` 的 `TUN2SOCKS 1`）把内核改成了：
+/// 本机不存在任何真实 IP，**唯一的 netif 是 loopif（127.0.0.1）**，
+/// `ip4_route()` 无条件返回它。所以 `send_to(data, src, dst)` 里的
+/// `src`/`dst` 是 IP 头里真正的源/目的地址，必须原样给出：
+///   - `src` = 包应该在 TUN 上呈现的来源（也就是原来的远端）
+///   - `dst` = 包应该送达的本地地址（也就是收到请求时 lwip 给的 `src`）
+///
+/// 一开始这里写成 `send_to(&data, &src, &src)`（两个参数都填本地地址），
+/// 结果 IP 头变成 `10.0.0.2 -> 10.0.0.2`，内核拿到后查不到对应 socket，
+/// **所有 UDP 回包被静默丢弃** —— DNS 永远超时。修法是把方向信息一路带下来。
 async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
     use std::collections::HashMap;
 
@@ -460,7 +496,11 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
 
     // relay 任务把回包发到这里，本函数负责写回 lwip 栈（SendHalf 不是 Send，
     // 只能在同线程用，所以由这个循环独占持有）。
-    let (replies_tx, mut replies_rx) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+    //
+    // 回包形状是 (数据, 来源, 去处)：来源 = 远端（成了回包的 src），
+    // 去处 = 请求里 lwip 给的本地地址（成了回包的 dst）。
+    let (replies_tx, mut replies_rx) =
+        mpsc::unbounded_channel::<(Vec<u8>, SocketAddr, SocketAddr)>();
 
     // src → relay 发送端。relay 任务活着时它一直收包；
     let mut relays: HashMap<SocketAddr, mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>> =
@@ -490,11 +530,13 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
                     relays.remove(&src);
                 }
             }
-            // relay 收回来的包 → 写回 lwip 栈（src/dst 对调由 relay 侧做好）
+            // relay 收回来的包 → 写回 lwip 栈
             rep = replies_rx.recv() => {
-                let Some((data, src)) = rep else { continue };
-                // 栈要用 send_to(data, src, dst)；回包方向是 远端 → TUN 本地
-                let _ = send_half.send_to(&data, &src, &src);
+                let Some((data, from, to)) = rep else { continue };
+                // 四元组必须原样给出，否则内核认不出这是谁的包（见函数头注释）
+                if let Err(e) = send_half.send_to(&data, &from, &to) {
+                    eprintln!("tun2socks: udp reply {from} -> {to}: {e}");
+                }
             }
         }
     }
@@ -513,9 +555,9 @@ mod relay {
 
     /// 起一个 relay 任务，返回「把包交给它」的发送端。
     pub fn spawn(
-        src: SocketAddr,
+        local: SocketAddr,
         socks5: SocketAddrV4,
-        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>,
+        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr, SocketAddr)>,
     ) -> Result<mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>, String> {
         let (tx, rx) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
         // 在 blocking 池里建 socket + protect + connect（与 TCP 出站同一条路）
@@ -524,7 +566,7 @@ mod relay {
             let std_sock = match tokio::task::spawn_blocking(move || protected_udp(socks5)).await {
                 Ok(Ok(s)) => s,
                 Ok(Err(e)) => {
-                    eprintln!("tun2socks: udp associate {src}: {e}");
+                    eprintln!("tun2socks: udp associate {local}: {e}");
                     return;
                 }
                 Err(_) => return,
@@ -532,11 +574,11 @@ mod relay {
             let sock = match TokioUdp::from_std(std_sock) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("tun2socks: udp from_std {src}: {e}");
+                    eprintln!("tun2socks: udp from_std {local}: {e}");
                     return;
                 }
             };
-            run(src, sock, rx, replies).await;
+            run(local, sock, rx, replies).await;
         });
         Ok(tx)
     }
@@ -556,21 +598,11 @@ mod relay {
             unsafe { libc::close(fd) };
             return Err(format!("udp protect: {e}"));
         }
-        // SO_SNDTIMEO 管不了 UDP（无连接），改设 SO_RCVTIMEO 给收包一个上限；
-        // 真正决定超时的是上层 QUIC/DNS 自己的计时器，这里只是兜底。
-        let tv = libc::timeval {
-            tv_sec: SOCKS5_TIMEOUT.as_secs() as _,
-            tv_usec: 0,
-        };
-        unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_RCVTIMEO,
-                &tv as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::timeval>() as _,
-            )
-        };
+        // ⚠️ 刻意**不设** SO_RCVTIMEO。
+        // UDP 是无连接的，recv 可能长时间没有回包（DNS 命中缓存、QUIC 空闲
+        // 连接）。一旦 recv 超时，本 relay 就会退出、桶被清掉，下次发包还得
+        // 重建 socket —— 既浪费又丢包。这里用「连接保持 + 上层 tokio 控制
+        // 生命周期」的模型：relay 一直活着，直到上层不再往它这里发东西。
         let sa = libc::sockaddr_in {
             sin_family: libc::AF_INET as _,
             sin_port: socks5.port().to_be(),
@@ -598,11 +630,15 @@ mod relay {
     }
 
     /// 收外发 → 封 SOCKS5 UDP 头 → 发；收回包 → 剥头 → 交给上层写回 TUN。
+    ///
+    /// `local` 是这条 relay 对应的**本地地址**（也就是 lwip 给的 `src`）。
+    /// 回包时它会成为 IP 头的目的地址 —— 少了它，内核认不出这个包是谁的，
+    /// 会被静默丢弃（详见 `udp_drain` 的文档注释）。
     async fn run(
-        src: SocketAddr,
+        local: SocketAddr,
         sock: TokioUdp,
         mut rx: mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>,
-        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>,
+        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr, SocketAddr)>,
     ) {
         let mut buf = vec![0u8; RECV_BUF];
         loop {
@@ -611,7 +647,7 @@ mod relay {
                     let Some((data, dst)) = out else { break }; // 上层 drop 了
                     let pkt = super::socks5_udp_encode(&dst, &data);
                     if let Err(e) = sock.send(&pkt).await {
-                        eprintln!("tun2socks: udp relay {src} send: {e}");
+                        eprintln!("tun2socks: udp relay {local} send: {e}");
                         break;
                     }
                 }
@@ -619,13 +655,16 @@ mod relay {
                     match r {
                         Ok(n) => {
                             match super::socks5_udp_decode(&buf[..n]) {
-                                // 回包：把来源当成本地 src，交回上层写进 TUN
-                                Some((data, _from)) => { let _ = replies.send((data, src)); }
+                                // 回包：来源=对端（成为 IP 头 src），
+                                //       去处=本地（成为 IP 头 dst）
+                                Some((data, from)) => {
+                                    let _ = replies.send((data, from, local));
+                                }
                                 None => { /* 畸形包，丢 */ }
                             }
                         }
                         Err(e) => {
-                            eprintln!("tun2socks: udp relay {src} recv: {e}");
+                            eprintln!("tun2socks: udp relay {local} recv: {e}");
                             break;
                         }
                     }

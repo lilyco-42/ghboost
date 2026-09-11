@@ -8,6 +8,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.util.Log
 import java.io.File
 
@@ -32,12 +33,14 @@ class GhBoostVpnService : VpnService() {
         /**
          * 交给 Rust 侧的 DNS 端口提示值。
          *
-         * Rust 侧 `tun2socks::start` 已接上 lwip 协议栈，DNS 由栈内的
-         * TCP/UDP 处理，这个值目前**被忽略**（参数名 `_dns_port`），
-         * 保留是为了将来把 DNS 劫持到本地 resolver 时用。
-         * 注意 `.addDnsServer()` 给的是 8.8.8.8/8.8.4.4 —— 要让它们
-         * 生效，UDP 转发（SOCKS5 UDP ASSOCIATE）得先做出来，见
-         * ghboost-ffi/src/tun2socks.rs 的 `udp_drain`。
+         * Rust 侧 `tun2socks::start` 的参数名是 `_dns_port`，即**当前被忽略**：
+         * DNS 不需要本地 resolver，靠 TUN 里真实的 DNS 查询走
+         * SOCKS5 UDP ASSOCIATE 出去即可（见 `tun2socks.rs` 的 `udp_drain`，
+         * 已实现）。保留这个参数是为了将来做「DNS 劫持到本地缓存」时用。
+         *
+         * 另外注意 `.addDnsServer()` 给的是 8.8.8.8/8.8.4.4：`VpnService`
+         * 会把系统 DNS 指到这两个地址，而到它们的 UDP 53 会进 TUN，
+         * 由上面的 UDP relay 转发到远端解析 —— 这条链是通的。
          */
         private const val DNS_PORT = 5353
     }
@@ -82,6 +85,20 @@ class GhBoostVpnService : VpnService() {
                 .addRoute("0.0.0.0", 0)
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("8.8.4.4")
+
+            // ── API 29+（Android 10）才有的设定 ────────────────────────
+            // setMetered(false)：告诉系统这是不计费的通道（本产品走自建节点），
+            // 避免系统在计费网络下限制后台流量。
+            // allowFamily：**白名单**语义，只放行会进 TUN 的协议族。
+            // 必须显式放行 AF_INET/AF_INET6 —— 否则在部分 ROM 上
+            // socket() 会被系统直接拒绝，表现为「VPN 已连接但整个没网」。
+            // 注意：Android 的 VpnService.Builder **没有**按协议（tcp/udp）
+            // 过滤的 API，唯一的开关就是这里按地址族放行。
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                builder.setMetered(false)
+                builder.allowFamily(OsConstants.AF_INET)
+                builder.allowFamily(OsConstants.AF_INET6)
+            }
 
             // Protect the app's own sockets from the VPN
             tunFd = builder.establish()
