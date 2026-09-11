@@ -85,9 +85,8 @@ struct Scan {
     /// 单源最多取前 N 行节点（避免巨型源卡死）
     #[arg(default = 500, range = 1..=5000)]
     per_limit: u64,
-    /// 节点库数据目录（默认 ./nodes_data）
-    #[arg(default = "nodes_data")]
-    output: PathBuf,
+    /// 节点库数据目录（默认 ./nodes_data；不可写时自动回退到用户数据目录）
+    output: Option<PathBuf>,
 }
 
 fn run_scan(app: &Scan, ctx: &Context) -> Result<serde_json::Value, AppError> {
@@ -97,7 +96,12 @@ fn run_scan(app: &Scan, ctx: &Context) -> Result<serde_json::Value, AppError> {
         max_sources: app.max_sources,
         concurrency: app.concurrency,
         per_limit: app.per_limit,
-        output: app.output.clone(),
+        output: app
+            .output
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("nodes_data")),
+        // None = 用户没指定 → 允许回退；Some = 显式指定 → 不可写就报错
+        output_explicit: app.output.is_some(),
     };
     let sink = make_sink(ctx);
     run_blocking(nodes::scan_core(sp, &sink)).map_err(AppError::Runtime)

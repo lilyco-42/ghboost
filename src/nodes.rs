@@ -107,6 +107,11 @@ pub struct ScanParams {
     pub per_limit: u64,
     /// 节点库数据目录
     pub output: PathBuf,
+    /// `output` 是否是用户显式指定的（而非默认值）。
+    ///
+    /// 显式指定时不可写就直接报错（别偷偷改路径）；用默认值时不可写
+    /// 才回退到用户数据目录，见 `resolve_data_dir`。
+    pub output_explicit: bool,
 }
 
 impl Default for ScanParams {
@@ -118,6 +123,7 @@ impl Default for ScanParams {
             concurrency: 16,
             per_limit: 500,
             output: PathBuf::from("nodes_data"),
+            output_explicit: false,
         }
     }
 }
@@ -457,12 +463,87 @@ async fn fetch_text(client: &reqwest::Client, url: &str) -> Option<String> {
 
 // ── 命令 1：节点自动扫描 ───────────────────────────────────
 
+/// 数据目录的兜底位置：`$HOME/.local/share/ghboost`（Windows 用 `%APPDATA%`）。
+///
+/// 只在用户**没显式指定** `--output`、且默认的 `./nodes_data` 不可写时才用。
+fn fallback_data_dir() -> Option<PathBuf> {
+    // Windows: %APPDATA%\ghboost
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        return Some(PathBuf::from(appdata).join("ghboost").join("nodes_data"));
+    }
+    // Unix: $XDG_DATA_HOME/ghboost 或 $HOME/.local/share/ghboost
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        return Some(PathBuf::from(xdg).join("ghboost").join("nodes_data"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return Some(
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("ghboost")
+                .join("nodes_data"),
+        );
+    }
+    None
+}
+
+/// 确保数据目录可用，返回**实际**使用的目录。
+///
+/// 为什么要兜底：默认值是相对路径 `nodes_data`，从只读目录（容器根目录、
+/// `C:\Program Files\...`、只读挂载点）跑就会 `create_dir_all` 失败
+/// （Linux 报 `read-only file system (os error 30)`、Windows 报 `os error 5`），
+/// 而扫描本身并不依赖这个目录——直接报错 = 用户什么也拿不到。
+///
+/// 规则：
+/// - 用户**显式**给了 `--output` → 失败就报错（附解决办法），不擅自改路径，
+///   免得"我明明指定了却没写进去"更难查。
+/// - 用的是**默认值**且不可写 → 落到 `fallback_data_dir()` 并提示一句。
+fn resolve_data_dir(requested: &Path, explicit: bool) -> Result<PathBuf, String> {
+    match std::fs::create_dir_all(requested) {
+        Ok(()) => Ok(requested.to_path_buf()),
+        Err(e) if explicit => Err(format!(
+            "创建数据目录失败: {}（{e}）。请换一个可写的 --output 目录，\
+             或去掉 --output 用默认目录。",
+            requested.display()
+        )),
+        Err(e) => {
+            let fb = fallback_data_dir().ok_or_else(|| {
+                format!(
+                    "创建数据目录失败: {}（{e}），且找不到可用的用户数据目录\
+                     （APPDATA/XDG_DATA_HOME/HOME 都未设置）。请用 --output 指定一个可写目录。",
+                    requested.display()
+                )
+            })?;
+            std::fs::create_dir_all(&fb).map_err(|e2| {
+                format!(
+                    "创建数据目录失败: {}（{e}）；回退目录 {} 也不可写（{e2}）。\
+                     请用 --output 指定一个可写目录。",
+                    requested.display(),
+                    fb.display()
+                )
+            })?;
+            Ok(fb)
+        }
+    }
+}
+
 pub async fn scan_core(
     app: ScanParams,
     sink: &dyn Fn(&Event),
 ) -> Result<serde_json::Value, String> {
-    let data_dir = &app.output;
-    std::fs::create_dir_all(data_dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
+    let explicit = app.output_explicit;
+    let data_dir = resolve_data_dir(&app.output, explicit)?;
+    if data_dir != app.output {
+        sink(&Event::Log {
+            level: Level::Warn,
+            message: format!(
+                "默认目录 {} 不可写，已改用 {}",
+                app.output.display(),
+                data_dir.display()
+            ),
+        });
+    }
+    let data_dir = data_dir.as_path();
 
     let builder = crate::http_builder();
     #[cfg(not(target_arch = "wasm32"))]

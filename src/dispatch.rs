@@ -87,6 +87,8 @@ pub fn execute_command_with_sink(
                 concurrency: args["concurrency"].as_u64().unwrap_or(16),
                 per_limit: args["per_limit"].as_u64().unwrap_or(500),
                 output: PathBuf::from(args["output"].as_str().unwrap_or("nodes_data")),
+                // JSON 调用方显式传了 output 就尊重它（不可写则报错）
+                output_explicit: args["output"].as_str().is_some(),
             };
             run_blocking(nodes::scan_core(sp, sink))
         }
