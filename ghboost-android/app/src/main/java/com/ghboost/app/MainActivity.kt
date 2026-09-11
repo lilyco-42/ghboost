@@ -27,7 +27,14 @@ class MainActivity : AppCompatActivity() {
     private var vpnIntent: Intent? = null
     private var isRunning = false
 
-    /** 原生 tun2socks 是否真的会转发流量；false 时 Start 必须锁住（详见 nativeTunForwardingImplemented）。 */
+    /**
+     * Start 是否可以按。**两个条件都满足**才放开：
+     *   1. 原生层真的会转发（`nativeTunForwardingImplemented`）
+     *   2. 节点清单里有真实节点（不是出厂占位）
+     *
+     * 少了第 2 条就会出现最难排查的失败形态：内核正常启动、VPN 显示已连接，
+     * 但每个连接都指向那个没人监听的占位节点，使用者「已连接却打不开网页」。
+     */
     private var tunReady = false
 
     companion object {
@@ -63,7 +70,7 @@ class MainActivity : AppCompatActivity() {
                 // 原生层到底会不会转发流量？不会的话**不能放开 Start** ——
                 // 实测按下 Start 会建立 TUN 但没人转发，整机 100% 丢包，
                 // 界面却还显示「VPN running」。宁可把按钮锁住并说清楚原因。
-                tunReady = try {
+                val forwardingReady = try {
                     GhBoostCore.nativeTunForwardingImplemented()
                 } catch (e: Throwable) {
                     // .so 裡沒這個符號（例如舊版庫）也要當成不可用，不能假設可以用。
@@ -73,7 +80,7 @@ class MainActivity : AppCompatActivity() {
 
                 // 本機代理設定檔（mihomo）。第一次開啟時寫入，之後不覆蓋。
                 // 這一步不依賴 tun2socks 是否就緒：先把檔案備好，等原生端
-                // 能拉起 mihomo 時直接就能用，也讓進階使用者現在就能自己改。
+                // 能拉起內核時直接就能用，也讓進階使用者現在就能自己改。
                 val configChanged = try {
                     LocalProxySetup.ensureConfig(this@MainActivity)
                 } catch (e: Exception) {
@@ -81,14 +88,25 @@ class MainActivity : AppCompatActivity() {
                     false
                 }
                 val configReady = LocalProxySetup.hasUsableConfig(this@MainActivity)
+                // 光有設定檔不夠：占位節點等於「沒有節點」，開了會連不上任何網站。
+                val nodesReady = LocalProxySetup.hasRealNodes(this@MainActivity)
+
+                tunReady = forwardingReady && nodesReady
 
                 withContext(Dispatchers.Main) {
                     tvVersion.text = "ghboost v$pretty"
-                    if (tunReady) {
-                        tvStatus.text = "Ready"
+                    when {
+                        tunReady -> tvStatus.text = "Ready"
+                        !forwardingReady ->
+                            tvStatus.text = "Android 端尚未完成：開啟會斷網，先別按 Start"
+                        else ->
+                            // 转发能力有了，缺的是节点。
+                            tvStatus.text = "還差節點：填好節點清單才能開始加速"
+                    }
+                    tvNodes.text = if (tunReady) {
+                        "代理核心已就緒，按 Start 開始加速。"
                     } else {
-                        tvStatus.text = "Android 端尚未完成：開啟會斷網，先別按 Start"
-                        tvNodes.text = buildConfigHint(configChanged, configReady)
+                        buildConfigHint(configChanged, configReady, forwardingReady)
                     }
                     updateButtons()
                 }
@@ -124,21 +142,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 断网闸门还没打开时，给使用者的说明。
+     * Start 被锁住时，给使用者的说明。
      *
      * 重点不是解释技术细节，而是让他知道「我做了什么」以及「现在能做什么」——
      * 一个只说「还没完成」的画面等于死路，使用者下一步只能卸载。
+     *
+     * 两种锁法要说不同的话：转发能力没就绪（原生问题）vs 节点没填（使用者一步就能解决）。
+     * 说反了会让使用者做无用功。
      */
-    private fun buildConfigHint(configChanged: Boolean, configReady: Boolean): String {
+    private fun buildConfigHint(
+        configChanged: Boolean,
+        configReady: Boolean,
+        forwardingReady: Boolean,
+    ): String {
         val lines = mutableListOf<String>()
-        lines += "TUN 轉發尚未啟用，現在按 Start 只會讓手機連不上網，所以按鈕先鎖著。"
+        lines += if (forwardingReady) {
+            "TUN 轉發已就緒，但節點清單還是空的 —— 填進去就能開始加速。"
+        } else {
+            "TUN 轉發尚未啟用，現在按 Start 只會讓手機連不上網，所以按鈕先鎖著。"
+        }
         if (configReady) {
             lines += if (configChanged) {
-                "已在本機寫好代理設定檔（mihomo，Socks5 127.0.0.1:${LocalProxySetup.SOCKS5_PORT}）。"
+                "已在本機寫好代理設定檔（Socks5 127.0.0.1:${LocalProxySetup.SOCKS5_PORT}）。"
             } else {
-                "本機代理設定檔已就緒（mihomo，Socks5 127.0.0.1:${LocalProxySetup.SOCKS5_PORT}）。"
+                "本機代理設定檔已就緒（Socks5 127.0.0.1:${LocalProxySetup.SOCKS5_PORT}）。"
             }
-            lines += "目前節點清單還是空白的，請把你的訂閱節點填進去才算真的能加速。"
+            lines += "把訂閱節點填進 providers/ghboost.yaml 才算真的能加速。"
         } else {
             lines += "沒能寫入代理設定檔，請確認 App 儲存空間是否可用。"
         }

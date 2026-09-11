@@ -45,6 +45,12 @@ object LocalProxySetup {
     private const val SUBSCRIPTION_URL = "https://lain42.top/sub"
 
     /**
+     * 出厂占位节点的名字。它的存在等价于「还没有任何真实节点」。
+     * [hasRealNodes] 靠它判断该不该放开 Start，所以这个名字只能在这里出现一次。
+     */
+    private const val PLACEHOLDER_MARKER = "DIRECT-PLACEHOLDER"
+
+    /**
      * 建立目录结构并（在不覆盖既有文件的前提下）写入配置。
      *
      * @return true 表示至少改动了盘上的东西；false 表示一切都已存在，
@@ -102,6 +108,25 @@ object LocalProxySetup {
 
     /** 配置根目录，给将来的 UI（例如「打开设定」）用。 */
     fun configRoot(context: Context): File = File(context.filesDir, "mihomo")
+
+    /**
+     * 节点清单里是否有**真实节点**（而不是出厂占位）。
+     *
+     * 为什么需要这个判断：内嵌内核本身能跑起来，但如果节点清单还是那个
+     * 「DIRECT-PLACEHOLDER（指向 127.0.0.1:1081，没人监听）」，
+     * 内核会正常启动、VPN 也会显示已连接，**但每个连接都失败** ——
+     * 使用者看到「已连接」却打不开网页，这比直接锁住按钮更难排查。
+     *
+     * 所以 Start 必须同时满足「原生会转发」+「有真实节点」两个条件。
+     * 判据是「provider 里不含占位标记」：换成订阅（type: http）之后
+     * 文件里是真实节点，占位标记自然消失。
+     */
+    fun hasRealNodes(context: Context): Boolean {
+        val provider = File(configRoot(context), "providers/ghboost.yaml")
+        if (!provider.isFile) return false
+        val text = runCatching { provider.readText() }.getOrNull() ?: return false
+        return !text.contains(PLACEHOLDER_MARKER)
+    }
 
     private fun defaultConfig(): String = """
         # GhBoost on Android — mihomo 配置
@@ -200,7 +225,7 @@ object LocalProxySetup {
         # 改完不用重启手机，App 重开即可生效（会走 profile 重载）。
 
         proxies:
-          - name: DIRECT-PLACEHOLDER
+          - name: $PLACEHOLDER_MARKER
             type: socks5
             server: 127.0.0.1
             port: 1081

@@ -108,6 +108,23 @@ class GhBoostVpnService : VpnService() {
                 return
             }
 
+            // 先把代理内核拉起来。顺序不能反：
+            //   - 内核启动时会先装 protector，再 bind 127.0.0.1:1080
+            //   - tun2socks 一启动就会往 1080 送流量
+            // 反过来的话，内核的出站（拉订阅、健康检查）还没被 protect，
+            // 会被自己的 TUN 卷回去形成死循环。
+            val configPath = java.io.File(
+                LocalProxySetup.configRoot(this@GhBoostVpnService),
+                "configs/config.yaml",
+            ).absolutePath
+            Log.i(TAG, "starting proxy kernel, config=$configPath")
+            val krc = GhBoostCore.nativeStartProxyKernel(this@GhBoostVpnService, configPath)
+            if (krc != 0) {
+                Log.e(TAG, "nativeStartProxyKernel failed, rc=$krc")
+                stopVpn()
+                return
+            }
+
             // Hand fd to Rust tun2socks
             val fd = tunFd!!.fd
             Log.i(TAG, "TUN fd=$fd, starting tun2socks...")
@@ -135,6 +152,13 @@ class GhBoostVpnService : VpnService() {
             GhBoostCore.nativeStopTun2Socks()
         } catch (e: Exception) {
             Log.w(TAG, "StopTun2Socks error: ${e.message}")
+        }
+        // 内核要等它真的退出 —— 否则它还占着 127.0.0.1:1080，
+        // 下一次开 VPN 会 bind 失败（表现成「第二次起不来」）。
+        try {
+            GhBoostCore.nativeStopProxyKernel()
+        } catch (e: Exception) {
+            Log.w(TAG, "StopProxyKernel error: ${e.message}")
         }
         try {
             tunFd?.close()

@@ -172,11 +172,16 @@ mod android {
     /// `config_path` 是 mihomo 风格 YAML 的绝对路径，由 Kotlin 侧
     /// `LocalProxySetup` 写在 `filesDir/mihomo/configs/config.yaml`。
     ///
+    /// **顺序**：先装 protector 再启动内核。内核一启动就会拉订阅 / 做健康检查，
+    /// 那些出站 socket 必须已经被 protect —— 否则会被自己的 TUN 卷回，
+    /// 表现成「开了 VPN 之后连订阅都拉不下来」。
+    ///
     /// 返回 0 成功，-1 失败（失败原因写 stderr —— 与其它 native 方法一致）。
     #[no_mangle]
     pub extern "system" fn Java_com_ghboost_app_GhBoostCore_nativeStartProxyKernel(
         mut env: JNIEnv,
         _class: JClass,
+        vpn_service: JObject,
         config_path: JString,
     ) -> jint {
         let path: String = match env.get_string(&config_path) {
@@ -186,6 +191,9 @@ mod android {
                 return -1;
             }
         };
+
+        // 必须先装：内核启动阶段（拉订阅、健康检查）就会开 socket。
+        crate::protect::install(&mut env, &vpn_service);
 
         match meow_kernel::start(&path) {
             Ok(()) => 0,

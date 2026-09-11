@@ -47,12 +47,15 @@
 //! - UDP relay 直连 SOCKS5 服务端的 UDP ASSOCIATE 端口（不做 CONNECT
 //!   隧道里的 associate），且不做 FRAG 重组（QUIC/DNS 都不切分包）。
 //!
-//! FORWARDING_IMPLEMENTED 留 false：lwip 接进来了（TCP + UDP 都有实现），
-//! 但板上要有一个真能用的本地 SOCKS5 代理（mihomo on Android：把订阅节点协议
-//! VLESS/Trojan/SS 转成 SOCKS5 喂给这里，并且它自己的出站也要
-//! 被 protect 保护），否则放开 Start 之后 UI 写「VPN 已连接」但
-//! 所有连接都 ECONNREFUSED，比完全断网还难查。条件齐了把下面
-//! 这个 `false` 改成 `true` 即可，Kotlin 不用动。
+//! FORWARDING_IMPLEMENTED = true：两半都到位了 ——
+//! 本文件负责 TUN ↔ 本地 SOCKS5（lwIP，TCP + UDP 都实测过），
+//! `meow_kernel.rs` 负责本地 SOCKS5 ↔ 订阅节点（内嵌 meow-rs，MIT）。
+//!
+//! ⚠️ 这个常量只表示「**原生层会转发**」，不表示「使用者一定有网」。
+//! 如果节点清单还是出厂占位（没有真实节点），内核会正常启动、VPN 也显示
+//! 已连接，但每个连接都指向没人监听的占位节点 —— 「已连接却打不开网页」。
+//! 所以 Kotlin 侧把 Start 闸门设成 **两个条件都要满足**：
+//! 本常量 + `LocalProxySetup.hasRealNodes()`。别只依赖这里。
 
 use futures::{SinkExt, StreamExt};
 use std::net::{SocketAddr, SocketAddrV4};
@@ -72,7 +75,7 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 // Notify 本身不是 Clone，用 Arc 共享给 stop() 和 run_thread
 static SHUTDOWN: Mutex<Option<Arc<Notify>>> = Mutex::new(None);
 
-pub const FORWARDING_IMPLEMENTED: bool = false;
+pub const FORWARDING_IMPLEMENTED: bool = true;
 
 const DEFAULT_SOCKS5: &str = "127.0.0.1:1080";
 const SOCKS5_TIMEOUT: Duration = Duration::from_secs(10);
