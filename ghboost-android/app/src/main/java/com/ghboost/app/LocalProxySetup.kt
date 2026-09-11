@@ -55,10 +55,11 @@ object LocalProxySetup {
      * 永远不会被更新（`ensureConfig` 默认不覆盖），新加的字段等于不存在。
      *
      * v1 → v2：修掉 `GEOIP,TW,DIRECT` 导致内核起不来（见 [defaultConfig] 注释）。
-     * v2 → v3：provider 路径改成绝对路径 —— 相对路径按进程 CWD 解析，
-     *   在 Android 上永远找不到，代理组会静默退回 DIRECT（走了直连不走节点）。
+     * v2 → v3：provider 路径改絕對路徑（當時以為是 CWD 問題）。
+     * v3 → v4：**改回相對路徑，但把 provider 搬進 configs/** —— 真正的原因是
+     *   meow 要求 provider path 不得逃出 config 目錄，不是 CWD。
      */
-    private const val CONFIG_VERSION = 3
+    private const val CONFIG_VERSION = 4
 
     /** 配置里用来标记版本的注释行，形如 `# ghboost-config-version: 2`。 */
     private const val VERSION_MARKER = "# ghboost-config-version:"
@@ -89,8 +90,18 @@ object LocalProxySetup {
         val mmdb = ensureGeoData(context, root)
         if (mmdb != null) changed = true
 
-        // provider 檔案路徑要在寫 config 之前算出來 —— config 裡要引用它的**絕對路徑**。
-        val providerFile = File(root, "providers/ghboost.yaml")
+        // provider 檔案**必須在 config 目錄裡面**：meow 會校驗 path 不得逃出
+        // config 目錄（實測：`path ... escapes the provider directory`）。
+        // 所以放 `configs/providers/`，config 裡寫相對路徑 `providers/ghboost.yaml`。
+        val providerFile = File(root, "configs/providers/ghboost.yaml")
+
+        // 從舊位置（<root>/providers/）遷移一次，免得已匯入的節點白費。
+        val legacyProvider = File(root, "providers/ghboost.yaml")
+        if (legacyProvider.isFile && !providerFile.isFile) {
+            providerFile.parentFile?.mkdirs()
+            runCatching { providerFile.writeText(legacyProvider.readText()) }
+                .onSuccess { Log.i(TAG, "migrated provider -> ${providerFile.absolutePath}") }
+        }
 
         val config = File(root, "configs/config.yaml")
         // 版本不符就重写。只判断「文件是否存在」是不够的：配置内容会随版本演进，
@@ -105,7 +116,7 @@ object LocalProxySetup {
 
         if (existingVersion != CONFIG_VERSION) {
             config.parentFile?.mkdirs()
-            config.writeText(defaultConfig(mmdb?.absolutePath, providerFile.absolutePath))
+            config.writeText(defaultConfig(mmdb?.absolutePath))
             changed = true
             Log.i(
                 TAG,
@@ -145,6 +156,15 @@ object LocalProxySetup {
 
     /** 配置根目录，给将来的 UI（例如「打开设定」）用。 */
     fun configRoot(context: Context): File = File(context.filesDir, "mihomo")
+
+    /**
+     * 节点清单文件的路径。
+     *
+     * **必须在 config 目录里面**：meow 会校验 provider 的 path 不得逃出
+     * config 目录（实测报错 `path ... escapes the provider directory`）。
+     */
+    private fun providerFile(context: Context): File =
+        File(configRoot(context), "configs/providers/ghboost.yaml")
 
     /**
      * 把 GeoIP 库从 assets 复制出来（幂等）。返回可用的路径，没有则 null。
@@ -231,7 +251,7 @@ object LocalProxySetup {
             return false
         }
 
-        val dst = File(configRoot(context), "providers/ghboost.yaml")
+        val dst = providerFile(context)
         if (dst.isFile && runCatching { dst.readText() }.getOrNull() == text) {
             Log.i(TAG, "import: already up to date")
             return false
@@ -266,7 +286,7 @@ object LocalProxySetup {
      * 文件里是真实节点，占位标记自然消失。
      */
     fun hasRealNodes(context: Context): Boolean {
-        val provider = File(configRoot(context), "providers/ghboost.yaml")
+        val provider = providerFile(context)
         if (!provider.isFile) return false
         val text = runCatching { provider.readText() }.getOrNull() ?: return false
         return !text.contains(PLACEHOLDER_MARKER)
@@ -278,7 +298,7 @@ object LocalProxySetup {
      * @param mmdbPath GeoIP 库的绝对路径；为 null 时**不能**用 GEOIP/GEOSITE 规则
      *   （meow 会在加载配置时直接失败：`Failed to load GeoIP database`）。
      */
-    private fun defaultConfig(mmdbPath: String?, providerPath: String): String {
+    private fun defaultConfig(mmdbPath: String?): String {
         // 用占位符替换而不是字符串插值：插进来的多行内容会打乱
         // `trimIndent()` 的公共缩进推断，结果 YAML 缩进错乱、内核解析失败。
         val template = """
@@ -328,13 +348,13 @@ object LocalProxySetup {
 
         # 节点从 provider 来；订阅 URL 写在 provider 里
         #
-        # ⚠️ path **必须绝对路径**：meow 是直接 `fs::read_to_string(path)`，
-        # 相对路径会按**进程 CWD**（Android 上是 `/`）解析 → 找不到文件 →
-        # provider 为空 → 代理组退回 DIRECT（表现成「VPN 连上了但不走节点」）。
+        # ⚠️ path 是**相对 config 目录**的，而且**不能逃出 config 目录** ——
+        # meow 会校验（实测报错：path escapes the provider directory）。
+        # 所以 providers/ 放在 configs/ 里面，这里写相对路径即可。
         proxy-providers:
           ghboost:
             type: file
-            path: "$providerPath"
+            path: providers/ghboost.yaml
             health-check:
               enable: true
               url: https://www.gstatic.com/generate_204
@@ -423,8 +443,9 @@ object LocalProxySetup {
         #            type: http
         #            url: "$SUBSCRIPTION_URL"
         #            interval: 3600
-        #            path: ./providers/ghboost.yaml
+        #            path: providers/ghboost.yaml
         #      注意 type 要一起改成 http，并把 url 填上。
+        #      path 相對 config 目錄、且不能逃出它（meow 會校驗）。
         #
         #   2. 或把下面 proxies 换成自己的 VLESS / Trojan / SS 节点。
         #
