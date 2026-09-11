@@ -15,7 +15,7 @@ jni = { version = "0.21", optional = true }
 libc = "0.2"
 # tun2socks 用户态 TCP/IP 栈（lwIP 封装）+ 异步 runtime + futures 流/汇合
 lwip = "0.3"
-tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync"] }
 futures = "0.3"
 
 [features]

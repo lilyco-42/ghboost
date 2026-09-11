@@ -35,7 +35,7 @@ use futures::{SinkExt, StreamExt};
 use std::net::{SocketAddr, SocketAddrV4};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::net::TcpStream as TokioTcp;
@@ -45,7 +45,8 @@ use tokio::sync::Notify;
 use crate::protect;
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
-static SHUTDOWN: Mutex<Option<Notify>> = Mutex::new(None);
+// Notify 本身不是 Clone，用 Arc 共享给 stop() 和 run_thread
+static SHUTDOWN: Mutex<Option<Arc<Notify>>> = Mutex::new(None);
 
 pub const FORWARDING_IMPLEMENTED: bool = false;
 
@@ -79,8 +80,8 @@ pub fn start(fd: RawFd, _dns_port: u16) -> Result<(), String> {
     }
 
     // 新的 shutdown Notify：存到全局让 stop() 能 notify_one
-    let notify = Notify::new();
-    *SHUTDOWN.lock().unwrap() = Some(notify.clone());
+    let notify = Arc::new(Notify::new());
+    *SHUTDOWN.lock().unwrap() = Some(Arc::clone(&notify));
 
     let join = std::thread::Builder::new()
         .name("ghboost-tun2socks".into())
@@ -115,7 +116,7 @@ fn cleanup() {
     *SHUTDOWN.lock().unwrap() = None;
 }
 
-fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Notify) {
+fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
     // TUN fd 设成非阻塞，AsyncFd 的 readable/writable 才能 EAGAIN
     unsafe {
         let f = libc::fcntl(fd, libc::F_GETFL);
@@ -142,9 +143,9 @@ fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Notify) {
         let tun = AsyncFd::new(owned).map_err(|e| format!("AsyncFd: {e}"))?;
         let (stack, tcp_listener, udp_socket) =
             lwip::NetStack::new().map_err(|e| format!("lwip NetStack::new: {e:?}"))?;
-        let (mut stack_sink, mut stack_stream) = stack.split();
+        let (stack_sink, stack_stream) = stack.split();
 
-        // 三个 !Send 任务在 LocalSet 上跑（lwip 类型不能跨线程）
+        // 三个任务在 LocalSet 上跑（不要求 Send，lwip 栈状态同线程）
         tokio::task::spawn_local(tun_io(tun, stack_sink, stack_stream));
         tokio::task::spawn_local(tcp_accept(tcp_listener, socks5));
         tokio::task::spawn_local(udp_drain(udp_socket));
@@ -164,14 +165,14 @@ fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Notify) {
 
 // ── TUN ↔ lwip stack 双向搬运 ────────────────────────────────
 
-async fn tun_io<Sink, Stream, E>(
+async fn tun_io(
     tun: AsyncFd<OwnedFd>,
-    mut stack_sink: Sink,
-    mut stack_stream: Stream,
-) where
-    Sink: futures::Sink<Vec<u8>, Error = E> + Unpin,
-    Stream: futures::Stream<Item = Result<Vec<u8>, E>> + Unpin,
-{
+    stack_sink: futures::stream::SplitSink<lwip::NetStack, Vec<u8>>,
+    stack_stream: futures::stream::SplitStream<lwip::NetStack>,
+) {
+    // pin_mut：不依赖 SplitSink/SplitStream 是否 Unpin
+    futures::pin_mut!(stack_sink);
+    futures::pin_mut!(stack_stream);
     loop {
         let read_fut = read_one_pkt(&tun);
         let write_fut = async {
@@ -239,23 +240,15 @@ async fn write_all_tun(tun: &AsyncFd<OwnedFd>, pkt: &[u8]) -> Result<(), ()> {
 
 // ── TCP 接受 → SOCKS5 出站 ──────────────────────────────────
 
-async fn tcp_accept<TL>(mut tcp_listener: TL, socks5: SocketAddrV4)
-where
-    TL: futures::Stream + Unpin,
-{
+async fn tcp_accept(mut tcp_listener: lwip::TcpListener, socks5: SocketAddrV4) {
     while let Some(ev) = tcp_listener.next().await {
-        let ev = match ev {
+        let (stream, _local, remote) = match ev {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("tun2socks tcp_listener: {e:?}");
                 continue;
             }
         };
-        let (stream, _local, remote): (
-            lwip::TcpStream,
-            std::net::SocketAddr,
-            std::net::SocketAddr,
-        ) = ev;
         tokio::task::spawn_local(handle_conn(stream, remote, socks5));
     }
 }
