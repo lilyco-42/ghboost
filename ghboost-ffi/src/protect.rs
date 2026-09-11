@@ -41,14 +41,14 @@ struct AndroidSocketProtector {
 impl SocketProtector for AndroidSocketProtector {
     fn protect(&self, fd: c_int) -> Result<(), Box<dyn std::error::Error>> {
         let mut env = self.jvm.attach_current_thread()?;
-        
+
         let result = env.call_method(
             &self.service,
             "protect",
             "(I)Z",
             &[jni::objects::JValue::Int(fd)],
         )?;
-        
+
         let protected = result.z()?;
         if protected {
             Ok(())
@@ -62,12 +62,12 @@ impl SocketProtector for AndroidSocketProtector {
 pub fn install(env: &mut JNIEnv, service: &JObject) {
     let jvm = env.get_java_vm().unwrap();
     let service_ref = env.new_global_ref(service).unwrap();
-    
+
     let protector = Arc::new(AndroidSocketProtector {
         jvm,
         service: service_ref,
     });
-    
+
     set_protector(protector);
 }
 

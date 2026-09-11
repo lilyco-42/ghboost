@@ -30,9 +30,7 @@ mod android {
 
     /// Helper: parse JNI string to Rust string
     fn from_jstring(env: &mut JNIEnv, js: &JString) -> String {
-        env.get_string(js)
-            .map(|s| s.into())
-            .unwrap_or_default()
+        env.get_string(js).map(|s| s.into()).unwrap_or_default()
     }
 
     #[no_mangle]
@@ -61,19 +59,17 @@ mod android {
     ) -> jstring {
         let params_str = from_jstring(&mut env, &params);
         let params_c = std::ffi::CString::new(params_str).unwrap_or_default();
-        
-        let result = unsafe {
-            ghboost::ghboost_scan(params_c.as_ptr())
-        };
-        
+
+        let result = unsafe { ghboost::ghboost_scan(params_c.as_ptr()) };
+
         let result_str = unsafe {
             std::ffi::CStr::from_ptr(result)
                 .to_string_lossy()
                 .into_owned()
         };
-        
+
         unsafe { ghboost::ghboost_free(result) };
-        
+
         to_jstring(&mut env, result_str)
     }
 
@@ -85,19 +81,17 @@ mod android {
     ) -> jstring {
         let params_str = from_jstring(&mut env, &params);
         let params_c = std::ffi::CString::new(params_str).unwrap_or_default();
-        
-        let result = unsafe {
-            ghboost::ghboost_test(params_c.as_ptr())
-        };
-        
+
+        let result = unsafe { ghboost::ghboost_test(params_c.as_ptr()) };
+
         let result_str = unsafe {
             std::ffi::CStr::from_ptr(result)
                 .to_string_lossy()
                 .into_owned()
         };
-        
+
         unsafe { ghboost::ghboost_free(result) };
-        
+
         to_jstring(&mut env, result_str)
     }
 
@@ -109,19 +103,17 @@ mod android {
     ) -> jstring {
         let params_str = from_jstring(&mut env, &params);
         let params_c = std::ffi::CString::new(params_str).unwrap_or_default();
-        
-        let result = unsafe {
-            ghboost::ghboost_add(params_c.as_ptr())
-        };
-        
+
+        let result = unsafe { ghboost::ghboost_add(params_c.as_ptr()) };
+
         let result_str = unsafe {
             std::ffi::CStr::from_ptr(result)
                 .to_string_lossy()
                 .into_owned()
         };
-        
+
         unsafe { ghboost::ghboost_free(result) };
-        
+
         to_jstring(&mut env, result_str)
     }
 
@@ -135,7 +127,7 @@ mod android {
     ) -> jint {
         // Install socket protector to prevent routing loop
         crate::protect::install(&mut env, &vpn_service);
-        
+
         // Start tun2socks with the TUN file descriptor
         match tun2socks::start(fd as i32, dns_port as u16) {
             Ok(()) => 0,
@@ -172,18 +164,16 @@ mod android {
         mut env: JNIEnv,
         _class: JClass,
     ) -> jstring {
-        let result = unsafe {
-            ghboost::ghboost_version()
-        };
-        
+        let result = unsafe { ghboost::ghboost_version() };
+
         let result_str = unsafe {
             std::ffi::CStr::from_ptr(result)
                 .to_string_lossy()
                 .into_owned()
         };
-        
+
         unsafe { ghboost::ghboost_free(result) };
-        
+
         to_jstring(&mut env, result_str)
     }
 }
