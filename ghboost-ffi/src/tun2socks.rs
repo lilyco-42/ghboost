@@ -149,6 +149,38 @@ fn cleanup() {
 
 fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
     crate::logcat::info(&format!("tun2socks: thread start, tun fd={fd}, socks5={socks5}"));
+
+    // Android：先等内嵌内核真正监听 1080，再开始转发。
+    //
+    // 为什么在这里等而不是在 meow_kernel::start 里阻塞调用方：
+    // 实测内核冷启 0.7s → 7.3s → 23s（GeoIP 库解析 + 模拟器 I/O 退化），
+    // 阻塞 VpnService 线程既不可控也不该做。本函数已经跑在专属线程上，
+    // 在这里等是免费的。
+    //
+    // 不等的话会出现启动竞态：`tun: TCP conn` 早于 `LISTENING`（实测时序），
+    // 撞在空窗里的连接全部失败 —— 表现成「刚开 VPN 时头几秒上不了网」。
+    #[cfg(target_os = "android")]
+    {
+        use std::time::{Duration, Instant};
+        const WAIT_MAX: Duration = Duration::from_secs(60);
+        let t0 = Instant::now();
+        while !crate::meow_kernel::is_listening() {
+            if !crate::meow_kernel::is_running() {
+                // 内核挂了（配置错误等）。照样转发没意义，但也不该卡死。
+                crate::logcat::error("proxy kernel not running; forwarding anyway");
+                break;
+            }
+            if t0.elapsed() >= WAIT_MAX {
+                crate::logcat::error(&format!(
+                    "waited {WAIT_MAX:?} for proxy kernel, forwarding anyway"
+                ));
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        crate::logcat::info(&format!("proxy kernel ready after {:?}", t0.elapsed()));
+    }
+
     // TUN fd 设成非阻塞，AsyncFd 的 readable/writable 才能 EAGAIN
     unsafe {
         let f = libc::fcntl(fd, libc::F_GETFL);

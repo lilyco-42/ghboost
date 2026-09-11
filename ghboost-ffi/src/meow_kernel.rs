@@ -73,17 +73,6 @@ const LISTEN_ADDR: &str = "127.0.0.1:1080";
 /// 监听器在 meow 里的名字，只用于日志与 `GET /listeners` 快照。
 const LISTENER_NAME: &str = "ghboost-mixed";
 
-/// 等内核 bind 上 1080 的上限。
-///
-/// 实测**冷启 0.7s ~ 7.3s**（波动很大）：慢的那次是解析 7.8MB 的 GeoIP 库
-/// （`load_config` 里做），模拟器上尤其明显。所以不能给太小 ——
-/// 给 15s 余量；真机上通常 1~2s。
-///
-/// 为什么不改成「不等待 + 连接重试」：那要改 tun2socks 的连接路径，
-/// 而这里等一次就能把顺序问题彻底解决。代价是 Start 会阻塞这段时间，
-/// 调用方是前台服务的 onStartCommand，15s 远低于其 ANR 阈值。
-const READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
 static RUNNING: AtomicBool = AtomicBool::new(false);
 /// 内核**真正开始监听** 1080 了没有。
 ///
@@ -111,9 +100,18 @@ impl meow_common::SocketProtector for VpnSocketProtector {
     }
 }
 
-/// 内核是否在跑。给 Kotlin 侧查状态用。
+/// 内核线程是否还活着（给 Kotlin 查状态、也给就绪等待判断「是不是已经挂了」）。
 pub fn is_running() -> bool {
     RUNNING.load(Ordering::SeqCst)
+}
+
+/// 内核是否**已经开始监听** 1080。
+///
+/// 给 `tun2socks` 用：它在自己的线程里等这个标志，就绪后才开始转发。
+/// **不要**让 [`start`] 去阻塞调用方 —— 实测冷启 0.7s ~ 23s（波动极大，
+/// 主要耗在解析 GeoIP 库），阻塞 VpnService 线程不可接受。
+pub fn is_listening() -> bool {
+    LISTENING.load(Ordering::SeqCst)
 }
 
 /// 启动内核。
@@ -161,24 +159,12 @@ pub fn start(config_path: &str) -> Result<(), String> {
         }
     }
 
-    // 等内核真正 bind 上 1080 再返回。实测空窗期约 0.7s，期间 tun2socks
-    // 送来的连接会全部失败（logcat 时序可证：`tun: TCP conn` 早于 `LISTENING`）。
-    let deadline = std::time::Instant::now() + READY_TIMEOUT;
-    while !LISTENING.load(Ordering::SeqCst) {
-        if !RUNNING.load(Ordering::SeqCst) {
-            // 线程已经收工（配置错误等），别干等
-            return Err("meow kernel exited during startup (see logcat)".into());
-        }
-        if std::time::Instant::now() >= deadline {
-            // 超时不当作失败：可能只是机器慢。但必须留痕，方便和日志对照。
-            logcat::error(&format!(
-                "kernel not listening after {READY_TIMEOUT:?}, releasing caller anyway"
-            ));
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-
+    // **立即返回**，不等就绪。
+    //
+    // 曾经在这里阻塞等待（5s → 15s），但实测冷启耗时 0.7s → 7.3s → 23s
+    // 逐次恶化（GeoIP 库解析 + 模拟器 I/O 退化），15s 也不够，而阻塞
+    // VpnService 线程本身就不该做。改成由 `tun2socks` 在自己的线程里
+    // 等 [`is_listening`] —— 顺序照样保证，调用方却不用等。
     Ok(())
 }
 
