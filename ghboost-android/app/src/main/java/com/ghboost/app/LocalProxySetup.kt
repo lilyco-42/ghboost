@@ -65,7 +65,7 @@ object LocalProxySetup {
      *   「斜线 + 星号 + 星号」（例如写 `configs/` 后面接粗体标记），
      *   那会被当成嵌套注释的开始，导致整个文件的注释不闭合、语法全崩。
      */
-    private const val CONFIG_VERSION = 5
+    private const val CONFIG_VERSION = 6
 
     /** 配置里用来标记版本的注释行，形如 `# ghboost-config-version: 2`。 */
     private const val VERSION_MARKER = "# ghboost-config-version:"
@@ -343,8 +343,11 @@ object LocalProxySetup {
           enable: true
           listen: 127.0.0.1:1053
           ipv6: false
-          enhanced-mode: fake-ip
-          fake-ip-range: 198.18.0.1/16
+          # redir-host：meow 回真实 IP 给 App，再用「真实目的 IP」走规则路由
+          # （MATCH -> PROXY -> 节点）。本架构是「外部 tun2socks -> meow SOCKS5 入站」，
+          # meow 0.21.2 的 SOCKS5 入站不会把 fake-ip 反查回域名，导致目的被当成
+          # 198.18.0.x 直连（永远不通）。redir-host 不依赖 fake-ip 反查，故用这个。
+          enhanced-mode: redir-host
           nameserver:
             - 1.1.1.1
             - 8.8.8.8
