@@ -80,9 +80,84 @@ pub const FORWARDING_IMPLEMENTED: bool = true;
 /// 从 TUN 读到的包数。用来判断「VPN 到底有没有把流量交给我们」——
 /// 这是区分「TUN 半段没工作」和「内核半段没工作」的唯一依据。
 static TUN_PKTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 从 lwIP 输出、准备写回 TUN 的包数。和 [`TUN_PKTS`] 分开计数，
+/// 用来把「输入到了但没有 SYN-ACK 输出」与「输出了但写不回 TUN」分开。
+static STACK_OUT_PKTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const DEFAULT_SOCKS5: &str = "127.0.0.1:1080";
 const SOCKS5_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 只用于 Android logcat 诊断，不参与转发逻辑。
+///
+/// TUN 侧必须能看见完整的四元组和 TCP flags，否则只知道「有包」却不知道
+/// 是 DNS、IPv4 SYN 还是 IPv6 流量；lwIP 输出侧同理。这里不 dump payload，
+/// 避免把请求内容刷进日志，只记录足够定位握手的头部字段。
+fn packet_summary(pkt: &[u8]) -> String {
+    if pkt.is_empty() {
+        return "empty".into();
+    }
+    match pkt[0] >> 4 {
+        4 => {
+            if pkt.len() < 20 {
+                return format!("ipv4-short len={} first=0x{:02x}", pkt.len(), pkt[0]);
+            }
+            let ihl = ((pkt[0] & 0x0f) as usize) * 4;
+            if ihl < 20 || pkt.len() < ihl {
+                return format!("ipv4-bad-ihl len={} ihl={ihl}", pkt.len());
+            }
+            let src = format!("{}.{}.{}.{}", pkt[12], pkt[13], pkt[14], pkt[15]);
+            let dst = format!("{}.{}.{}.{}", pkt[16], pkt[17], pkt[18], pkt[19]);
+            let proto = pkt[9];
+            if proto == 6 && pkt.len() >= ihl + 20 {
+                let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+                let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+                let flags = pkt[ihl + 13];
+                return format!(
+                    "ipv4 tcp {src}:{sport}->{dst}:{dport} flags=0x{flags:02x} len={}",
+                    pkt.len()
+                );
+            }
+            if proto == 17 && pkt.len() >= ihl + 8 {
+                let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+                let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+                return format!("ipv4 udp {src}:{sport}->{dst}:{dport} len={}", pkt.len());
+            }
+            format!("ipv4 proto={proto} {src}->{dst} len={}", pkt.len())
+        }
+        6 => {
+            if pkt.len() < 40 {
+                return format!("ipv6-short len={} first=0x{:02x}", pkt.len(), pkt[0]);
+            }
+            let mut src_bytes = [0u8; 16];
+            let mut dst_bytes = [0u8; 16];
+            src_bytes.copy_from_slice(&pkt[8..24]);
+            dst_bytes.copy_from_slice(&pkt[24..40]);
+            let src = std::net::Ipv6Addr::from(src_bytes);
+            let dst = std::net::Ipv6Addr::from(dst_bytes);
+            let next = pkt[6];
+            if next == 6 && pkt.len() >= 60 {
+                let sport = u16::from_be_bytes([pkt[40], pkt[41]]);
+                let dport = u16::from_be_bytes([pkt[42], pkt[43]]);
+                let flags = pkt[53];
+                return format!(
+                    "ipv6 tcp {src}:{sport}->{dst}:{dport} flags=0x{flags:02x} len={}",
+                    pkt.len()
+                );
+            }
+            if next == 17 && pkt.len() >= 48 {
+                let sport = u16::from_be_bytes([pkt[40], pkt[41]]);
+                let dport = u16::from_be_bytes([pkt[42], pkt[43]]);
+                return format!("ipv6 udp {src}:{sport}->{dst}:{dport} len={}", pkt.len());
+            }
+            format!("ipv6 next={next} {src}->{dst} len={}", pkt.len())
+        }
+        version => format!("unknown-ip-version={version} len={}", pkt.len()),
+    }
+}
+
+fn should_log_packet(count: u64) -> bool {
+    count <= 30 || count % 100 == 0
+}
 
 pub fn start(fd: RawFd, dns_port: u16) -> Result<(), String> {
     if RUNNING.swap(true, Ordering::SeqCst) {
@@ -249,6 +324,13 @@ async fn tun_io(
                 Some(Ok(p)) => p,
                 _ => return Err::<(), ()>(()),
             };
+            let count = STACK_OUT_PKTS.fetch_add(1, Ordering::Relaxed) + 1;
+            if should_log_packet(count) {
+                crate::logcat::info(&format!(
+                    "tun: stack output {count}: {}",
+                    packet_summary(&pkt)
+                ));
+            }
             write_all_tun(&tun, &pkt).await
         };
         // biased + write 先：lwIP 产出的回包（SYN-ACK/DNS 响应）必须
@@ -258,9 +340,23 @@ async fn tun_io(
         // 有机会被 poll，否则 tun_io 紧循环会饿死它们。
         tokio::select! {
             biased;
-            w = write_fut => { if w.is_err() { return; } }
+            w = write_fut => {
+                if w.is_err() {
+                    crate::logcat::error("tun: stack output/write failed; stopping IO task");
+                    return;
+                }
+            }
             r = read_fut => match r {
-                Ok(pkt) => { if stack_sink.send(pkt).await.is_err() { return; } }
+                Ok(pkt) => {
+                    let count = TUN_PKTS.load(Ordering::Relaxed);
+                    if should_log_packet(count) {
+                        crate::logcat::info(&format!("tun: input {count}: {}", packet_summary(&pkt)));
+                    }
+                    if let Err(e) = stack_sink.send(pkt).await {
+                        crate::logcat::error(&format!("tun: lwip input failed: {e}"));
+                        return;
+                    }
+                }
                 Err(()) => return, // readable() 错（fd 关了）或堆栈错：收工
             },
         }
@@ -300,7 +396,13 @@ async fn read_one_pkt(tun: &AsyncFd<OwnedFd>) -> Result<Vec<u8>, ()> {
 async fn write_all_tun(tun: &AsyncFd<OwnedFd>, pkt: &[u8]) -> Result<(), ()> {
     let mut written = 0;
     while written < pkt.len() {
-        let mut guard = tun.writable().await.map_err(|_| ())?;
+        let mut guard = match tun.writable().await {
+            Ok(g) => g,
+            Err(e) => {
+                crate::logcat::error(&format!("tun: writable wait failed: {e}"));
+                return Err(());
+            }
+        };
         let fd = tun.as_raw_fd();
         let n =
             unsafe { libc::write(fd, pkt[written..].as_ptr() as *const _, pkt.len() - written) };
@@ -311,6 +413,10 @@ async fn write_all_tun(tun: &AsyncFd<OwnedFd>, pkt: &[u8]) -> Result<(), ()> {
                 guard.clear_ready();
                 continue;
             }
+            crate::logcat::error(&format!(
+                "tun: write failed after {written}/{} bytes: {e}",
+                pkt.len()
+            ));
             return Err(());
         }
         written += n as usize;
