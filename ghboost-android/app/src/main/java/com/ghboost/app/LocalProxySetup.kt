@@ -70,17 +70,16 @@ object LocalProxySetup {
      *   而列表里是 DIRECT，所以流量全走直连（见 [defaultConfig] 注释）。
      * v5 → v6：DNS 由 fake-ip 改 redir-host —— 外部 tun2socks→meow SOCKS5 架构下
      *   fake-ip 不被 SOCKS5 入站反查，目的被当 198.18.0.x 直连（永远不通）。
-     * v6 → v7：file provider 的 `path` 改**绝对路径**。实测 meow-rs 把 file provider
-     *   的 path 当**相对 CWD（App 进程 CWD 是 `/`）**解析，写成 `providers/ghboost.yaml`
-     *   时去找 `/providers/ghboost.yaml`（不存在）→ provider 注册成功但 0 节点 →
-     *   MATCH,PROXY 落空组回退 DIRECT，表现「VPN 连上但流量直连、不走节点」。
-     *   绝对路径（仍在 config 目录内，不触发 escape 校验）彻底规避。
+     * v6 → v7：曾误把 file provider 的 `path` 改成绝对路径；meow-rs 会把 provider
+     *   路径限制在 config/cache 目录内，绝对路径反而会被安全校验拒绝。
+     * v7 → v8：恢复官方支持的相对路径 `providers/ghboost.yaml`；meow-rs 会相对
+     *   config 文件目录解析，并要求解析结果仍在该目录内。
      *
      * ⚠️ 注意：Kotlin 的区块注释会嵌套，KDoc 里千万不要出现连续的
      *   「斜线 + 星号 + 星号」（例如写 `configs/` 后面接粗体标记），
      *   那会被当成嵌套注释的开始，导致整个文件的注释不闭合、语法全崩。
      */
-    private const val CONFIG_VERSION = 7
+    private const val CONFIG_VERSION = 8
 
     /** 配置里用来标记版本的注释行，形如 `# ghboost-config-version: 2`。 */
     private const val VERSION_MARKER = "# ghboost-config-version:"
@@ -137,7 +136,7 @@ object LocalProxySetup {
 
         if (existingVersion != CONFIG_VERSION) {
             config.parentFile?.mkdirs()
-            config.writeText(defaultConfig(mmdb?.absolutePath, providerFile.absolutePath))
+            config.writeText(defaultConfig(mmdb?.absolutePath))
             changed = true
             Log.i(
                 TAG,
@@ -319,7 +318,7 @@ object LocalProxySetup {
      * @param mmdbPath GeoIP 库的绝对路径；为 null 时**不能**用 GEOIP/GEOSITE 规则
      *   （meow 会在加载配置时直接失败：`Failed to load GeoIP database`）。
      */
-    private fun defaultConfig(mmdbPath: String?, providerPath: String?): String {
+    private fun defaultConfig(mmdbPath: String?): String {
         // 用占位符替换而不是字符串插值：插进来的多行内容会打乱
         // `trimIndent()` 的公共缩进推断，结果 YAML 缩进错乱、内核解析失败。
         val template = """
@@ -374,17 +373,12 @@ object LocalProxySetup {
 
         # 节点从 provider 来；订阅 URL 写在 provider 里
         #
-        # ⚠️ 关键坑：meow-rs 的 file provider 把 `path` 当成**相对 CWD** 解析，
-        # 而不是相对 config 文件目录。App 进程的 CWD 是 `/`，所以写成
-        # `providers/ghboost.yaml` 时 meow 去找 `/providers/ghboost.yaml`
-        # （根本不存在）→ provider 注册成功但 **0 个节点** → MATCH,PROXY
-        # 落到空组、回退 DIRECT，表现成「VPN 连上了但流量直连、不走节点」。
-        # 实测证据：native 日志 `proxy_providers: [ghboost]` 但 ss 里从没出现过
-        # 到节点（127.0.0.1:1081）的连接。改用**绝对路径**就稳了。
+        # ⚠️ path 是相对 config 文件目录解析的，且不能通过 `..` 逃出该目录。
+        # 这里的 provider 实际文件位于 configs/providers/ghboost.yaml。
         proxy-providers:
           ghboost:
             type: file
-            path: ${providerPath ?: "providers/ghboost.yaml"}
+            path: providers/ghboost.yaml
             health-check:
               enable: true
               url: https://www.gstatic.com/generate_204

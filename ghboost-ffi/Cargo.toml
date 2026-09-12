@@ -34,8 +34,11 @@ futures = "0.3"
 # 需要 cmake + C++ 编译器）是**硬依赖**，Android 侧由 NDK 工具链提供。
 [target.'cfg(target_os = "android")'.dependencies]
 meow-app = { version = "0.21", default-features = false, features = ["minimal"] }
+meow-api = "0.21"
 meow-common = "0.21"
 meow-config = "0.21"
+dashmap = "6"
+parking_lot = "0.12"
 # `dns-server` 特性提供 DnsServer（fake-ip 本地 DNS，监听在 config.dns.listen）。
 # 即便 meow-app 的 `minimal` 已间接开启，这里显式声明以避免特性统一（unification）
 # 行为变化导致内嵌路径编译不到 server 模块。

@@ -52,8 +52,12 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use dashmap::DashMap;
+use meow_api::ApiServer;
 use meow_listener::MixedListener;
 use meow_tunnel::Tunnel;
+use parking_lot::RwLock;
+use tokio::sync::broadcast;
 
 /// 日志走 crate 级的 [`crate::logcat`]（Android → logcat，其它平台 → stderr）。
 ///
@@ -256,6 +260,14 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
                 "proxy_providers: [{}]",
                 provs.join(", ")
             ));
+            for (name, provider) in &config.proxy_providers {
+                logcat::info(&format!(
+                    "provider {name}: vehicle={} proxies={} updated_at={}",
+                    provider.vehicle_type,
+                    provider.proxies().len(),
+                    provider.updated_at_secs(),
+                ));
+            }
         }
 
         // 与 meow-app 的 VPN_PLATFORM 分支一致：Android 上无条件装。
@@ -276,6 +288,40 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
         tunnel.update_rules(config.rules);
         tunnel.spawn_background_tasks();
         logcat::info("tunnel ready");
+
+        // meow-app 的二进制入口会在这里启动 Clash 兼容 REST API；我们是
+        // 内嵌库，必须自己把同一份 Tunnel/provider/raw config 接给 ApiServer。
+        // 不做这一步时 config 里的 external-controller 只会被解析，9090
+        // 不会监听，未来的 Android 面板也无法读取节点、测速或流量统计。
+        let api_task = config.api.external_controller.map(|api_addr| {
+            let proxy_providers = Arc::new(DashMap::new());
+            for (name, provider) in &config.proxy_providers {
+                proxy_providers.insert(name.clone(), Arc::clone(provider));
+            }
+            let rule_providers = Arc::new(RwLock::new(config.rule_providers.clone()));
+            let raw_config = Arc::new(RwLock::new(config.raw.clone()));
+            let (log_tx, _) = broadcast::channel(256);
+            let server = ApiServer::new(
+                tunnel.clone(),
+                api_addr,
+                config.api.secret.clone(),
+                config_path.to_string(),
+                raw_config,
+                log_tx,
+                proxy_providers,
+                rule_providers,
+                config.listeners.named.clone(),
+                config.api.external_ui.clone(),
+            );
+            tokio::spawn(async move {
+                if let Err(e) = server.run().await {
+                    logcat::error(&format!("REST API stopped: {e}"));
+                }
+            })
+        });
+        if let Some(api_addr) = config.api.external_controller {
+            logcat::info(&format!("REST API starting on {api_addr}"));
+        }
 
         let addr: SocketAddr = LISTEN_ADDR
             .parse()
@@ -349,6 +395,9 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
         LISTENING.store(true, Ordering::SeqCst);
 
         shutdown.notified().await;
+        if let Some(task) = api_task {
+            task.abort();
+        }
         listen_task.abort();
         if let Some(t) = dns_task {
             t.abort();
