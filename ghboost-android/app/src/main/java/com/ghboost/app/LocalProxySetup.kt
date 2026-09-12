@@ -74,12 +74,16 @@ object LocalProxySetup {
      *   路径限制在 config/cache 目录内，绝对路径反而会被安全校验拒绝。
      * v7 → v8：恢复官方支持的相对路径 `providers/ghboost.yaml`；meow-rs 会相对
      *   config 文件目录解析，并要求解析结果仍在该目录内。
+     * v8 → v9：DNS 上游改为 **DoH 为主、UDP 53 为备**（详见 [defaultConfig]）。
+     *   实测（2026-09-12 真机）UDP 53 会被局域网透明代理劫持回 fake-ip 段，
+     *   内核拿到假 IP 后 redir-host 会如实交给 App，表现为「开 VPN 后全网断
+     *   且日志零报错」。这是正确性修复，必须让老设备也吃到 —— 所以必须 +1。
      *
      * ⚠️ 注意：Kotlin 的区块注释会嵌套，KDoc 里千万不要出现连续的
      *   「斜线 + 星号 + 星号」（例如写 `configs/` 后面接粗体标记），
      *   那会被当成嵌套注释的开始，导致整个文件的注释不闭合、语法全崩。
      */
-    private const val CONFIG_VERSION = 8
+    private const val CONFIG_VERSION = 9
 
     /** 配置里用来标记版本的注释行，形如 `# ghboost-config-version: 2`。 */
     private const val VERSION_MARKER = "# ghboost-config-version:"
