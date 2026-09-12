@@ -251,13 +251,20 @@ async fn tun_io(
             };
             write_all_tun(&tun, &pkt).await
         };
+        // biased + write 先：lwIP 产出的回包（SYN-ACK/DNS 响应）必须
+        // 优先写回 TUN，否则 read 分支总先 ready，write 永远饿死。
+        // 后果：TCP 握手永远完不成、DNS 永远超时 → 全网断。
+        // yield_now：让 LocalSet 上其它任务（tcp_accept / udp_drain）
+        // 有机会被 poll，否则 tun_io 紧循环会饿死它们。
         tokio::select! {
+            biased;
+            w = write_fut => { if w.is_err() { return; } }
             r = read_fut => match r {
                 Ok(pkt) => { if stack_sink.send(pkt).await.is_err() { return; } }
                 Err(()) => return, // readable() 错（fd 关了）或堆栈错：收工
             },
-            w = write_fut => { if w.is_err() { return; } }
         }
+        tokio::task::yield_now().await;
     }
 }
 
