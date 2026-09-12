@@ -286,6 +286,56 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
             .await
             .map_err(|e| format!("bind {addr}: {e}"))?;
 
+        // ── DNS server（fake-ip 模式）─────────────────────────────────────
+        // tun2socks 把 TUN 内的 UDP/53 直接（plain UDP）转给这里；meow 做
+        // fake-ip 分配后回假 IP，真正的外联解析由 tunnel 用**同一份**
+        // `config.dns.resolver` 反向映射回域名再走节点。
+        //
+        // 这套链路要求这个 DNS 监听必须起来，否则 App 的 DNS 全打在空端口
+        // 上（实测 Chrome 报 DNS_PROBE_FINISHED_NO_INTERNET、Radxa 中继日志
+        // 永远等不到 CONNECT）。之前的内嵌路径只起了 1080、漏了 1053，
+        // 就是端到端不通的唯一阻塞点。
+        //
+        // 上游 DNS 套接字走 meow-dns 的 DefaultSocketFactory →
+        // `meow_common::bind_udp/connect_tcp`，已被我们装的 SocketProtector
+        // 覆盖，无需自定义 set_socket_factory。
+        //
+        // 关键不变量：DnsServer 与 Tunnel 必须共享同一个 `resolver` 实例，
+        // fake-ip 的「假 IP ↔ 域名」映射才对得上。
+        let dns_task: Option<tokio::task::JoinHandle<()>> = if config.dns.enabled {
+            match config.dns.listen_addr {
+                Some(dns_addr) => {
+                    let dns_server =
+                        meow_dns::DnsServer::new(Arc::clone(&config.dns.resolver), dns_addr);
+                    match dns_server.bind().await {
+                        Ok(bound) => {
+                            let task = tokio::spawn(async move {
+                                if let Err(e) = bound.run().await {
+                                    logcat::error(&format!("dns server exited: {e}"));
+                                }
+                            });
+                            logcat::info(&format!("DNS listening on {dns_addr}"));
+                            Some(task)
+                        }
+                        Err(e) => {
+                            // 端口被占 / 沙箱拒绝：这是硬启动失败，必须让外部看见。
+                            logcat::error(&format!(
+                                "bind DNS {dns_addr}: {e} — App DNS will fail"
+                            ));
+                            None
+                        }
+                    }
+                }
+                None => {
+                    logcat::error("dns enabled but listen_addr is None — App DNS will fail");
+                    None
+                }
+            }
+        } else {
+            logcat::info("dns disabled in config — skipping DNS server");
+            None
+        };
+
         let listener =
             MixedListener::new(tunnel.clone(), addr, LISTENER_NAME.to_string());
         let listen_task = tokio::spawn(async move {
@@ -295,11 +345,14 @@ fn run_kernel(config_path: &str, shutdown: Arc<tokio::sync::Notify>) {
         });
 
         logcat::info(&format!("LISTENING on {addr}"));
-        // 到这里 1080 已经在听了 —— 通知 start() 可以放行 tun2socks。
+        // 到这里 1080 与 1053 都已经在听了 —— 通知 start() 可以放行 tun2socks。
         LISTENING.store(true, Ordering::SeqCst);
 
         shutdown.notified().await;
         listen_task.abort();
+        if let Some(t) = dns_task {
+            t.abort();
+        }
         logcat::info("shutdown signalled");
         Ok(())
     });

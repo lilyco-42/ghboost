@@ -36,7 +36,10 @@ futures = "0.3"
 meow-app = { version = "0.21", default-features = false, features = ["minimal"] }
 meow-common = "0.21"
 meow-config = "0.21"
-meow-dns = "0.21"
+# `dns-server` 特性提供 DnsServer（fake-ip 本地 DNS，监听在 config.dns.listen）。
+# 即便 meow-app 的 `minimal` 已间接开启，这里显式声明以避免特性统一（unification）
+# 行为变化导致内嵌路径编译不到 server 模块。
+meow-dns = { version = "0.21", features = ["dns-server"] }
 meow-listener = { version = "0.21", default-features = false, features = ["listener-mixed"] }
 meow-tunnel = "0.21"
 
