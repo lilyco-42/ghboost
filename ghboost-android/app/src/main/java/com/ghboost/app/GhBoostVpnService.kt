@@ -31,18 +31,20 @@ class GhBoostVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1
 
         /**
-         * 交给 Rust 侧的 DNS 端口提示值。
+         * 交给 Rust 侧 tun2socks 的「DNS 重定向目标端口」。
          *
-         * Rust 侧 `tun2socks::start` 的参数名是 `_dns_port`，即**当前被忽略**：
-         * DNS 不需要本地 resolver，靠 TUN 里真实的 DNS 查询走
-         * SOCKS5 UDP ASSOCIATE 出去即可（见 `tun2socks.rs` 的 `udp_drain`，
-         * 已实现）。保留这个参数是为了将来做「DNS 劫持到本地缓存」时用。
+         * 必须等于 meow 的 DNS 监听口（与 [LocalProxySetup] 里的
+         * `dns.listen: 127.0.0.1:1053` 一致）。tun2socks 会拦截 TUN 里
+         * 所有 `dst.port()==53` 的 UDP，直接（plain UDP）转发到这个端口，
+         * 由 meow 的 fake-ip DNS 解析 —— **不能**走 SOCKS5 UDP ASSOCIATE 到
+         * 1080：那样 meow 只会把包 relay 到 8.8.8.8:53，既不触发 fake-ip
+         * 映射、也连不上节点，表现就是 DNS 永远解析不出来（已实测）。
          *
-         * 另外注意 `.addDnsServer()` 给的是 8.8.8.8/8.8.4.4：`VpnService`
-         * 会把系统 DNS 指到这两个地址，而到它们的 UDP 53 会进 TUN，
-         * 由上面的 UDP relay 转发到远端解析 —— 这条链是通的。
+         * 注意：`.addDnsServer()` 给的 8.8.8.8/8.8.4.4 只是「系统 DNS 指到哪」，
+         * 真正进 TUN 的 UDP/53 会被 tun2socks 截下来转到 1053，所以改了 meow 的
+         * `dns.listen` 端口这里必须同步改。
          */
-        private const val DNS_PORT = 5353
+        private const val DNS_PORT = 1053
     }
 
     private var tunFd: ParcelFileDescriptor? = null
@@ -108,6 +110,23 @@ class GhBoostVpnService : VpnService() {
                 return
             }
 
+            // 先把代理内核拉起来。顺序不能反：
+            //   - 内核启动时会先装 protector，再 bind 127.0.0.1:1080
+            //   - tun2socks 一启动就会往 1080 送流量
+            // 反过来的话，内核的出站（拉订阅、健康检查）还没被 protect，
+            // 会被自己的 TUN 卷回去形成死循环。
+            val configPath = java.io.File(
+                LocalProxySetup.configRoot(this@GhBoostVpnService),
+                "configs/config.yaml",
+            ).absolutePath
+            Log.i(TAG, "starting proxy kernel, config=$configPath")
+            val krc = GhBoostCore.nativeStartProxyKernel(this@GhBoostVpnService, configPath)
+            if (krc != 0) {
+                Log.e(TAG, "nativeStartProxyKernel failed, rc=$krc")
+                stopVpn()
+                return
+            }
+
             // Hand fd to Rust tun2socks
             val fd = tunFd!!.fd
             Log.i(TAG, "TUN fd=$fd, starting tun2socks...")
@@ -135,6 +154,13 @@ class GhBoostVpnService : VpnService() {
             GhBoostCore.nativeStopTun2Socks()
         } catch (e: Exception) {
             Log.w(TAG, "StopTun2Socks error: ${e.message}")
+        }
+        // 内核要等它真的退出 —— 否则它还占着 127.0.0.1:1080，
+        // 下一次开 VPN 会 bind 失败（表现成「第二次起不来」）。
+        try {
+            GhBoostCore.nativeStopProxyKernel()
+        } catch (e: Exception) {
+            Log.w(TAG, "StopProxyKernel error: ${e.message}")
         }
         try {
             tunFd?.close()

@@ -91,6 +91,30 @@ object GhBoostCore {
      */
     external fun nativeTunForwardingImplemented(): Boolean
 
+    // ── 代理内核（meow-rs，内嵌）─────────────────────────────────
+
+    /**
+     * 启动内嵌的代理内核。
+     *
+     * 内核负责把 tun2socks 送来的 SOCKS5 流量按订阅节点送出去（协议解析、
+     * 规则匹配、选路）。它必须跑在**本进程内** —— `VpnService.protect(fd)`
+     * 只能保护本进程已打开的 fd，没有进程级 API，spawn 出去的内核出站
+     * 会被自己的 TUN 卷回，形成死循环。
+     *
+     * @param service 正在运行的 VpnService。Rust 侧要用它回调
+     *   `VpnService.protect(fd)` —— 内核启动阶段（拉订阅、健康检查）就会
+     *   开 socket，那些出站必须已经被 protect，否则会被自己的 TUN 卷回。
+     * @param configPath mihomo 风格 YAML 的绝对路径，由 [LocalProxySetup] 写好
+     * @return 0 成功；-1 失败（原因写 stderr）
+     */
+    external fun nativeStartProxyKernel(service: VpnService, configPath: String): Int
+
+    /** 停止代理内核，并等它真正退出（否则会占着 1080 端口）。 */
+    external fun nativeStopProxyKernel()
+
+    /** 代理内核是否在运行。 */
+    external fun nativeProxyKernelRunning(): Boolean
+
     // ── Info ───────────────────────────────────────────────────
 
     /** Return version string (semver from Cargo.toml). */

@@ -47,15 +47,18 @@
 //! - UDP relay 直连 SOCKS5 服务端的 UDP ASSOCIATE 端口（不做 CONNECT
 //!   隧道里的 associate），且不做 FRAG 重组（QUIC/DNS 都不切分包）。
 //!
-//! FORWARDING_IMPLEMENTED 留 false：lwip 接进来了（TCP + UDP 都有实现），
-//! 但板上要有一个真能用的本地 SOCKS5 代理（mihomo on Android：把订阅节点协议
-//! VLESS/Trojan/SS 转成 SOCKS5 喂给这里，并且它自己的出站也要
-//! 被 protect 保护），否则放开 Start 之后 UI 写「VPN 已连接」但
-//! 所有连接都 ECONNREFUSED，比完全断网还难查。条件齐了把下面
-//! 这个 `false` 改成 `true` 即可，Kotlin 不用动。
+//! FORWARDING_IMPLEMENTED = true：两半都到位了 ——
+//! 本文件负责 TUN ↔ 本地 SOCKS5（lwIP，TCP + UDP 都实测过），
+//! `meow_kernel.rs` 负责本地 SOCKS5 ↔ 订阅节点（内嵌 meow-rs，MIT）。
+//!
+//! ⚠️ 这个常量只表示「**原生层会转发**」，不表示「使用者一定有网」。
+//! 如果节点清单还是出厂占位（没有真实节点），内核会正常启动、VPN 也显示
+//! 已连接，但每个连接都指向没人监听的占位节点 —— 「已连接却打不开网页」。
+//! 所以 Kotlin 侧把 Start 闸门设成 **两个条件都要满足**：
+//! 本常量 + `LocalProxySetup.hasRealNodes()`。别只依赖这里。
 
 use futures::{SinkExt, StreamExt};
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -72,12 +75,91 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 // Notify 本身不是 Clone，用 Arc 共享给 stop() 和 run_thread
 static SHUTDOWN: Mutex<Option<Arc<Notify>>> = Mutex::new(None);
 
-pub const FORWARDING_IMPLEMENTED: bool = false;
+pub const FORWARDING_IMPLEMENTED: bool = true;
+
+/// 从 TUN 读到的包数。用来判断「VPN 到底有没有把流量交给我们」——
+/// 这是区分「TUN 半段没工作」和「内核半段没工作」的唯一依据。
+static TUN_PKTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 从 lwIP 输出、准备写回 TUN 的包数。和 [`TUN_PKTS`] 分开计数，
+/// 用来把「输入到了但没有 SYN-ACK 输出」与「输出了但写不回 TUN」分开。
+static STACK_OUT_PKTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const DEFAULT_SOCKS5: &str = "127.0.0.1:1080";
 const SOCKS5_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn start(fd: RawFd, _dns_port: u16) -> Result<(), String> {
+/// 只用于 Android logcat 诊断，不参与转发逻辑。
+///
+/// TUN 侧必须能看见完整的四元组和 TCP flags，否则只知道「有包」却不知道
+/// 是 DNS、IPv4 SYN 还是 IPv6 流量；lwIP 输出侧同理。这里不 dump payload，
+/// 避免把请求内容刷进日志，只记录足够定位握手的头部字段。
+fn packet_summary(pkt: &[u8]) -> String {
+    if pkt.is_empty() {
+        return "empty".into();
+    }
+    match pkt[0] >> 4 {
+        4 => {
+            if pkt.len() < 20 {
+                return format!("ipv4-short len={} first=0x{:02x}", pkt.len(), pkt[0]);
+            }
+            let ihl = ((pkt[0] & 0x0f) as usize) * 4;
+            if ihl < 20 || pkt.len() < ihl {
+                return format!("ipv4-bad-ihl len={} ihl={ihl}", pkt.len());
+            }
+            let src = format!("{}.{}.{}.{}", pkt[12], pkt[13], pkt[14], pkt[15]);
+            let dst = format!("{}.{}.{}.{}", pkt[16], pkt[17], pkt[18], pkt[19]);
+            let proto = pkt[9];
+            if proto == 6 && pkt.len() >= ihl + 20 {
+                let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+                let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+                let flags = pkt[ihl + 13];
+                return format!(
+                    "ipv4 tcp {src}:{sport}->{dst}:{dport} flags=0x{flags:02x} len={}",
+                    pkt.len()
+                );
+            }
+            if proto == 17 && pkt.len() >= ihl + 8 {
+                let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+                let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+                return format!("ipv4 udp {src}:{sport}->{dst}:{dport} len={}", pkt.len());
+            }
+            format!("ipv4 proto={proto} {src}->{dst} len={}", pkt.len())
+        }
+        6 => {
+            if pkt.len() < 40 {
+                return format!("ipv6-short len={} first=0x{:02x}", pkt.len(), pkt[0]);
+            }
+            let mut src_bytes = [0u8; 16];
+            let mut dst_bytes = [0u8; 16];
+            src_bytes.copy_from_slice(&pkt[8..24]);
+            dst_bytes.copy_from_slice(&pkt[24..40]);
+            let src = std::net::Ipv6Addr::from(src_bytes);
+            let dst = std::net::Ipv6Addr::from(dst_bytes);
+            let next = pkt[6];
+            if next == 6 && pkt.len() >= 60 {
+                let sport = u16::from_be_bytes([pkt[40], pkt[41]]);
+                let dport = u16::from_be_bytes([pkt[42], pkt[43]]);
+                let flags = pkt[53];
+                return format!(
+                    "ipv6 tcp {src}:{sport}->{dst}:{dport} flags=0x{flags:02x} len={}",
+                    pkt.len()
+                );
+            }
+            if next == 17 && pkt.len() >= 48 {
+                let sport = u16::from_be_bytes([pkt[40], pkt[41]]);
+                let dport = u16::from_be_bytes([pkt[42], pkt[43]]);
+                return format!("ipv6 udp {src}:{sport}->{dst}:{dport} len={}", pkt.len());
+            }
+            format!("ipv6 next={next} {src}->{dst} len={}", pkt.len())
+        }
+        version => format!("unknown-ip-version={version} len={}", pkt.len()),
+    }
+}
+
+fn should_log_packet(count: u64) -> bool {
+    count <= 30 || count % 100 == 0
+}
+
+pub fn start(fd: RawFd, dns_port: u16) -> Result<(), String> {
     if RUNNING.swap(true, Ordering::SeqCst) {
         return Err("tun2socks already running".into());
     }
@@ -109,7 +191,7 @@ pub fn start(fd: RawFd, _dns_port: u16) -> Result<(), String> {
 
     let join = std::thread::Builder::new()
         .name("ghboost-tun2socks".into())
-        .spawn(move || run_thread(owned_fd_raw, socks5_v4, notify));
+        .spawn(move || run_thread(owned_fd_raw, socks5_v4, dns_port, notify));
 
     if let Err(e) = join {
         unsafe {
@@ -140,7 +222,40 @@ fn cleanup() {
     *SHUTDOWN.lock().unwrap() = None;
 }
 
-fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
+fn run_thread(fd: RawFd, socks5: SocketAddrV4, dns_port: u16, notify: Arc<Notify>) {
+    crate::logcat::info(&format!("tun2socks: thread start, tun fd={fd}, socks5={socks5}"));
+
+    // Android：先等内嵌内核真正监听 1080，再开始转发。
+    //
+    // 为什么在这里等而不是在 meow_kernel::start 里阻塞调用方：
+    // 实测内核冷启 0.7s → 7.3s → 23s（GeoIP 库解析 + 模拟器 I/O 退化），
+    // 阻塞 VpnService 线程既不可控也不该做。本函数已经跑在专属线程上，
+    // 在这里等是免费的。
+    //
+    // 不等的话会出现启动竞态：`tun: TCP conn` 早于 `LISTENING`（实测时序），
+    // 撞在空窗里的连接全部失败 —— 表现成「刚开 VPN 时头几秒上不了网」。
+    #[cfg(target_os = "android")]
+    {
+        use std::time::{Duration, Instant};
+        const WAIT_MAX: Duration = Duration::from_secs(60);
+        let t0 = Instant::now();
+        while !crate::meow_kernel::is_listening() {
+            if !crate::meow_kernel::is_running() {
+                // 内核挂了（配置错误等）。照样转发没意义，但也不该卡死。
+                crate::logcat::error("proxy kernel not running; forwarding anyway");
+                break;
+            }
+            if t0.elapsed() >= WAIT_MAX {
+                crate::logcat::error(&format!(
+                    "waited {WAIT_MAX:?} for proxy kernel, forwarding anyway"
+                ));
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        crate::logcat::info(&format!("proxy kernel ready after {:?}", t0.elapsed()));
+    }
+
     // TUN fd 设成非阻塞，AsyncFd 的 readable/writable 才能 EAGAIN
     unsafe {
         let f = libc::fcntl(fd, libc::F_GETFL);
@@ -155,7 +270,7 @@ fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("tun2socks: build runtime: {e}");
+            crate::logcat::error(&format!("tun2socks: build runtime: {e}"));
             cleanup();
             return;
         }
@@ -172,14 +287,19 @@ fn run_thread(fd: RawFd, socks5: SocketAddrV4, notify: Arc<Notify>) {
         // 三个任务在 LocalSet 上跑（不要求 Send，lwip 栈状态同线程）
         tokio::task::spawn_local(tun_io(tun, stack_sink, stack_stream));
         tokio::task::spawn_local(tcp_accept(tcp_listener, socks5));
-        tokio::task::spawn_local(udp_drain(udp_socket, socks5));
+        // meow 的 DNS 监听口（与 LocalProxySetup 的 `dns.listen` 一致）：
+        // tun2socks 会把 TUN 里所有 UDP/53 直接转给它，由 fake-ip 解析。
+        let dns_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, dns_port);
+
+        tokio::task::spawn_local(udp_drain(udp_socket, socks5, dns_addr));
+        crate::logcat::info("tun2socks: lwip stack up, 3 tasks spawned");
 
         // 等 stop() 的 notify；期间不退出
         notify.notified().await;
         Ok::<(), String>(())
     }));
     if let Err(e) = res {
-        eprintln!("tun2socks: {e}");
+        crate::logcat::error(&format!("tun2socks: {e}"));
     }
     // run_until 返回 → LocalSet drop → 三个 spawn_local 任务取消
     // → 它们的 future drop → lwip 类型 drop；AsyncFd<OwnedFd> drop
@@ -204,15 +324,43 @@ async fn tun_io(
                 Some(Ok(p)) => p,
                 _ => return Err::<(), ()>(()),
             };
+            let count = STACK_OUT_PKTS.fetch_add(1, Ordering::Relaxed) + 1;
+            if should_log_packet(count) {
+                crate::logcat::info(&format!(
+                    "tun: stack output {count}: {}",
+                    packet_summary(&pkt)
+                ));
+            }
             write_all_tun(&tun, &pkt).await
         };
+        // biased + write 先：lwIP 产出的回包（SYN-ACK/DNS 响应）必须
+        // 优先写回 TUN，否则 read 分支总先 ready，write 永远饿死。
+        // 后果：TCP 握手永远完不成、DNS 永远超时 → 全网断。
+        // yield_now：让 LocalSet 上其它任务（tcp_accept / udp_drain）
+        // 有机会被 poll，否则 tun_io 紧循环会饿死它们。
         tokio::select! {
+            biased;
+            w = write_fut => {
+                if w.is_err() {
+                    crate::logcat::error("tun: stack output/write failed; stopping IO task");
+                    return;
+                }
+            }
             r = read_fut => match r {
-                Ok(pkt) => { if stack_sink.send(pkt).await.is_err() { return; } }
+                Ok(pkt) => {
+                    let count = TUN_PKTS.load(Ordering::Relaxed);
+                    if should_log_packet(count) {
+                        crate::logcat::info(&format!("tun: input {count}: {}", packet_summary(&pkt)));
+                    }
+                    if let Err(e) = stack_sink.send(pkt).await {
+                        crate::logcat::error(&format!("tun: lwip input failed: {e}"));
+                        return;
+                    }
+                }
                 Err(()) => return, // readable() 错（fd 关了）或堆栈错：收工
             },
-            w = write_fut => { if w.is_err() { return; } }
         }
+        tokio::task::yield_now().await;
     }
 }
 
@@ -236,6 +384,11 @@ async fn read_one_pkt(tun: &AsyncFd<OwnedFd>) -> Result<Vec<u8>, ()> {
             continue;
         }
         guard.clear_ready();
+        // 只打前几个和每 100 个，避免刷屏；但足以证明 TUN 侧有流量进来。
+        let c = TUN_PKTS.fetch_add(1, Ordering::Relaxed) + 1;
+        if c <= 5 || c % 100 == 0 {
+            crate::logcat::info(&format!("tun: read pkt #{c} ({n} bytes)"));
+        }
         return Ok(buf[..n as usize].to_vec());
     }
 }
@@ -243,7 +396,13 @@ async fn read_one_pkt(tun: &AsyncFd<OwnedFd>) -> Result<Vec<u8>, ()> {
 async fn write_all_tun(tun: &AsyncFd<OwnedFd>, pkt: &[u8]) -> Result<(), ()> {
     let mut written = 0;
     while written < pkt.len() {
-        let mut guard = tun.writable().await.map_err(|_| ())?;
+        let mut guard = match tun.writable().await {
+            Ok(g) => g,
+            Err(e) => {
+                crate::logcat::error(&format!("tun: writable wait failed: {e}"));
+                return Err(());
+            }
+        };
         let fd = tun.as_raw_fd();
         let n =
             unsafe { libc::write(fd, pkt[written..].as_ptr() as *const _, pkt.len() - written) };
@@ -254,6 +413,10 @@ async fn write_all_tun(tun: &AsyncFd<OwnedFd>, pkt: &[u8]) -> Result<(), ()> {
                 guard.clear_ready();
                 continue;
             }
+            crate::logcat::error(&format!(
+                "tun: write failed after {written}/{} bytes: {e}",
+                pkt.len()
+            ));
             return Err(());
         }
         written += n as usize;
@@ -269,6 +432,7 @@ async fn tcp_accept(mut tcp_listener: lwip::TcpListener, socks5: SocketAddrV4) {
     // `(TcpStream, local, remote)`，不是 Result（与 NetStack 的 Stream
     // 不同——后者 Item 才是 Result<Vec<u8>, io::Error>）。
     while let Some((stream, _local, remote)) = tcp_listener.next().await {
+        crate::logcat::info(&format!("tun: TCP conn -> {remote}"));
         tokio::task::spawn_local(handle_conn(stream, remote, socks5));
     }
 }
@@ -283,7 +447,7 @@ async fn handle_conn(
     let std_stream = match tokio::task::spawn_blocking(move || protected_connect(socks5)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            eprintln!("tun2socks: connect {remote} via {socks5}: {e}");
+            crate::logcat::error(&format!("tun2socks: connect {remote} via {socks5}: {e}"));
             return; // lwip stream drop → RST
         }
         Err(_) => return, // blocking 任务 panic
@@ -337,7 +501,11 @@ fn protected_connect(socks5: SocketAddrV4) -> Result<std::net::TcpStream, String
         sin_family: libc::AF_INET as _,
         sin_port: socks5.port().to_be(),
         sin_addr: libc::in_addr {
-            s_addr: u32::from_be_bytes(socks5.ip().octets()),
+            // libc stores in_addr.s_addr as the network-order byte array. Using
+            // from_be_bytes on a little-endian Android host reverses the bytes
+            // in memory (127.0.0.1 becomes 1.0.0.127), so use native-endian
+            // conversion to preserve the octets exactly.
+            s_addr: u32::from_ne_bytes(socks5.ip().octets()),
         },
         sin_zero: [0; 8],
     };
@@ -487,7 +655,7 @@ fn socks5_rep(c: u8) -> &'static str {
 /// 一开始这里写成 `send_to(&data, &src, &src)`（两个参数都填本地地址），
 /// 结果 IP 头变成 `10.0.0.2 -> 10.0.0.2`，内核拿到后查不到对应 socket，
 /// **所有 UDP 回包被静默丢弃** —— DNS 永远超时。修法是把方向信息一路带下来。
-async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
+async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4, dns_addr: SocketAddrV4) {
     use std::collections::HashMap;
 
     // Box<UdpSocket>: Stream（Item=(Vec<u8>, src, dst)，裸元组）。
@@ -505,6 +673,9 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
     // src → relay 发送端。relay 任务活着时它一直收包；
     let mut relays: HashMap<SocketAddr, mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>> =
         HashMap::new();
+    // DNS 专用 relay：按 (本地源, DNS 服务器) 分桶，回包才能正确改写来源。
+    let mut dns_relays: HashMap<(SocketAddr, SocketAddr), mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>> =
+        HashMap::new();
 
     loop {
         tokio::select! {
@@ -513,6 +684,36 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
                 let Some((data, src, dst)) = pkt else { return };
                 // 清理已退出的 relay（它们 drop 了 receiver，send 会 Err）
                 relays.retain(|_, tx| !tx.is_closed());
+                dns_relays.retain(|_, tx| !tx.is_closed());
+
+                // DNS（UDP/53）：直接丢给 meow 的 DNS 监听口（fake-ip 在那里做），
+                // **不走 SOCKS5** —— 否则 meow 的 SOCKS5 入站只会把包 relay 到
+                // 8.8.8.8:53，既不触发 fake-ip 映射、也连不上节点（已实测：
+                // 0 个上游 DNS 查询、0 个节点连接）。meow 的 DNS 监听口在
+                // 127.0.0.1:<dns_port>，与 LocalProxySetup 的 `dns.listen` 一致。
+                if dst.port() == 53 {
+                    let key = (src, dst);
+                    let tx = match dns_relays.get(&key) {
+                        Some(tx) => tx.clone(),
+                        None => match dns_relay::spawn(src, dst, dns_addr, replies_tx.clone()) {
+                            Ok(tx) => {
+                                dns_relays.insert(key, tx.clone());
+                                tx
+                            }
+                            Err(e) => {
+                                crate::logcat::error(&format!(
+                                    "tun2socks: dns relay for {src}->{dst}: {e}"
+                                ));
+                                continue;
+                            }
+                        },
+                    };
+                    if tx.send((data, dst)).is_err() {
+                        dns_relays.remove(&key);
+                    }
+                    continue;
+                }
+
                 let tx = match relays.get(&src) {
                     Some(tx) => tx.clone(),
                     None => match relay::spawn(src, socks5, replies_tx.clone()) {
@@ -521,7 +722,7 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
                             tx
                         }
                         Err(e) => {
-                            eprintln!("tun2socks: udp relay for {src}: {e}");
+                            crate::logcat::error(&format!("tun2socks: udp relay for {src}: {e}"));
                             continue;
                         }
                     },
@@ -535,7 +736,7 @@ async fn udp_drain(udp: Box<lwip::UdpSocket>, socks5: SocketAddrV4) {
                 let Some((data, from, to)) = rep else { continue };
                 // 四元组必须原样给出，否则内核认不出这是谁的包（见函数头注释）
                 if let Err(e) = send_half.send_to(&data, &from, &to) {
-                    eprintln!("tun2socks: udp reply {from} -> {to}: {e}");
+                    crate::logcat::error(&format!("tun2socks: udp reply {from} -> {to}: {e}"));
                 }
             }
         }
@@ -566,7 +767,7 @@ mod relay {
             let std_sock = match tokio::task::spawn_blocking(move || protected_udp(socks5)).await {
                 Ok(Ok(s)) => s,
                 Ok(Err(e)) => {
-                    eprintln!("tun2socks: udp associate {local}: {e}");
+                    crate::logcat::error(&format!("tun2socks: udp associate {local}: {e}"));
                     return;
                 }
                 Err(_) => return,
@@ -574,7 +775,7 @@ mod relay {
             let sock = match TokioUdp::from_std(std_sock) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("tun2socks: udp from_std {local}: {e}");
+                    crate::logcat::error(&format!("tun2socks: udp from_std {local}: {e}"));
                     return;
                 }
             };
@@ -607,7 +808,11 @@ mod relay {
             sin_family: libc::AF_INET as _,
             sin_port: socks5.port().to_be(),
             sin_addr: libc::in_addr {
-                s_addr: u32::from_be_bytes(socks5.ip().octets()),
+                // libc stores in_addr.s_addr as the network-order byte array. Using
+                // from_be_bytes on a little-endian Android host reverses the bytes
+                // in memory (127.0.0.1 becomes 1.0.0.127), so use native-endian
+                // conversion to preserve the octets exactly.
+                s_addr: u32::from_ne_bytes(socks5.ip().octets()),
             },
             sin_zero: [0; 8],
         };
@@ -647,7 +852,7 @@ mod relay {
                     let Some((data, dst)) = out else { break }; // 上层 drop 了
                     let pkt = super::socks5_udp_encode(&dst, &data);
                     if let Err(e) = sock.send(&pkt).await {
-                        eprintln!("tun2socks: udp relay {local} send: {e}");
+                        crate::logcat::error(&format!("tun2socks: udp relay {local} send: {e}"));
                         break;
                     }
                 }
@@ -664,7 +869,107 @@ mod relay {
                             }
                         }
                         Err(e) => {
-                            eprintln!("tun2socks: udp relay {local} recv: {e}");
+                            crate::logcat::error(&format!("tun2socks: udp relay {local} recv: {e}"));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// DNS 专用 relay：拦截 TUN 里 dst.port()==53 的 UDP，直接（plain UDP，已 protect）
+/// 发给 meow 的 DNS 监听口（默认 127.0.0.1:1053，fake-ip 在那里完成），**不走
+/// SOCKS5**。回包把来源改写为原本的 DNS 服务器地址（如 8.8.8.8:53），App 才认。
+///
+/// 为什么不能走 SOCKS5 UDP ASSOCIATE：meow 的 fake-ip 映射只在它的 DNS 监听口做；
+/// 走 SOCKS5 入站（1080）时，meow 拿到的是「把这个 UDP 包 relay 到 8.8.8.8:53」
+/// 的请求，并不会触发 fake-ip，也不会去连节点 —— 表现就是 DNS 永远解析不出来
+/// （设备实测：上游 DNS 查询 0 个、节点连接 0 个）。
+///
+/// 与 `relay`（SOCKS5）最大的区别：这里转发的是**裸 DNS 报文**到 meow 的 DNS
+/// 服务器，而不是套一层 SOCKS5 UDP 头；回包来源是固定的 meow DNS 口
+/// （127.0.0.1:<dns_port>），我们要把它伪装成 App 当初查询的那个 DNS 服务器。
+mod dns_relay {
+    use super::*;
+    use std::net::UdpSocket as StdUdp;
+    use tokio::net::UdpSocket as TokioUdp;
+    use tokio::sync::mpsc;
+
+    pub fn spawn(
+        local: SocketAddr,
+        dns_server: SocketAddr,
+        dns_addr: SocketAddrV4,
+        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr, SocketAddr)>,
+    ) -> Result<mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>, String> {
+        let (tx, rx) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+        // 建 socket 是阻塞 syscall，不能卡单线程 reactor（与 TCP/UDP 出站同一条路）
+        tokio::task::spawn_local(async move {
+            let std_sock = match tokio::task::spawn_blocking(protected_udp).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    crate::logcat::error(&format!(
+                        "tun2socks: dns relay {local}->{dns_server}: {e}"
+                    ));
+                    return;
+                }
+                Err(_) => return,
+            };
+            let sock = match TokioUdp::from_std(std_sock) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::logcat::error(&format!("tun2socks: dns from_std {local}: {e}"));
+                    return;
+                }
+            };
+            run(local, dns_server, dns_addr, sock, rx, replies).await;
+        });
+        Ok(tx)
+    }
+
+    /// 建一个已 protect 的 UDP socket（不需要 connect：用 send_to 直发 meow DNS 口）。
+    fn protected_udp() -> Result<StdUdp, String> {
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        if fd < 0 {
+            return Err(format!("udp socket: {}", std::io::Error::last_os_error()));
+        }
+        if let Err(e) = protect_fd(fd) {
+            unsafe { libc::close(fd) };
+            return Err(format!("udp protect: {e}"));
+        }
+        let sock = unsafe { StdUdp::from_raw_fd(fd) };
+        sock.set_nonblocking(true)
+            .map_err(|e| format!("udp set_nonblocking: {e}"))?;
+        Ok(sock)
+    }
+
+    async fn run(
+        local: SocketAddr,
+        dns_server: SocketAddr,
+        dns_addr: SocketAddrV4,
+        sock: TokioUdp,
+        mut rx: mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>,
+        replies: mpsc::UnboundedSender<(Vec<u8>, SocketAddr, SocketAddr)>,
+    ) {
+        let mut buf = vec![0u8; 65_535];
+        loop {
+            tokio::select! {
+                out = rx.recv() => {
+                    let Some((data, _dst)) = out else { break }; // 上层 drop 了
+                    if let Err(e) = sock.send_to(&data, dns_addr).await {
+                        crate::logcat::error(&format!("tun2socks: dns relay {local} send: {e}"));
+                        break;
+                    }
+                }
+                r = sock.recv(&mut buf) => {
+                    match r {
+                        Ok(n) => {
+                            // 回包来源改写为原本的 DNS 服务器，去处是本地源端口。
+                            let _ = replies.send((buf[..n].to_vec(), dns_server, local));
+                        }
+                        Err(e) => {
+                            crate::logcat::error(&format!("tun2socks: dns relay {local} recv: {e}"));
                             break;
                         }
                     }

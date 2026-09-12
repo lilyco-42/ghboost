@@ -154,6 +154,26 @@ jobs:
               echo "⚠️  $abi .so not found, APK will be incomplete"
             fi
           done
+      # GeoIP 库必须随 APK 打包：meow 的 `geodata.mmdb-path` 要一个真实文件，
+      # 缺了它内核**连启动都做不到**（实测：Failed to load GeoIP database at
+      # ./meow/Country.mmdb，required by rule: GEOIP,TW,DIRECT）。
+      # 而 GEOIP,TW,DIRECT 是台湾市场的核心规则（本地站点/网银直连），不能删。
+      # App 首次启动时把它从 assets 复制到 filesDir。
+      - name: Stage GeoIP database into assets
+        run: |
+          set -e
+          mkdir -p ghboost-android/app/src/main/assets
+          curl -fsSL --retry 3 --max-time 120 \
+            -o ghboost-android/app/src/main/assets/Country.mmdb \
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/country.mmdb"
+          SZ=$(stat -c%s ghboost-android/app/src/main/assets/Country.mmdb)
+          echo "Country.mmdb: $SZ bytes"
+          # 太小说明拿到的是错误页/重定向，别把坏文件打进包里
+          if [ "$SZ" -lt 1000000 ]; then
+            echo "::error::Country.mmdb too small ($SZ bytes) — refusing to bundle a broken DB"
+            exit 1
+          fi
+
       - name: Build APK (Gradle)
         working-directory: ghboost-android
         run: |
