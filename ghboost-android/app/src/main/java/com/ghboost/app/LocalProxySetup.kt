@@ -38,8 +38,16 @@ object LocalProxySetup {
     /** mihomo 的 HTTP 入口（给不使用 VPN 的场景顺手用；不影响 tun2socks）。 */
     const val HTTP_PORT = 7890
 
-    /** mihomo 的控制端口（只绑 127.0.0.1，不设 secret 也不外露）。 */
+    /** mihomo 的控制端口（只绑 127.0.0.1，不外漏到局域网）。 */
     private const val CONTROLLER_PORT = 9090
+
+    /**
+     * 控制器密码。meow-rs 的 external-controller **必须有 secret 才会起来**
+     * （实测：没 secret 时 9090 完全不监听，adb forward 过去是 Connection refused）。
+     * 只绑 127.0.0.1，不外漏，所以这个写死的 dev secret 可接受；
+     * 之后要做「Clash-Verge 式面板」时，这里就是面板拿来鉴权的 token。
+     */
+    private const val CONTROLLER_SECRET = "ghboost-dev-controller-2026"
 
     /** 订阅地址：与 Windows 托盘端同一个来源，方便使用者对照。 */
     private const val SUBSCRIPTION_URL = "https://lain42.top/sub"
@@ -60,12 +68,19 @@ object LocalProxySetup {
      *   meow 要求 provider path 不得逃出 config 目录，不是 CWD。
      * v4 → v5：代理组 select 改成 url-test。`select` 默认选列表第一个，
      *   而列表里是 DIRECT，所以流量全走直连（见 [defaultConfig] 注释）。
+     * v5 → v6：DNS 由 fake-ip 改 redir-host —— 外部 tun2socks→meow SOCKS5 架构下
+     *   fake-ip 不被 SOCKS5 入站反查，目的被当 198.18.0.x 直连（永远不通）。
+     * v6 → v7：file provider 的 `path` 改**绝对路径**。实测 meow-rs 把 file provider
+     *   的 path 当**相对 CWD（App 进程 CWD 是 `/`）**解析，写成 `providers/ghboost.yaml`
+     *   时去找 `/providers/ghboost.yaml`（不存在）→ provider 注册成功但 0 节点 →
+     *   MATCH,PROXY 落空组回退 DIRECT，表现「VPN 连上但流量直连、不走节点」。
+     *   绝对路径（仍在 config 目录内，不触发 escape 校验）彻底规避。
      *
      * ⚠️ 注意：Kotlin 的区块注释会嵌套，KDoc 里千万不要出现连续的
      *   「斜线 + 星号 + 星号」（例如写 `configs/` 后面接粗体标记），
      *   那会被当成嵌套注释的开始，导致整个文件的注释不闭合、语法全崩。
      */
-    private const val CONFIG_VERSION = 6
+    private const val CONFIG_VERSION = 7
 
     /** 配置里用来标记版本的注释行，形如 `# ghboost-config-version: 2`。 */
     private const val VERSION_MARKER = "# ghboost-config-version:"
@@ -122,7 +137,7 @@ object LocalProxySetup {
 
         if (existingVersion != CONFIG_VERSION) {
             config.parentFile?.mkdirs()
-            config.writeText(defaultConfig(mmdb?.absolutePath))
+            config.writeText(defaultConfig(mmdb?.absolutePath, providerFile.absolutePath))
             changed = true
             Log.i(
                 TAG,
@@ -154,7 +169,7 @@ object LocalProxySetup {
     fun hasUsableConfig(context: Context): Boolean {
         val root = File(context.filesDir, "mihomo")
         val config = File(root, "configs/config.yaml")
-        val provider = File(root, "providers/ghboost.yaml")
+        val provider = File(root, "configs/providers/ghboost.yaml")
         if (!config.isFile || !provider.isFile) return false
         val text = runCatching { config.readText() }.getOrNull() ?: return false
         return text.contains("mixed-port") && text.contains("proxy-providers")
@@ -304,7 +319,7 @@ object LocalProxySetup {
      * @param mmdbPath GeoIP 库的绝对路径；为 null 时**不能**用 GEOIP/GEOSITE 规则
      *   （meow 会在加载配置时直接失败：`Failed to load GeoIP database`）。
      */
-    private fun defaultConfig(mmdbPath: String?): String {
+    private fun defaultConfig(mmdbPath: String?, providerPath: String?): String {
         // 用占位符替换而不是字符串插值：插进来的多行内容会打乱
         // `trimIndent()` 的公共缩进推断，结果 YAML 缩进错乱、内核解析失败。
         val template = """
@@ -329,8 +344,10 @@ object LocalProxySetup {
         log-level: warning
         ipv6: false
 
-        # 只绑本机；不设 secret，因为根本不出 127.0.0.1
+        # 只绑本机；meow-rs 要求 external-controller 必须有 secret 才会启动 REST API
+        # （没 secret 时 9090 完全不监听，面板/调试都连不上）。
         external-controller: 127.0.0.1:$CONTROLLER_PORT
+        secret: "$CONTROLLER_SECRET"
 
         # 注意：mihomo 的 `geodata-mode` / `geox-url` 在 meow 里**不支持**
         # （会被忽略并打警告）。地理数据只认下面的 `geodata.mmdb-path`。
@@ -357,13 +374,17 @@ object LocalProxySetup {
 
         # 节点从 provider 来；订阅 URL 写在 provider 里
         #
-        # ⚠️ path 是**相对 config 目录**的，而且**不能逃出 config 目录** ——
-        # meow 会校验（实测报错：path escapes the provider directory）。
-        # 所以 providers/ 放在 configs/ 里面，这里写相对路径即可。
+        # ⚠️ 关键坑：meow-rs 的 file provider 把 `path` 当成**相对 CWD** 解析，
+        # 而不是相对 config 文件目录。App 进程的 CWD 是 `/`，所以写成
+        # `providers/ghboost.yaml` 时 meow 去找 `/providers/ghboost.yaml`
+        # （根本不存在）→ provider 注册成功但 **0 个节点** → MATCH,PROXY
+        # 落到空组、回退 DIRECT，表现成「VPN 连上了但流量直连、不走节点」。
+        # 实测证据：native 日志 `proxy_providers: [ghboost]` 但 ss 里从没出现过
+        # 到节点（127.0.0.1:1081）的连接。改用**绝对路径**就稳了。
         proxy-providers:
           ghboost:
             type: file
-            path: providers/ghboost.yaml
+            path: ${providerPath ?: "providers/ghboost.yaml"}
             health-check:
               enable: true
               url: https://www.gstatic.com/generate_204
