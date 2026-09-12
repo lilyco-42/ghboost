@@ -501,7 +501,11 @@ fn protected_connect(socks5: SocketAddrV4) -> Result<std::net::TcpStream, String
         sin_family: libc::AF_INET as _,
         sin_port: socks5.port().to_be(),
         sin_addr: libc::in_addr {
-            s_addr: u32::from_be_bytes(socks5.ip().octets()),
+            // libc stores in_addr.s_addr as the network-order byte array. Using
+            // from_be_bytes on a little-endian Android host reverses the bytes
+            // in memory (127.0.0.1 becomes 1.0.0.127), so use native-endian
+            // conversion to preserve the octets exactly.
+            s_addr: u32::from_ne_bytes(socks5.ip().octets()),
         },
         sin_zero: [0; 8],
     };
@@ -804,7 +808,11 @@ mod relay {
             sin_family: libc::AF_INET as _,
             sin_port: socks5.port().to_be(),
             sin_addr: libc::in_addr {
-                s_addr: u32::from_be_bytes(socks5.ip().octets()),
+                // libc stores in_addr.s_addr as the network-order byte array. Using
+                // from_be_bytes on a little-endian Android host reverses the bytes
+                // in memory (127.0.0.1 becomes 1.0.0.127), so use native-endian
+                // conversion to preserve the octets exactly.
+                s_addr: u32::from_ne_bytes(socks5.ip().octets()),
             },
             sin_zero: [0; 8],
         };
