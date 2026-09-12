@@ -364,12 +364,27 @@ object LocalProxySetup {
           # meow 0.21.2 的 SOCKS5 入站不会把 fake-ip 反查回域名，导致目的被当成
           # 198.18.0.x 直连（永远不通）。redir-host 不依赖 fake-ip 反查，故用这个。
           enhanced-mode: redir-host
+          # ⚠ 顺序不能反：**DoH（TCP 443）必须是主，UDP 53 只能是备**。
+          #
+          # 实测（2026-09-12，真机 vivo V2230A）：在开了透明代理 / Clash 的网络里，
+          # 发往 1.1.1.1、8.8.8.8 的 **UDP 53 查询会被劫持**，example.com 一律回
+          # `198.18.0.54` 这种 fake-ip；而同一时刻走路由器（192.168.10.1）拿到的
+          # 是真实 IP（172.66.147.243 / 104.20.23.154）。
+          # 内核拿到假 IP 后，`redir-host` 会如实把它交给 App 去连 —— 于是
+          # 「解析成功、连接永远超时」，表现为开 VPN 后全网断，且日志里查不到
+          # 任何 socket 错误（因为 DNS 层面是「成功」的）。这类网络正是本产品的
+          # 目标场景，所以抗劫持不是加分项，是正确性要求。
+          #
+          # DoH 走 443，不走 UDP 53，劫持链路够不着它。
+          # URL **必须写成 IP 形式**（`https://1.1.1.1/dns-query`）而不是域名形式
+          # （`https://dns.google/dns-query`）：后者要先解析域名才能建 TLS，
+          # 而 DNS 正是此刻要修的东西 —— 自举死锁，DoH 永远起不来。
           nameserver:
+            - https://1.1.1.1/dns-query
+            - https://8.8.8.8/dns-query
+          fallback:
             - 1.1.1.1
             - 8.8.8.8
-          fallback:
-            - https://dns.google/dns-query
-            - https://1.1.1.1/dns-query
 
         # 节点从 provider 来；订阅 URL 写在 provider 里
         #
