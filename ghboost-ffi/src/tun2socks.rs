@@ -470,7 +470,7 @@ fn protected_connect(socks5: SocketAddrV4) -> Result<std::net::TcpStream, String
     if fd < 0 {
         return Err(format!("socket: {}", std::io::Error::last_os_error()));
     }
-    if let Err(e) = protect_fd(fd) {
+    if let Err(e) = protect_if_needed(fd, &socks5) {
         unsafe {
             libc::close(fd);
         }
@@ -537,6 +537,30 @@ fn protect_fd(fd: RawFd) -> Result<(), String> {
 #[cfg(not(target_os = "android"))]
 fn protect_fd(_fd: RawFd) -> Result<(), String> {
     Ok(())
+}
+
+/// 只在**目标不是 loopback**时才 protect。
+///
+/// 为什么必须跳过 loopback：`VpnService.protect()` 对 loopback socket 会返回
+/// false（它没有一个可绑定的底层网络可绑），而 [protect] 把 false 映射成 `Err`。
+/// 以前这里把那个 `Err` 当致命错误 —— 于是**每一条 TCP 都在第一步就被放弃**：
+/// 内核一条 SOCKS5 连接都收不到，界面却显示「VPN 已连接」。
+///
+/// 实测（2026-09-13，vivo V2230A / Android 13）：
+///   - `tun0` 收包计数确实在涨（TCP 包进了 TUN）；
+///   - 内核 `/connections` 始终为空、中继侧零 CONNECT；
+///   - `tun: TCP conn -> ...` 与 `tun2socks: connect ... : protect: ...`
+///     **两条日志一条都没出现**。
+///   - 反过来，直接对内核 127.0.0.1:1080 说 SOCKS5（不经过本函数），
+///     内核立刻把 `CONNECT www.gstatic.com:80` 转到了中继 —— 说明内核与节点
+///     那一段本来就是好的，坏的只有 TUN→内核 这一段。
+///
+/// loopback 流量不会走 TUN 的默认路由，所以这里不 protect 是**安全**的。
+fn protect_if_needed(fd: RawFd, dst: &SocketAddrV4) -> Result<(), String> {
+    if dst.ip().is_loopback() {
+        return Ok(());
+    }
+    protect_fd(fd)
 }
 
 // ── SOCKS5 客户端（NO_AUTH + CONNECT，仅出站握手用） ─────────
@@ -795,7 +819,7 @@ mod relay {
         if fd < 0 {
             return Err(format!("udp socket: {}", std::io::Error::last_os_error()));
         }
-        if let Err(e) = protect_fd(fd) {
+        if let Err(e) = protect_if_needed(fd, &socks5) {
             unsafe { libc::close(fd) };
             return Err(format!("udp protect: {e}"));
         }
@@ -928,15 +952,17 @@ mod dns_relay {
         Ok(tx)
     }
 
-    /// 建一个已 protect 的 UDP socket（不需要 connect：用 send_to 直发 meow DNS 口）。
+    /// 建一个 UDP socket 用来直发 meow 的 DNS 口。
+    ///
+    /// 目标固定是 `127.0.0.1:<dns_port>`（见 [run_thread] 里的 `dns_addr`），
+    /// 也就是 **loopback** —— 不走 TUN，因此**不需要 protect**。
+    /// 而 `VpnService.protect()` 对 loopback socket 会返回 false，
+    /// 硬要求它成功会让整条 DNS 路径在第一步就失败
+    /// （症状：VPN 开着时 App 永远解析不出域名，表现为「已连接却打不开网页」）。
     fn protected_udp() -> Result<StdUdp, String> {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
         if fd < 0 {
             return Err(format!("udp socket: {}", std::io::Error::last_os_error()));
-        }
-        if let Err(e) = protect_fd(fd) {
-            unsafe { libc::close(fd) };
-            return Err(format!("udp protect: {e}"));
         }
         let sock = unsafe { StdUdp::from_raw_fd(fd) };
         sock.set_nonblocking(true)

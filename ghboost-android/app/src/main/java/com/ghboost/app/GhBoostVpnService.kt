@@ -45,6 +45,31 @@ class GhBoostVpnService : VpnService() {
          * `dns.listen` 端口这里必须同步改。
          */
         private const val DNS_PORT = 1053
+
+        /**
+         * 代理内核**真的**起来了吗 —— 这是 UI 唯一该信的真相。
+         *
+         * 为什么不能让 Activity 自己维护一个 isRunning：
+         *   [startVpn] 里每一步失败（establish 拿不到 fd、内核起不来、
+         *   tun2socks 起不来）都会 `stopSelf()`，而 **Activity 完全收不到通知**。
+         *   Activity 一旦乐观地把界面切成「已连接」，就会停在
+         *   「显示 VPN running、Start 却按不下去」的死路上 ——
+         *   使用者唯一的出路是卸载。这正是本专案最想避免的失败形态。
+         *
+         * 所以状态只在这里写、只由 Activity 读；Activity 在 onResume 时重新读一次。
+         * Service 与 Activity 同进程（Manifest 没写 android:process），静态字段可见。
+         */
+        @Volatile
+        var kernelRunning: Boolean = false
+            private set
+
+        internal fun markKernelRunning() {
+            kernelRunning = true
+        }
+
+        internal fun markKernelStopped() {
+            kernelRunning = false
+        }
     }
 
     private var tunFd: ParcelFileDescriptor? = null
@@ -142,6 +167,8 @@ class GhBoostVpnService : VpnService() {
             isRunning = true
             updateNotification("Connected")
             Log.i(TAG, "VPN started successfully")
+            // 到这里才算真的连上。之前一律不许对外宣称「已连接」。
+            markKernelRunning()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start VPN", e)
             stopVpn()
@@ -150,6 +177,10 @@ class GhBoostVpnService : VpnService() {
 
     private fun stopVpn() {
         isRunning = false
+        // 先把真相翻成「没在跑」，再去做收尾。
+        // 顺序反过来的话，收尾途中 Activity 来读会读到「还在跑」，
+        // 界面就又会停在「已连接」而 Start 按不下去。
+        markKernelStopped()
         try {
             GhBoostCore.nativeStopTun2Socks()
         } catch (e: Exception) {
