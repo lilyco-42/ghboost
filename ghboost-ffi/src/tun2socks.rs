@@ -374,17 +374,33 @@ async fn read_one_pkt(tun: &AsyncFd<OwnedFd>) -> Result<Vec<u8>, ()> {
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() == Some(libc::EAGAIN) || e.raw_os_error() == Some(libc::EWOULDBLOCK)
             {
+                // 真的读空了：此刻 clear_ready() 才是正确的（可安全重新武装）。
                 guard.clear_ready();
                 continue; // 假阳性（select readable 后 read EAGAIN），再等
             }
             return Err(());
         }
         if n == 0 {
+            // TUN EOF（设备已关）。等下一轮，由 stop() 收尾。
             guard.clear_ready();
             continue;
         }
-        guard.clear_ready();
-        // 只打前几个和每 100 个，避免刷屏；但足以证明 TUN 侧有流量进来。
+        // ★★ 关键修复：**读到包时故意不 clear_ready()**。
+        //
+        //   Tokio 的 AsyncFd guard 语义：
+        //     - 调用 clear_ready() → 标记「未就绪」，下次 readable() 会重新 poll epoll；
+        //     - **drop 而不 clear  → 保持「已就绪」**，下次 readable() 立即返回。
+        //
+        //   老代码在 return 前无条件 `guard.clear_ready()`，于是**只读走一个包就把事件清了**。
+        //   底层是边缘触发（EPOLLET），TUN 里剩下的包不会再产生新事件 →
+        //   永远读不到 → 缓冲灌满 → 新包全丢（`/proc/net/dev` 的 drop 一直涨）。
+        //
+        //   实证（vivo V2230A / Android 13，2026-09-14）：
+        //   冷启后第一次 ping 能读到（tun0 RX +39 包 / TX +50 包，lwIP 真的回了包），
+        //   之后所有 ping/nc 全部读不到，只有 drop 增 —— 正是本 bug 的指纹。
+        //
+        //   不 clear 的后果是下次 readable() 立即 ready，会再读一个包；
+        //   直到某次读到 EAGAIN 才走上一条分支 clear_ready()。天然就是"抽干缓冲"。
         let c = TUN_PKTS.fetch_add(1, Ordering::Relaxed) + 1;
         if c <= 5 || c % 100 == 0 {
             crate::logcat::info(&format!("tun: read pkt #{c} ({n} bytes)"));
