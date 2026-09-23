@@ -79,6 +79,10 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Install Android SDK + NDK
         uses: android-actions/setup-android@v3
+        with:
+          # 默认包 `tools platform-tools` 里的 `tools` 已被 Google 从 SDK 仓库下架，
+          # sdkmanager 会报 "Failed to find package 'tools'" (exit 1)，故显式覆盖。
+          packages: platform-tools
       - name: Install NDK
         run: |
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
