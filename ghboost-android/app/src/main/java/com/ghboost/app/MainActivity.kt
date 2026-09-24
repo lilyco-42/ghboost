@@ -12,6 +12,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -25,7 +26,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStop: Button
 
     private var vpnIntent: Intent? = null
-    private var isRunning = false
+
+    /**
+     * 现在到底连没连上 —— **只读 Service 的真相**，不再自己维护一份。
+     *
+     * 两份真相一定会漂移：内核启动失败时 Service 会 stopSelf()，
+     * Activity 却还停在「已连接」+ Start 被锁死，使用者出不来。
+     * 而 Start 是使用者**唯一的逃生通道**，不能靠猜。
+     */
+    private val isRunning: Boolean
+        get() = GhBoostVpnService.kernelRunning
 
     /**
      * Start 是否可以按。**两个条件都满足**才放开：
@@ -228,18 +238,63 @@ class MainActivity : AppCompatActivity() {
     private fun onVpnPermissionGranted() {
         val intent = Intent(this, GhBoostVpnService::class.java)
         startForegroundService(intent)
-        isRunning = true
+        // 不要乐观地说「VPN running」—— 内核是异步拉起来的，而且**可能失败**。
+        // 先说实话（正在启动），再回来核对真实状态。
+        tvStatus.text = "正在啟動…"
         updateButtons()
-        tvStatus.text = "VPN running"
+        lifecycleScope.launch { waitForKernel(expectRunning = true) }
     }
 
     private fun stopVpn() {
         val intent = Intent(this, GhBoostVpnService::class.java)
         intent.action = "STOP"
         startForegroundService(intent)
-        isRunning = false
-        updateButtons()
         tvStatus.text = "Stopped"
+        updateButtons()
+        lifecycleScope.launch { waitForKernel(expectRunning = false) }
+    }
+
+    /**
+     * 等 Service 把状态翻到我们要的那一边，然后把界面同步过去。
+     *
+     * 为什么必须等：`startForegroundService` 只是把 Intent 丢过去，内核拉起是异步的，
+     * 而且**失败时会自己 stopSelf()** —— 不等就核，界面会停在乐观的旧状态上。
+     * 超时也照样同步一次：宁可显示「没连上」，也不要显示一个假的「已连接」。
+     */
+    private suspend fun waitForKernel(expectRunning: Boolean) {
+        var i = 0
+        while (i < 12 && GhBoostVpnService.kernelRunning != expectRunning) {
+            delay(500)
+            i++
+        }
+        refreshRunningState()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 回到前台时重新核对一次：Service 可能在我们不在时自己停了
+        // （内核启动失败 → stopSelf），那时界面必须跟着改口。
+        refreshRunningState()
+    }
+
+    /**
+     * 把界面同步到 Service 的真实状态。
+     * 只有 kernelRunning 才算「已连接」；否则一律把 Start 放开，
+     * 保证使用者永远有一条走得通的路。
+     */
+    private fun refreshRunningState() {
+        updateButtons()
+        if (isRunning) {
+            tvStatus.text = "VPN running"
+        } else {
+            // 只改自己刚说过的两种状态，别踩到 Ready / Scan complete 这些。
+            // 用 toString() 比：TextView.text 回的是 CharSequence，
+            // 直接跟 String 比在换了实现之后会静默变成 false。
+            val cur = tvStatus.text?.toString()
+            if (cur == "VPN running" || cur == "正在啟動…") {
+                if (tunReady) tvStatus.text = "未連線，按 Start 開始加速"
+            }
+        }
     }
 
     private fun updateButtons() {

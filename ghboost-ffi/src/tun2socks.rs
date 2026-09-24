@@ -374,17 +374,37 @@ async fn read_one_pkt(tun: &AsyncFd<OwnedFd>) -> Result<Vec<u8>, ()> {
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() == Some(libc::EAGAIN) || e.raw_os_error() == Some(libc::EWOULDBLOCK)
             {
+                // 真的读空了：此刻 clear_ready() 才是正确的（可安全重新武装）。
                 guard.clear_ready();
                 continue; // 假阳性（select readable 后 read EAGAIN），再等
             }
             return Err(());
         }
         if n == 0 {
+            // TUN 的 read() 返回 0 表示「本次没有可取的数据包」（不是真 EOF）。
+            // 必须 clear_ready() 并让出，否则会被外层循环当成持续就绪而空转。
             guard.clear_ready();
+            // 让 LocalSet 上其它任务（tcp_accept / udp_drain）有机会跑，
+            // 避免这条读路径把单线程 runtime 饿死。
+            tokio::task::yield_now().await;
             continue;
         }
-        guard.clear_ready();
-        // 只打前几个和每 100 个，避免刷屏；但足以证明 TUN 侧有流量进来。
+        // ★★ 关键修复：**读到包时故意不 clear_ready()**。
+        //
+        //   Tokio 的 AsyncFd guard 语义：
+        //     - 调用 clear_ready() → 标记「未就绪」，下次 readable() 会重新 poll epoll；
+        //     - **drop 而不 clear  → 保持「已就绪」**，下次 readable() 立即返回。
+        //
+        //   老代码在 return 前无条件 `guard.clear_ready()`，于是**只读走一个包就把事件清了**。
+        //   底层是边缘触发（EPOLLET），TUN 里剩下的包不会再产生新事件 →
+        //   永远读不到 → 缓冲灌满 → 新包全丢（`/proc/net/dev` 的 drop 一直涨）。
+        //
+        //   实证（vivo V2230A / Android 13，2026-09-14）：
+        //   冷启后第一次 ping 能读到（tun0 RX +39 包 / TX +50 包，lwIP 真的回了包），
+        //   之后所有 ping/nc 全部读不到，只有 drop 增 —— 正是本 bug 的指纹。
+        //
+        //   不 clear 的后果是下次 readable() 立即 ready，会再读一个包；
+        //   直到某次读到 EAGAIN 才走上一条分支 clear_ready()。天然就是"抽干缓冲"。
         let c = TUN_PKTS.fetch_add(1, Ordering::Relaxed) + 1;
         if c <= 5 || c % 100 == 0 {
             crate::logcat::info(&format!("tun: read pkt #{c} ({n} bytes)"));
@@ -470,7 +490,7 @@ fn protected_connect(socks5: SocketAddrV4) -> Result<std::net::TcpStream, String
     if fd < 0 {
         return Err(format!("socket: {}", std::io::Error::last_os_error()));
     }
-    if let Err(e) = protect_fd(fd) {
+    if let Err(e) = protect_if_needed(fd, &socks5) {
         unsafe {
             libc::close(fd);
         }
@@ -537,6 +557,30 @@ fn protect_fd(fd: RawFd) -> Result<(), String> {
 #[cfg(not(target_os = "android"))]
 fn protect_fd(_fd: RawFd) -> Result<(), String> {
     Ok(())
+}
+
+/// 只在**目标不是 loopback**时才 protect。
+///
+/// 为什么必须跳过 loopback：`VpnService.protect()` 对 loopback socket 会返回
+/// false（它没有一个可绑定的底层网络可绑），而 [protect] 把 false 映射成 `Err`。
+/// 以前这里把那个 `Err` 当致命错误 —— 于是**每一条 TCP 都在第一步就被放弃**：
+/// 内核一条 SOCKS5 连接都收不到，界面却显示「VPN 已连接」。
+///
+/// 实测（2026-09-13，vivo V2230A / Android 13）：
+///   - `tun0` 收包计数确实在涨（TCP 包进了 TUN）；
+///   - 内核 `/connections` 始终为空、中继侧零 CONNECT；
+///   - `tun: TCP conn -> ...` 与 `tun2socks: connect ... : protect: ...`
+///     **两条日志一条都没出现**。
+///   - 反过来，直接对内核 127.0.0.1:1080 说 SOCKS5（不经过本函数），
+///     内核立刻把 `CONNECT www.gstatic.com:80` 转到了中继 —— 说明内核与节点
+///     那一段本来就是好的，坏的只有 TUN→内核 这一段。
+///
+/// loopback 流量不会走 TUN 的默认路由，所以这里不 protect 是**安全**的。
+fn protect_if_needed(fd: RawFd, dst: &SocketAddrV4) -> Result<(), String> {
+    if dst.ip().is_loopback() {
+        return Ok(());
+    }
+    protect_fd(fd)
 }
 
 // ── SOCKS5 客户端（NO_AUTH + CONNECT，仅出站握手用） ─────────
@@ -795,7 +839,7 @@ mod relay {
         if fd < 0 {
             return Err(format!("udp socket: {}", std::io::Error::last_os_error()));
         }
-        if let Err(e) = protect_fd(fd) {
+        if let Err(e) = protect_if_needed(fd, &socks5) {
             unsafe { libc::close(fd) };
             return Err(format!("udp protect: {e}"));
         }
@@ -928,15 +972,17 @@ mod dns_relay {
         Ok(tx)
     }
 
-    /// 建一个已 protect 的 UDP socket（不需要 connect：用 send_to 直发 meow DNS 口）。
+    /// 建一个 UDP socket 用来直发 meow 的 DNS 口。
+    ///
+    /// 目标固定是 `127.0.0.1:<dns_port>`（见 [run_thread] 里的 `dns_addr`），
+    /// 也就是 **loopback** —— 不走 TUN，因此**不需要 protect**。
+    /// 而 `VpnService.protect()` 对 loopback socket 会返回 false，
+    /// 硬要求它成功会让整条 DNS 路径在第一步就失败
+    /// （症状：VPN 开着时 App 永远解析不出域名，表现为「已连接却打不开网页」）。
     fn protected_udp() -> Result<StdUdp, String> {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
         if fd < 0 {
             return Err(format!("udp socket: {}", std::io::Error::last_os_error()));
-        }
-        if let Err(e) = protect_fd(fd) {
-            unsafe { libc::close(fd) };
-            return Err(format!("udp protect: {e}"));
         }
         let sock = unsafe { StdUdp::from_raw_fd(fd) };
         sock.set_nonblocking(true)
