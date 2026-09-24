@@ -645,7 +645,10 @@ pub(crate) fn normalize_kernel_name(dir: &std::path::Path, want: &str) {
         return;
     };
     // 主干不区分大小写：Xray 官方发行包是 `Xray-windows-64.exe`（大写 X）。
-    let stem = want.strip_suffix(".exe").unwrap_or(want).to_ascii_lowercase();
+    let stem = want
+        .strip_suffix(".exe")
+        .unwrap_or(want)
+        .to_ascii_lowercase();
     for entry in rd.flatten() {
         let os_name = entry.file_name();
         let n = os_name.to_string_lossy();

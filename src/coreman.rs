@@ -126,8 +126,7 @@ impl CoreManager {
         }
         let binary = Self::locate(kind)?;
         let dir = crate::web::ghboost_dir().join(binary_stem(kind));
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("建配置目录失败: {e}"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("建配置目录失败: {e}"))?;
         let config_path = dir.join("config.json");
         Ok(Self {
             kind,
@@ -179,8 +178,7 @@ impl CoreManager {
 
     /// 落盘配置 → check 验证 → 重启 → 等端口 listen。
     pub fn start_with_config(&mut self, config_json: &str) -> Result<CoreStatus, String> {
-        std::fs::write(&self.config_path, config_json)
-            .map_err(|e| format!("写配置失败: {e}"))?;
+        std::fs::write(&self.config_path, config_json).map_err(|e| format!("写配置失败: {e}"))?;
         self.check_config()?;
         self.stop()?;
         let mut child = Command::new(&self.binary)
