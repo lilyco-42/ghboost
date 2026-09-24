@@ -381,8 +381,12 @@ async fn read_one_pkt(tun: &AsyncFd<OwnedFd>) -> Result<Vec<u8>, ()> {
             return Err(());
         }
         if n == 0 {
-            // TUN EOF（设备已关）。等下一轮，由 stop() 收尾。
+            // TUN 的 read() 返回 0 表示「本次没有可取的数据包」（不是真 EOF）。
+            // 必须 clear_ready() 并让出，否则会被外层循环当成持续就绪而空转。
             guard.clear_ready();
+            // 让 LocalSet 上其它任务（tcp_accept / udp_drain）有机会跑，
+            // 避免这条读路径把单线程 runtime 饿死。
+            tokio::task::yield_now().await;
             continue;
         }
         // ★★ 关键修复：**读到包时故意不 clear_ready()**。
