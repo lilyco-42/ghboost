@@ -593,9 +593,8 @@ fn parse_tuic(rest: &str) -> Option<ParsedNode> {
     }
     apply_query(&mut n, &q);
     apply_name_defaults(&mut n, "tuic");
-    if n.uuid.is_none() {
-        return None;
-    }
+    // clippy::question_mark（build-all 的 `-D warnings` 闸）：等价的 `?` 形式。
+    n.uuid.as_ref()?;
     Some(n)
 }
 

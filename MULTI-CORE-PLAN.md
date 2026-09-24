@@ -63,7 +63,7 @@
 - [x] W1 `src/corecfg.rs`：CoreKind / 协议矩阵 / share-URI 全协议解析 / emit_xray / emit_singbox / 单测（2026-09-24 CI 全绿）
 - [x] W2 `src/coreman.rs`：三内核二进制定位（kernel/bin → PATH → 常见目录）、spawn/探活/停止/版本（2026-09-24 CI 全绿）
 - [x] W3 web 面板：`/api/cores` + subscribe 选内核（auto/mihomo/xray/singbox）+ panel.html 选择器（2026-09-24，CI 全绿 `750d7a1`）
-- [ ] W4 CLI：`ghboost core list/check` 子命令
+- [x] W4 CLI：`ghboost core list/check` 子命令（2026-09-24，CI 全绿 `f6e9c80`）
 - [ ] W5 Android exec 内核：`exec_core.rs` + JNI（nativeStartCore/StopCore/ListCores）+ 自排除路由
 - [ ] W6 Android UI：内核选择器（自動/內建/Mihomo/Xray/sing-box）+ 状态贯通
 - [ ] W7 CI tray.yml：随包 xray + sing-box + geoip/geosite 数据 + LICENSE + 安装冒烟断言扩展
