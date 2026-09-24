@@ -9,6 +9,12 @@
 //! - 进度 / 日志通过 `sink: &dyn Fn(&Event)` 回调回传，宿主可忽略（FFI 用 `NO_SINK`）；
 //! - 入参为纯数据结构（`BoostParams` / `ScanParams` / ...），FFI 层用 JSON 反序列化得到。
 
+/// 多内核配置生成（share URI 解析 + xray/sing-box 配置发射，纯函数）。
+/// 与 deploy/mihomo 不同：零 IO、零进程，wasm 也能编，单测即验。
+pub mod corecfg;
+/// xray / sing-box 内核进程管理（定位 / check / spawn / 端口探活；mihomo 走 mihomo 模块）。
+#[cfg(not(target_arch = "wasm32"))]
+pub mod coreman;
 // deploy / mihomo / proxy 三个模块是**纯原生**的：
 //   - deploy：ssh / scp / sshpass 远程部署
 //   - mihomo：spawn 本地 mihomo 子进程 + 读写配置文件 + 走 REST API
@@ -19,9 +25,6 @@
 // 所以在 wasm 目标上整模块裁掉（这也要求 wasm 只编 lib，见 CI 里的 --lib）。
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deploy;
-/// 多内核配置生成（share URI 解析 + xray/sing-box 配置发射，纯函数）。
-/// 与 deploy/mihomo 不同：零 IO、零进程，wasm 也能编，单测即验。
-pub mod corecfg;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dispatch;
 pub mod hosts;

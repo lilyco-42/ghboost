@@ -596,8 +596,8 @@ fn mihomo_slot() -> &'static std::sync::Mutex<Option<crate::mihomo::MihomoManage
     MIHOMO.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-/// 内核与订阅配置的存放目录（%LOCALAPPDATA%\ghboost\mihomo）
-fn ghboost_dir() -> std::path::PathBuf {
+/// 内核与订阅配置的存放根目录（%LOCALAPPDATA%\ghboost）。
+pub(crate) fn ghboost_dir() -> std::path::PathBuf {
     #[cfg(windows)]
     let base = std::env::var("LOCALAPPDATA").or_else(|_| std::env::var("APPDATA"));
     #[cfg(not(windows))]
@@ -611,9 +611,14 @@ fn ghboost_dir() -> std::path::PathBuf {
     dir
 }
 
+/// 内核二进制的随包目录（三内核同居 `%LOCALAPPDATA%\ghboost\bin`）。
+pub(crate) fn kernel_bin_dir() -> std::path::PathBuf {
+    ghboost_dir().join("bin")
+}
+
 /// 内置内核的预期位置（`install.ps1 -WithKernel` 会把文件放到这里）
 fn kernel_path() -> std::path::PathBuf {
-    let dir = ghboost_dir().join("bin");
+    let dir = kernel_bin_dir();
     let name = if cfg!(windows) {
         "mihomo.exe"
     } else {
@@ -635,17 +640,19 @@ fn kernel_path() -> std::path::PathBuf {
 /// 不正规化的故障形态极其糟糕：包里明明有内核，程式却报「找不到内核」，
 /// 用户完全无从下手 —— 而且它在开发机上不会复现（本机那份是手动改过名的）。
 #[cfg(windows)]
-fn normalize_kernel_name(dir: &std::path::Path, want: &str) {
+pub(crate) fn normalize_kernel_name(dir: &std::path::Path, want: &str) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
+    // 主干不区分大小写：Xray 官方发行包是 `Xray-windows-64.exe`（大写 X）。
+    let stem = want.strip_suffix(".exe").unwrap_or(want).to_ascii_lowercase();
     for entry in rd.flatten() {
         let os_name = entry.file_name();
         let n = os_name.to_string_lossy();
         if n.eq_ignore_ascii_case(want) {
             continue;
         }
-        if n.starts_with("mihomo") && n.ends_with(".exe") {
+        if n.to_ascii_lowercase().starts_with(&stem) && n.ends_with(".exe") {
             eprintln!("[ghboost] 内核档名不规范（{n}），已自动改名为 {want}");
             let _ = std::fs::rename(entry.path(), dir.join(want));
             return;
@@ -654,7 +661,7 @@ fn normalize_kernel_name(dir: &std::path::Path, want: &str) {
 }
 
 #[cfg(not(windows))]
-fn normalize_kernel_name(_dir: &std::path::Path, _want: &str) {}
+pub(crate) fn normalize_kernel_name(_dir: &std::path::Path, _want: &str) {}
 
 /// 用户贴进来的东西属于哪一种。
 ///

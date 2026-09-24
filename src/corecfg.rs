@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use base64::Engine;
+use serde_json::json;
 
 /// 三个可选内核。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -165,7 +166,9 @@ impl ParsedNode {
     }
 
     fn ss_method(&self) -> Option<&String> {
-        self.extra.get("method").or_else(|| self.extra.get("cipher"))
+        self.extra
+            .get("method")
+            .or_else(|| self.extra.get("cipher"))
     }
 }
 
@@ -256,9 +259,7 @@ pub fn parse_line(raw: &str) -> Option<ParsedNode> {
         "socks" | "socks5" | "socks5h" => parse_std("socks", rest)?,
         "http" | "https" => parse_std("http", rest)?,
         "wireguard" | "wg" => parse_std("wireguard", rest)?,
-        "vless" | "trojan" | "anytls" | "shadowtls" | "ssh" | "snell" => {
-            parse_std(&scheme, rest)?
-        }
+        "vless" | "trojan" | "anytls" | "shadowtls" | "ssh" | "snell" => parse_std(&scheme, rest)?,
         _ => return None,
     };
     if n.name.is_empty() {
@@ -405,11 +406,10 @@ fn parse_std(proto: &str, rest: &str) -> Option<ParsedNode> {
 
     apply_query(&mut n, &q);
     if proto == "vless" {
-        n.encryption = opt(
-            q.get("encryption")
-                .cloned()
-                .or_else(|| Some("none".to_string())),
-        );
+        n.encryption = opt(q
+            .get("encryption")
+            .cloned()
+            .or_else(|| Some("none".to_string())));
     }
     apply_name_defaults(&mut n, proto);
     // 必备字段校验：没有 server/port 的解析结果是废节点，直接判失败。
@@ -562,10 +562,7 @@ fn parse_vmess(rest: &str) -> Option<ParsedNode> {
     n.fp = gs("fp");
     n.path = gs("path");
     n.host = gs("host");
-    n.allow_insecure = matches!(
-        v.get("allowInsecure").and_then(|x| x.as_str()),
-        Some("1")
-    );
+    n.allow_insecure = matches!(v.get("allowInsecure").and_then(|x| x.as_str()), Some("1"));
     apply_name_defaults(&mut n, "vmess");
     if n.name.is_empty() {
         n.name = n.display_name();
@@ -657,10 +654,7 @@ fn clash_to_nodes(arr: &[serde_yaml::Value]) -> (Vec<ParsedNode>, Vec<String>) {
                     .get("name")
                     .and_then(|x| x.as_str())
                     .unwrap_or("(无名)");
-                let ty = entry
-                    .get("type")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("?");
+                let ty = entry.get("type").and_then(|x| x.as_str()).unwrap_or("?");
                 skipped.push(format!("不支持的 Clash 节点类型：{name}（{ty}）"));
             }
         }
@@ -698,10 +692,7 @@ fn clash_one(entry: &serde_yaml::Value) -> Option<ParsedNode> {
         }
         "vmess" => {
             n.uuid = ystr(entry, "uuid");
-            n.aid = entry
-                .get("alterId")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0) as u32;
+            n.aid = entry.get("alterId").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
             n.network = ystr(entry, "network");
             if entry.get("tls").and_then(|x| x.as_bool()).unwrap_or(false) {
                 n.security = Some("tls".into());
@@ -781,27 +772,23 @@ fn clash_one(entry: &serde_yaml::Value) -> Option<ParsedNode> {
             n.password = ystr(entry, "password");
             n.security = Some("tls".into());
             n.sni = ystr(entry, "sni");
-            n.alpn = entry
-                .get("alpn")
-                .and_then(|x| x.as_sequence())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|y| y.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                });
+            n.alpn = entry.get("alpn").and_then(|x| x.as_sequence()).map(|a| {
+                a.iter()
+                    .filter_map(|y| y.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            });
             n.allow_insecure = entry
                 .get("skip-cert-verify")
                 .and_then(|x| x.as_bool())
                 .unwrap_or(false);
-            if let Some(cc) = ystr(entry, "congestion-controller")
-                .or_else(|| ystr(entry, "congestion_control"))
+            if let Some(cc) =
+                ystr(entry, "congestion-controller").or_else(|| ystr(entry, "congestion_control"))
             {
                 n.extra.insert("congestion_control".into(), cc);
             }
         }
-        "socks" | "http" | "ssh" | "wireguard" | "anytls" | "shadowtls" | "snell"
-        | "hysteria" => {
+        "socks" | "http" | "ssh" | "wireguard" | "anytls" | "shadowtls" | "snell" | "hysteria" => {
             n.password = ystr(entry, "password");
             n.user = ystr(entry, "username").or_else(|| ystr(entry, "user"));
             if matches!(n.proto.as_str(), "wireguard") {
@@ -816,7 +803,8 @@ fn clash_one(entry: &serde_yaml::Value) -> Option<ParsedNode> {
         }
         _ => return None,
     }
-    apply_name_defaults(&mut n, &n.proto.clone());
+    let proto = n.proto.clone();
+    apply_name_defaults(&mut n, &proto);
     Some(n)
 }
 
@@ -957,10 +945,7 @@ fn xray_outbound(n: &ParsedNode, tag: &str) -> Result<serde_json::Value, String>
         _ => return Err(err()),
     };
 
-    let has_transport = !matches!(
-        n.network.as_deref().unwrap_or("tcp"),
-        "tcp" | "" | "none"
-    );
+    let has_transport = !matches!(n.network.as_deref().unwrap_or("tcp"), "tcp" | "" | "none");
     let security = effective_security(n);
     if has_transport || security != "none" {
         ob["streamSettings"] = xray_stream(n, &security)?;
@@ -1015,13 +1000,11 @@ fn xray_stream(n: &ParsedNode, security: &str) -> Result<serde_json::Value, Stri
         "tls" => {
             let mut tls = json!({"serverName": sni, "allowInsecure": n.allow_insecure});
             if let Some(alpn) = n.alpn.clone() {
-                tls["alpn"] = json!(
-                    alpn
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                );
+                tls["alpn"] = json!(alpn
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>());
             }
             if let Some(fp) = n.fp.clone() {
                 tls["fingerprint"] = json!(fp);
@@ -1146,7 +1129,13 @@ fn emit_singbox(nodes: &[ParsedNode], opts: &EmitOptions) -> Result<String, Stri
 }
 
 fn sb_outbound(n: &ParsedNode, tag: &str) -> Result<serde_json::Value, String> {
-    let err = || format!("sing-box 不支持协议 {}（节点 {}）", n.proto, n.display_name());
+    let err = || {
+        format!(
+            "sing-box 不支持协议 {}（节点 {}）",
+            n.proto,
+            n.display_name()
+        )
+    };
     let mut ob = match n.proto.as_str() {
         "ss" => {
             let method = n
@@ -1161,7 +1150,10 @@ fn sb_outbound(n: &ParsedNode, tag: &str) -> Result<serde_json::Value, String> {
             if let Some(plugin) = n.extra.get("plugin") {
                 o["plugin"] = json!(plugin);
             }
-            if let Some(opts) = n.extra.get("plugin-opts").or_else(|| n.extra.get("plugin_opts"))
+            if let Some(opts) = n
+                .extra
+                .get("plugin-opts")
+                .or_else(|| n.extra.get("plugin_opts"))
             {
                 o["plugin_opts"] = json!(opts);
             }
@@ -1295,13 +1287,11 @@ fn sb_tls(n: &ParsedNode, reality: bool) -> Result<serde_json::Value, String> {
         .unwrap_or_else(|| n.server.clone());
     let mut tls = json!({"enabled": true, "server_name": sni, "insecure": n.allow_insecure});
     if let Some(alpn) = n.alpn.clone() {
-        tls["alpn"] = json!(
-            alpn
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-        );
+        tls["alpn"] = json!(alpn
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>());
     }
     let fp = n.fp.clone().unwrap_or_else(|| "chrome".into());
     if reality || n.fp.is_some() {
@@ -1331,7 +1321,8 @@ fn sb_transport(n: &ParsedNode) -> Option<serde_json::Value> {
     let raw = n.network.as_deref().unwrap_or("tcp");
     match raw {
         "ws" => {
-            let mut ws = json!({"type": "ws", "path": n.path.clone().unwrap_or_else(|| "/".into())});
+            let mut ws =
+                json!({"type": "ws", "path": n.path.clone().unwrap_or_else(|| "/".into())});
             if let Some(host) = n.host.clone() {
                 ws["headers"] = json!({"Host": host});
             }
@@ -1345,7 +1336,8 @@ fn sb_transport(n: &ParsedNode) -> Option<serde_json::Value> {
                 .unwrap_or_default()
         })),
         "h2" | "http" => {
-            let mut h = json!({"type": "http", "path": n.path.clone().unwrap_or_else(|| "/".into())});
+            let mut h =
+                json!({"type": "http", "path": n.path.clone().unwrap_or_else(|| "/".into())});
             if let Some(host) = n.host.clone() {
                 h["headers"] = json!({"Host": host});
             }
@@ -1433,27 +1425,35 @@ mod tests {
 
     #[test]
     fn parse_ss_sip002_and_legacy() {
-        let b64 = base64::engine::general_purpose::STANDARD_NO_PAD
-            .encode("aes-256-gcm:p@ss:word");
+        let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode("aes-256-gcm:p@ss:word");
         let n = parse_line(&format!("ss://{b64}@10.0.0.1:8388#SS节点")).unwrap();
         assert_eq!(n.proto, "ss");
         assert_eq!(n.server, "10.0.0.1");
         assert_eq!(n.password.as_deref(), Some("p@ss:word"));
-        assert_eq!(n.extra.get("method").map(String::as_str), Some("aes-256-gcm"));
+        assert_eq!(
+            n.extra.get("method").map(String::as_str),
+            Some("aes-256-gcm")
+        );
 
         let legacy = base64::engine::general_purpose::STANDARD
             .encode("chacha20-ietf-poly1305:pw@10.0.0.2:8389");
         let n2 = parse_line(&format!("ss://{legacy}#旧式SS")).unwrap();
         assert_eq!(n2.server, "10.0.0.2");
         assert_eq!(n2.port, 8389);
-        assert_eq!(n2.extra.get("method").map(String::as_str), Some("chacha20-ietf-poly1305"));
+        assert_eq!(
+            n2.extra.get("method").map(String::as_str),
+            Some("chacha20-ietf-poly1305")
+        );
     }
 
     #[test]
     fn parse_ss_plaintext_userinfo() {
         // 2022-blake3 系常见：userinfo 直接是明文 method:password（password 可带百分号编码）。
         let n = parse_line("ss://aes-256-gcm:p%40w@9.9.9.9:8388#明文").unwrap();
-        assert_eq!(n.extra.get("method").map(String::as_str), Some("aes-256-gcm"));
+        assert_eq!(
+            n.extra.get("method").map(String::as_str),
+            Some("aes-256-gcm")
+        );
         assert_eq!(n.password.as_deref(), Some("p@w"));
         assert_eq!(n.server, "9.9.9.9");
     }
@@ -1465,17 +1465,21 @@ mod tests {
         assert_eq!(t.password.as_deref(), Some("pw"));
         assert_eq!(t.security.as_deref(), Some("tls"));
 
-        let h = parse_line("hysteria2://secret@hy.example.com:8443?insecure=1\
-                            &obfs=salamander&obfs-password=ob#HY2")
-            .unwrap();
+        let h = parse_line(
+            "hysteria2://secret@hy.example.com:8443?insecure=1\
+                            &obfs=salamander&obfs-password=ob#HY2",
+        )
+        .unwrap();
         assert_eq!(h.proto, "hysteria2");
         assert_eq!(h.password.as_deref(), Some("secret"));
         assert!(h.allow_insecure);
         assert_eq!(h.extra.get("obfs").map(String::as_str), Some("salamander"));
 
-        let u = parse_line("tuic://11111111-2222-3333-4444-555555555555:pw@tu.example.com:443\
-                            ?congestion_control=bbr&alpn=h3#TUIC")
-            .unwrap();
+        let u = parse_line(
+            "tuic://11111111-2222-3333-4444-555555555555:pw@tu.example.com:443\
+                            ?congestion_control=bbr&alpn=h3#TUIC",
+        )
+        .unwrap();
         assert_eq!(u.proto, "tuic");
         assert_eq!(
             u.uuid.as_deref(),
@@ -1639,7 +1643,9 @@ mod tests {
         assert_eq!(outbounds[3]["obfs"]["type"], "salamander");
         assert_eq!(outbounds[4]["congestion_control"], "bbr");
         // 内网直连（ip_is_private 一步覆盖 v4/v6 私有段）
-        assert!(cfg["route"]["rules"][0]["ip_is_private"].as_bool().unwrap_or(false));
+        assert!(cfg["route"]["rules"][0]["ip_is_private"]
+            .as_bool()
+            .unwrap_or(false));
     }
 
     #[test]
