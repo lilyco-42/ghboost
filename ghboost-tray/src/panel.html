@@ -225,6 +225,15 @@ body{
     <div id="paneSub">
       <div class="form-group"><span class="form-label">訂閱網址 / 節點連結</span>
         <input class="form-input" type="text" id="pxUrl" placeholder="https:// 訂閱網址，或直接貼 vless:// 節點連結"></div>
+      <div class="form-row" style="margin-top:8px">
+        <div class="form-group"><span class="form-label">內核引擎（NekoBox 式多內核）</span>
+          <select class="form-input" id="pxKernel">
+            <option value="auto" selected>自動（依協議挑最合適的）</option>
+            <option value="mihomo">Mihomo (Clash.Meta)</option>
+            <option value="xray">Xray-core</option>
+            <option value="sing-box">sing-box</option>
+          </select></div>
+      </div>
       <div class="hint">兩種都吃：訂閱網址（https:// 開頭）或直接貼節點（vless / vmess / ss / trojan 都行，多條就一行一條，整段 base64 也行）。協議不用選，內核自己認；台灣本地站台與區網會自動直連。</div>
       <div class="buy"><span>還沒有訂閱網址？</span>
         <a class="link" href="https://lain42.top/panel/buy" target="_blank" rel="noopener">去 lain42.top 買一組套餐 ↗</a>
@@ -456,11 +465,26 @@ function pxMsg(t,err){
 function pxState(){
   jfetch('/api/proxy/state').then(function(r){return r.json()}).then(function(j){
     var on = /Enabled/.test(j.system||'');
-    el('pxPill').textContent = on ? '已啟用' : '未啟用';
+    var kid = j.kernel_id ? (' · '+j.kernel_id) : '';
+    el('pxPill').textContent = on ? ('已啟用'+kid) : '未啟用';
     el('pxPill').style.color = on ? 'var(--green)' : 'var(--fg2)';
     el('pxPill').style.borderColor = on ? 'var(--green)' : 'var(--line)';
   }).catch(function(){});
 }
+
+function pxLoadCores(){
+  // 三內核清單：沒隨包安裝的選項灰掉，別讓用戶選了才報錯。
+  jfetch('/api/cores').then(function(r){return r.json()}).then(function(j){
+    (j.cores||[]).forEach(function(c){
+      var o=document.querySelector('#pxKernel option[value="'+c.id+'"]');
+      if(!o)return;
+      if(c.available===false){o.disabled=true;o.textContent=c.name+'（未安裝）';}
+    });
+    var sel=el('pxKernel');
+    if(sel.selectedOptions[0]&&sel.selectedOptions[0].disabled)sel.value='auto';
+  }).catch(function(){});
+}
+pxLoadCores();
 
 el('btnPxOn').onclick=function(){
   var b=el('btnPxOn');b.disabled=true;pxMsg('處理中…');
@@ -471,15 +495,15 @@ el('btnPxOn').onclick=function(){
   }
   var p = pxMode==='sub'
     ? jfetch('/api/proxy/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({url:el('pxUrl').value.trim(),mixed_port:+el('pxHttp').value||7890})})
+        body:JSON.stringify({url:el('pxUrl').value.trim(),mixed_port:+el('pxHttp').value||7890,kernel:el('pxKernel').value||'auto'})})
     : jfetch('/proxy/set',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({host:'127.0.0.1',port:+el('pxHttp').value||7890,
           socks_port:+el('pxSocks').value||null,bypass:'localhost,127.0.0.1,::1,<local>'})});
   p.then(function(r){return r.json()}).then(function(j){
     if(j.ok===false){
       pxMsg(j.error||'失敗',true);
-      if(/內核|mihomo|Mihomo|找不到/.test(j.error||'')){
-        pxMsg('需要內置內核：請安裝完整版，或改用「用現成代理」填 Clash Verge 的埠',true);
+      if(/內核|内核|mihomo|Mihomo|找不到/.test(j.error||'')){
+        pxMsg((j.error||'失敗')+'（內核隨完整安裝包附上；或改用「用現成代理」填現成埠）',true);
       }
     }else{
       if(j.nodes===0){

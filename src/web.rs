@@ -93,6 +93,7 @@ pub async fn serve_at(port: u16, html: &str) -> Result<(), String> {
         .route("/api/info", get(api_info))
         .route("/api/update", get(api_update))
         .route("/api/check", get(api_check))
+        .route("/api/cores", get(api_cores))
         .route("/api/elevate", post(api_elevate))
         .route("/api/proxy/subscribe", post(api_proxy_subscribe))
         .route("/api/proxy/stop", post(api_proxy_stop))
@@ -596,6 +597,14 @@ fn mihomo_slot() -> &'static std::sync::Mutex<Option<crate::mihomo::MihomoManage
     MIHOMO.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+/// xray / sing-box 的内核进程槽（全局唯一；换内核 / 换配置 = 停旧起新）。
+static CORE: std::sync::OnceLock<std::sync::Mutex<Option<crate::coreman::CoreManager>>> =
+    std::sync::OnceLock::new();
+
+fn core_slot() -> &'static std::sync::Mutex<Option<crate::coreman::CoreManager>> {
+    CORE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
 /// 内核与订阅配置的存放根目录（%LOCALAPPDATA%\ghboost）。
 pub(crate) fn ghboost_dir() -> std::path::PathBuf {
     #[cfg(windows)]
@@ -868,6 +877,9 @@ struct SubscribeRequest {
     url: String,
     #[serde(default = "default_mixed")]
     mixed_port: u16,
+    /// 内核：auto（缺省）/ mihomo / xray / sing-box —— 清单见 `/api/cores`。
+    #[serde(default)]
+    kernel: String,
 }
 
 fn default_mixed() -> u16 {
@@ -878,7 +890,7 @@ fn default_mixed() -> u16 {
 async fn api_proxy_subscribe(Json(req): Json<SubscribeRequest>) -> Json<Value> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(do_subscribe(&req.url, req.mixed_port));
+        let _ = tx.send(do_subscribe(&req.url, req.mixed_port, &req.kernel));
     });
     Json(match rx.await {
         Ok(Ok(v)) => v,
@@ -887,10 +899,136 @@ async fn api_proxy_subscribe(Json(req): Json<SubscribeRequest>) -> Json<Value> {
     })
 }
 
-fn do_subscribe(input: &str, mixed_port: u16) -> Result<Value, String> {
+/// 订阅请求里的内核参数：空 / `auto` = 按节点内容自动挑（矩阵见 MULTI-CORE-PLAN.md）。
+fn parse_kernel_arg(s: &str) -> Result<Option<crate::corecfg::CoreKind>, String> {
+    let t = s.trim().to_ascii_lowercase().replace('_', "-");
+    match t.as_str() {
+        "" | "auto" => Ok(None),
+        _ => crate::corecfg::CoreKind::parse(&t)
+            .map(Some)
+            .ok_or_else(|| format!("未知内核：{t}（可选 auto / mihomo / xray / sing-box）")),
+    }
+}
+
+/// 订阅正文自己拉（xray / sing-box 没有 provider；带浏览器 UA —— 有的机场拦默认 UA）。
+fn fetch_subscription(url: &str) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        .build()
+        .map_err(|e| format!("建 HTTP 客户端失败: {e}"))?;
+    let resp = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("拉取订阅失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("拉取订阅失败：HTTP {}", resp.status()));
+    }
+    let bytes = resp.bytes().map_err(|e| format!("读订阅正文失败: {e}"))?;
+    // 常见形态：UTF-8 正文（可能带 BOM）或整体 base64 —— 后者由 parse_subscription_text
+    // 自己再解一层；这里只保底做 UTF-8 lossy + 去 BOM。
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim_start_matches('\u{feff}').to_string();
+    Ok(text)
+}
+
+/// xray / sing-box 路径：正文自己拉（或直接用贴的链接）→ 解析 → 发射配置 → coreman 起进程。
+fn do_subscribe_core(
+    kind: crate::corecfg::CoreKind,
+    source: &NodeSource,
+    mixed_port: u16,
+) -> Result<Value, String> {
+    use crate::corecfg::{filter_nodes, EmitOptions};
+
+    let text = match source {
+        NodeSource::Links(t) => t.clone(),
+        NodeSource::Url(u) => fetch_subscription(u)?,
+    };
+    let (parsed, skipped) = crate::corecfg::parse_subscription_text(&text);
+    let (nodes, dropped) = filter_nodes(parsed, kind);
+    if nodes.is_empty() {
+        let mut why = format!("这个订阅在 {} 内核下一个可用节点都没有。", kind.display());
+        if let Some(s) = skipped.first() {
+            why.push_str(&format!("\n首个问题：{s}"));
+        }
+        if let Some(d) = dropped.first() {
+            why.push_str(&format!("\n被内核过滤：{d}"));
+        }
+        return Err(why);
+    }
+
+    // mixed 口同时当 http / socks（与 mihomo 的 mixed 语义一致）。
+    let opts = EmitOptions {
+        socks_port: mixed_port,
+        http_port: mixed_port,
+    };
+    let config = crate::corecfg::emit(kind, &nodes, &opts)?;
+
+    // 互斥：两个槽都收干净再起新的 —— 旧进程占着同端口会让新内核「启动即退出」。
+    {
+        let mut g = mihomo_slot().lock().map_err(|e| e.to_string())?;
+        if let Some(old) = g.take() {
+            let _ = old.stop();
+        }
+    }
+    {
+        let mut g = core_slot().lock().map_err(|e| e.to_string())?;
+        if let Some(old) = g.take() {
+            let _ = old.stop();
+        }
+    }
+    let mut mgr = crate::coreman::CoreManager::new(kind, mixed_port)?;
+    let status = mgr.start_with_config(&config)?;
+    {
+        let mut g = core_slot().lock().map_err(|e| e.to_string())?;
+        *g = Some(mgr);
+    }
+
+    // 内核起来了就算成功 —— 系统代理失败不该把整次导入判成失败（同 mihomo 路径）。
+    let (proxy_ok, proxy_state) = match crate::proxy::set_proxy(&crate::proxy::ProxyConfig {
+        host: "127.0.0.1".into(),
+        port: mixed_port,
+        socks_port: Some(mixed_port),
+        bypass: "localhost,127.0.0.1,::1,<local>".into(),
+    }) {
+        Ok(s) => (true, format!("{s:?}")),
+        Err(e) => (false, e),
+    };
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "kernel": kind.as_str(),
+        "mixed_port": status.mixed_port,
+        "nodes": nodes.len(),
+        "dropped": dropped,
+        "proxy_ok": proxy_ok,
+        "system_proxy": proxy_state,
+    }))
+}
+
+fn do_subscribe(input: &str, mixed_port: u16, kernel: &str) -> Result<Value, String> {
     use crate::mihomo::{MihomoConfig, MihomoManager};
 
     let source = classify_subscription(input)?;
+    let named = parse_kernel_arg(kernel)?;
+
+    // xray / sing-box 路径。auto 的取舍：
+    // - 贴的是链接 → 本地按矩阵挑核（挑中 mihomo 就回落 provider 路径）；
+    // - 贴的是订阅网址 → 正文还没拉下来，交给 mihomo 的 http provider
+    //   （原生定时刷新；矩阵里 mihomo 的协议覆盖面也最全）。
+    let kind = match (named, &source) {
+        (Some(k), _) if k != crate::corecfg::CoreKind::Mihomo => Some(k),
+        (Some(_), _) => None,
+        (None, NodeSource::Links(t)) => {
+            let (parsed, _) = crate::corecfg::parse_subscription_text(t);
+            let k = crate::corecfg::auto_core(&parsed);
+            (k != crate::corecfg::CoreKind::Mihomo).then_some(k)
+        }
+        (None, NodeSource::Url(_)) => None,
+    };
+    if let Some(k) = kind {
+        return do_subscribe_core(k, &source, mixed_port);
+    }
 
     let api_port = mixed_port + 10;
     let cfg = MihomoConfig {
@@ -912,6 +1050,14 @@ fn do_subscribe(input: &str, mixed_port: u16) -> Result<Value, String> {
         return Err("找不到内置内核。请重新执行一次安装包里的 install.bat；\
              若仍失败，确认安装目录下存在 bin\\mihomo.exe 与 mihomo\\country.mmdb。"
             .to_string());
+    }
+
+    // 互斥：先收 xray / sing-box（同端口 + 同一份系统代理，不能两个一起跑）。
+    {
+        let mut g = core_slot().lock().map_err(|e| e.to_string())?;
+        if let Some(old) = g.take() {
+            let _ = old.stop();
+        }
     }
 
     let mut slot = mihomo_slot().lock().map_err(|e| e.to_string())?;
@@ -1023,6 +1169,7 @@ fn do_subscribe(input: &str, mixed_port: u16) -> Result<Value, String> {
 
     Ok(serde_json::json!({
         "ok": true,
+        "kernel": "mihomo",
         "mixed_port": mixed_port,
         "api_port": api_port,
         "nodes": nodes,
@@ -1050,6 +1197,13 @@ fn do_stop() -> Result<Value, String> {
         let _ = mgr.stop();
     }
     *slot = None;
+    drop(slot);
+    // xray / sing-box 槽同收（互斥设计下最多一个在跑，两处都点一遍最稳）。
+    let mut g = core_slot().lock().map_err(|e| e.to_string())?;
+    if let Some(mgr) = g.as_ref() {
+        let _ = mgr.stop();
+    }
+    *g = None;
     let state = crate::proxy::unset_proxy()?;
     Ok(serde_json::json!({ "ok": true, "system_proxy": format!("{state:?}") }))
 }
@@ -1058,26 +1212,77 @@ fn do_stop() -> Result<Value, String> {
 async fn api_proxy_state() -> Json<Value> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let (kernel, mixed) = match mihomo_slot().lock() {
-            Ok(slot) => match slot.as_ref() {
-                Some(mgr) => match mgr.get_status() {
-                    Ok(s) => (s.running, s.mixed_port),
-                    Err(_) => (false, 0),
-                },
-                None => (false, 0),
-            },
-            Err(_) => (false, 0),
-        };
-        let _ = tx.send((kernel, mixed, crate::proxy::get_proxy_status()));
+        // 互斥设计下最多一个在跑；mihomo 优先报（老字段 kernel 语义不变）。
+        let mut running = false;
+        let mut kernel_id = "";
+        let mut mixed = 0u16;
+        if let Ok(slot) = mihomo_slot().lock() {
+            if let Some(s) = slot.as_ref().and_then(|m| m.get_status().ok()) {
+                if s.running {
+                    running = true;
+                    mixed = s.mixed_port;
+                    kernel_id = "mihomo";
+                }
+            }
+        }
+        if !running {
+            if let Ok(g) = core_slot().lock() {
+                if let Some(m) = g.as_ref() {
+                    let s = m.status();
+                    if s.running {
+                        running = true;
+                        mixed = s.mixed_port;
+                        kernel_id = m.kind().as_str();
+                    }
+                }
+            }
+        }
+        let sys = crate::proxy::get_proxy_status();
+        let _ = tx.send((running, kernel_id, mixed, sys));
     });
-    let (kernel, mixed, system) =
+    let (kernel, kernel_id, mixed, system) =
         rx.await
-            .unwrap_or((false, 0, crate::proxy::ProxyState::Disabled));
+            .unwrap_or((false, "", 0, crate::proxy::ProxyState::Disabled));
     Json(serde_json::json!({
         "kernel": kernel,
+        "kernel_id": kernel_id,
         "mixed_port": mixed,
         "system": format!("{system:?}"),
     }))
+}
+
+/// 单个内核的可用性（locate 会走 `where` / `which` 兜底，面板启动时查一次）。
+fn core_info(kind: crate::corecfg::CoreKind) -> Value {
+    let (available, path, error) = if kind == crate::corecfg::CoreKind::Mihomo {
+        // mihomo 的定位走它自己的 kernel_path（带档名正规化自愈）。
+        let p = kernel_path();
+        (p.exists(), Some(p), None)
+    } else {
+        match crate::coreman::CoreManager::locate(kind) {
+            Ok(p) => (true, Some(p), None),
+            Err(e) => (false, None, Some(e)),
+        }
+    };
+    serde_json::json!({
+        "id": kind.as_str(),
+        "name": kind.display(),
+        "available": available,
+        "path": path.map(|p| p.to_string_lossy().into_owned()),
+        "error": error,
+    })
+}
+
+/// 三内核清单：随包 / PATH 可用性 + 路径（面板据此把没装的内核灰掉）。
+async fn api_cores() -> Json<Value> {
+    let mut cores = Vec::new();
+    for k in [
+        crate::corecfg::CoreKind::Mihomo,
+        crate::corecfg::CoreKind::Xray,
+        crate::corecfg::CoreKind::SingBox,
+    ] {
+        cores.push(core_info(k));
+    }
+    Json(serde_json::json!({ "ok": true, "cores": cores }))
 }
 
 /// 一键检测的默认站点 —— 用户点完"加速"最关心的三个。
@@ -1171,6 +1376,17 @@ fn rand_u64() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 内核参数解析() {
+        use crate::corecfg::CoreKind;
+        assert_eq!(parse_kernel_arg("auto").unwrap(), None);
+        assert_eq!(parse_kernel_arg("").unwrap(), None);
+        assert_eq!(parse_kernel_arg("XRAY").unwrap(), Some(CoreKind::Xray));
+        let sb = parse_kernel_arg("sing_box").unwrap();
+        assert_eq!(sb, Some(CoreKind::SingBox));
+        assert!(parse_kernel_arg("nope").is_err());
+    }
 
     // 这些用例锁的是「用户贴什么都能被正确分流」。
     // 之前 README 和面板都写着"vless / vmess / ss / trojan 都行"，
