@@ -464,6 +464,123 @@ fn clear_proxy_env() {
     }
 }
 
+/// `ghboost core` 子命令分发：list（缺省）/ check / help。
+///
+/// 手动实现的原因见 `main()` 里的拦截注释；退出码：0 成功、1 业务失败、2 用法错误。
+fn core_cli(rest: &[String]) -> i32 {
+    let action = rest.first().map(String::as_str).unwrap_or("list");
+    match action {
+        "list" => core_list(),
+        "check" => core_check(&rest[1..]),
+        "help" | "--help" | "-h" => {
+            core_usage();
+            0
+        }
+        other => {
+            eprintln!("error: 未知子命令 {other}");
+            core_usage();
+            2
+        }
+    }
+}
+
+/// 列出三内核可用性与实际路径；三者齐全 exit 0，缺任意一个 exit 1。
+fn core_list() -> i32 {
+    use ghboost::corecfg::CoreKind;
+    let mut all_ok = true;
+    for k in [CoreKind::Mihomo, CoreKind::Xray, CoreKind::SingBox] {
+        let (ok, detail) = match ghboost::coreman::CoreManager::locate(k) {
+            Ok(p) => (true, p.to_string_lossy().into_owned()),
+            Err(e) => {
+                all_ok = false;
+                (false, e)
+            }
+        };
+        let mark = if ok { "✓" } else { "✗" };
+        println!("{:<9} {} {}", k.as_str(), mark, detail);
+    }
+    println!();
+    println!("提示：`ghboost core check <内核> [配置]` 用内核自带命令校验配置。");
+    if !all_ok {
+        return 1;
+    }
+    0
+}
+
+/// `core check <内核> [配置]`：跑内核自带 check，原文回显；通过 exit 0。
+fn core_check(rest: &[String]) -> i32 {
+    use ghboost::corecfg::CoreKind;
+    let kernel = match rest.first() {
+        Some(k) => k,
+        None => {
+            eprintln!("error: check 需要内核名：ghboost core check <mihomo|xray|sing-box>");
+            core_usage();
+            return 2;
+        }
+    };
+    let kind = match CoreKind::parse(kernel) {
+        Some(k) => k,
+        None => {
+            eprintln!("error: 未知内核 {kernel}（可用：mihomo / xray / sing-box）");
+            return 2;
+        }
+    };
+    let config = match rest.get(1) {
+        Some(p) => std::path::PathBuf::from(p.as_str()),
+        None => ghboost::coreman::default_config_path(kind),
+    };
+    if !config.exists() {
+        eprintln!("error: 配置文件不存在：{}", config.display());
+        eprintln!("先在面板导入订阅生成配置，或显式给出配置路径。");
+        return 1;
+    }
+    let bin = match ghboost::coreman::CoreManager::locate(kind) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let check = ghboost::coreman::check_args(kind, &config);
+    println!("$ {} {}", bin.display(), check.join(" "));
+    match std::process::Command::new(&bin).args(&check).output() {
+        Ok(out) => {
+            let so = String::from_utf8_lossy(&out.stdout);
+            let se = String::from_utf8_lossy(&out.stderr);
+            let text = format!("{so}{se}").trim().to_string();
+            if out.status.success() {
+                if !text.is_empty() {
+                    println!("{text}");
+                }
+                println!("✓ 配置通过：{}", kind.display());
+                0
+            } else {
+                if !text.is_empty() {
+                    eprintln!("{text}");
+                }
+                let code = out.status.code().unwrap_or(-1);
+                eprintln!("✗ 配置被拒绝：{}（退出码 {code}）", kind.display());
+                1
+            }
+        }
+        Err(e) => {
+            eprintln!("error: 内核起不来：{e}");
+            1
+        }
+    }
+}
+
+fn core_usage() {
+    eprintln!("ghboost core — 多内核管理（mihomo / xray / sing-box）");
+    eprintln!();
+    eprintln!("用法：");
+    eprintln!("  ghboost core list");
+    eprintln!("  ghboost core check <mihomo|xray|sing-box> [配置文件]");
+    eprintln!();
+    eprintln!("list  三内核可用性 + 实际路径；全齐 exit 0，缺核 exit 1");
+    eprintln!("check 内核自带命令校验配置，原文回显；通过 exit 0，否则非 0");
+}
+
 fn main() {
     clear_proxy_env();
     let args: Vec<String> = std::env::args().collect();
@@ -483,6 +600,13 @@ fn main() {
     registry
         .register(RegisteredCommand::from_app::<Deploy>())
         .expect("注册 deploy 失败");
+
+    // 多内核子命令（W4）：lilyco derive 只生成 --long flag、subcommands 恒空
+    // （lilyco-macros 硬编码 `subcommands: vec![]`），没有位置参数 ——
+    // `core list / check` 在进 registry 前自己分发，退出码即结果。
+    if args.get(1).map(String::as_str) == Some("core") {
+        std::process::exit(core_cli(&args[2..]));
+    }
 
     // 分发优先级：--mcp / --schema / --gui（原生 WebView）/ --web 或无参（Web 控制台）/ CLI
     if args.iter().any(|a| a == "--mcp") {

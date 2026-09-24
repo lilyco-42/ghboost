@@ -42,6 +42,15 @@ fn parent_dir(config: &Path) -> String {
     }
 }
 
+/// 该内核的默认配置文件路径（面板 / CLI `core check` 的缺省值）。
+///
+/// 与 `CoreManager::new` 的落盘位置一致：`%LOCALAPPDATA%\ghboost\<stem>\config.json`。
+pub fn default_config_path(kind: CoreKind) -> PathBuf {
+    crate::web::ghboost_dir()
+        .join(binary_stem(kind))
+        .join("config.json")
+}
+
 /// 正常运行的启动参数（纯函数，单测钉死）。
 /// xray 新旧都认 `run -c`；sing-box 1.10+ 必须显式 `run`。
 pub fn launch_args(kind: CoreKind, config: &Path) -> Vec<String> {
