@@ -55,6 +55,12 @@
      内核内置 DNS 设 DoH。
    - sing-box：优先配 `dns.listen`（以 1.14 文档实测为准）；不支持则同 xray 方案
      （tun2socks 内建 DoH 中继兜底，作为最后手段）。
+   - **W5 定稿**：exec 引擎（xray/sing-box）统一收敛到**内建 DoH 中继**
+     （`exec_core::dns_doh`：占 1053、RFC 8484 原文透传、经 SOCKS5 走隧道、
+     IP 形式上游 sticky 轮换）—— 不改共享的桌面 emit 配置、不赌 sing-box 的
+     DNS 入站形态差异，xray 的 dokodemo-door 方案随之取消；mihomo/meow 仍由
+     内核自带 `dns.listen` 应答（原样）。meow 内嵌的旧理由（protect 只能保护
+     本进程）由 `addDisallowedApplication(自身包名)` 自排除取代，见决策 2。
 6. **不本机编译**：一切构建走 GitHub Actions；本地只做代码、静态阅读、
    下载 CI 产物运行测试（运行 ≠ 编译）。CI 红了就修，循环到绿。
 

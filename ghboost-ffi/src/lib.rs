@@ -18,6 +18,8 @@ pub mod protect;
 /// 只在 Android 编译：它依赖 `meow-common` 的 `SocketProtector` 钩子，
 /// 那个 trait 本身也只在 Android 上编译（其它平台没有 `VpnService` 这回事）。
 #[cfg(target_os = "android")]
+pub mod exec_core;
+#[cfg(target_os = "android")]
 pub mod meow_kernel;
 
 // ─────────────────────────────────────────────────────────────
@@ -32,6 +34,7 @@ mod android {
 
     use crate::meow_kernel;
     use crate::tun2socks;
+    use crate::exec_core;
     use lilyco_ghboost as ghboost;
 
     /// Helper: convert Rust string to JNI string
@@ -222,6 +225,60 @@ mod android {
         _class: JClass,
     ) -> jboolean {
         meow_kernel::is_running() as jboolean
+    }
+
+    /// 三内核可用性 + auto 建议（JSON）。选择器灰显与状态栏用。
+    #[no_mangle]
+    pub extern "system" fn Java_com_ghboost_app_GhBoostCore_nativeListCores(
+        mut env: JNIEnv,
+        _class: JClass,
+        native_lib_dir: JString,
+        config_root: JString,
+    ) -> jstring {
+        let lib = from_jstring(&mut env, &native_lib_dir);
+        let root = from_jstring(&mut env, &config_root);
+        to_jstring(&mut env, exec_core::list(&lib, &root).to_string())
+    }
+
+    /// 拉起 exec 内核（`auto` 按节点协议矩阵自动选）。返回 JSON：
+    /// `{"ok":true,"engine":"xray"}` 或 `{"ok":false,"error":"..."}`。
+    #[no_mangle]
+    pub extern "system" fn Java_com_ghboost_app_GhBoostCore_nativeStartCore(
+        mut env: JNIEnv,
+        _class: JClass,
+        native_lib_dir: JString,
+        engine: JString,
+        config_root: JString,
+    ) -> jstring {
+        let lib = from_jstring(&mut env, &native_lib_dir);
+        let engine = from_jstring(&mut env, &engine);
+        let root = from_jstring(&mut env, &config_root);
+        let v = match exec_core::start(&lib, &engine, &root) {
+            Ok(id) => serde_json::json!({"ok": true, "engine": id}),
+            Err(e) => {
+                crate::logcat::error(&format!("nativeStartCore: {e}"));
+                serde_json::json!({"ok": false, "error": e})
+            }
+        };
+        to_jstring(&mut env, v.to_string())
+    }
+
+    /// 停 exec 内核 + DoH 中继。幂等。
+    #[no_mangle]
+    pub extern "system" fn Java_com_ghboost_app_GhBoostCore_nativeStopCore(
+        _env: JNIEnv,
+        _class: JClass,
+    ) {
+        exec_core::stop();
+    }
+
+    /// exec 内核状态（状态栏轮询）：`{"running","listening","engine"}`。
+    #[no_mangle]
+    pub extern "system" fn Java_com_ghboost_app_GhBoostCore_nativeCoreStatus(
+        mut env: JNIEnv,
+        _class: JClass,
+    ) -> jstring {
+        to_jstring(&mut env, exec_core::status().to_string())
     }
 
     #[no_mangle]

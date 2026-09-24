@@ -17,6 +17,10 @@
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- W8 会把三内核官方二进制以 jniLibs（libmihomo.so / libxray.so /
+         libsingbox.so）随包注入，exec 内核要从 nativeLibraryDir 直接 exec ——
+         必须是解包后的真实文件。AGP 8 默认 useLegacyPackaging=false（原地加载
+         不落盘），这里显式拉回 true（build.gradle.kts 的 packaging 同义双保险）。 -->
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -24,7 +28,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.GhBoost"
-        android:networkSecurityConfig="@xml/network_security_config">
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:extractNativeLibs="true">
 
         <activity
             android:name=".MainActivity"

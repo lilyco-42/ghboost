@@ -19,6 +19,10 @@ import android.net.VpnService
    *   Java_com_ghboost_app_GhBoostCore_nativeStopTun2Socks
    *   Java_com_ghboost_app_GhBoostCore_nativeTunForwardingImplemented
    *   Java_com_ghboost_app_GhBoostCore_nativeVersion
+   *   Java_com_ghboost_app_GhBoostCore_nativeListCores
+   *   Java_com_ghboost_app_GhBoostCore_nativeStartCore
+   *   Java_com_ghboost_app_GhBoostCore_nativeStopCore
+   *   Java_com_ghboost_app_GhBoostCore_nativeCoreStatus
  *
  * 历史坑：这里曾声明成 `Init / Scan / ...`（少了 native 前缀），且 StartTun2Socks 的
  * 签名与 Rust 完全不符，结果 APK 一启动就 FATAL EXCEPTION。CI 一直全绿，
@@ -114,6 +118,35 @@ object GhBoostCore {
 
     /** 代理内核是否在运行。 */
     external fun nativeProxyKernelRunning(): Boolean
+
+    // ── exec 内核（官方 mihomo / xray / sing-box 子进程）──────────────
+
+    /**
+     * 三内核可用性 + auto 建议。
+     *
+     * @param nativeLibDir `applicationInfo.nativeLibraryDir` —— W8 注入的
+     *   `libmihomo.so` / `libxray.so` / `libsingbox.so` 就解包在这里
+     * @param configRoot `filesDir/mihomo`（找节点清单算 auto 用）
+     * @return JSON：`{"cores":[{id,label,available,path}],"auto":"xray",
+     *   "running","listening","engine"}`
+     */
+    external fun nativeListCores(nativeLibDir: String, configRoot: String): String
+
+    /**
+     * 拉起 exec 内核（子进程，输出接管进 logcat）。
+     *
+     * @param engine `auto`（按节点协议矩阵自动选）/ `mihomo` / `xray` /
+     *   `sing-box` —— 具体 token 别名以 Rust `CoreKind::parse` 为准
+     * @return JSON：`{"ok":true,"engine":"xray"}` 或
+     *   `{"ok":false,"error":"..."}`（秒退时 error 带子进程输出尾巴）
+     */
+    external fun nativeStartCore(nativeLibDir: String, engine: String, configRoot: String): String
+
+    /** 停 exec 内核并等它退出 + 收掉 DoH 中继。幂等，没在跑也安全。 */
+    external fun nativeStopCore()
+
+    /** exec 内核状态：`{"running","listening","engine"}`（状态栏轮询）。 */
+    external fun nativeCoreStatus(): String
 
     // ── Info ───────────────────────────────────────────────────
 

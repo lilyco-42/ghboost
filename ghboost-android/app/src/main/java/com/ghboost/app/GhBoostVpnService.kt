@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.system.OsConstants
 import android.util.Log
 import java.io.File
+import org.json.JSONObject
 
 /**
  * Android VpnService that creates a TUN interface and hands the fd to
@@ -45,6 +46,18 @@ class GhBoostVpnService : VpnService() {
          * `dns.listen` 端口这里必须同步改。
          */
         private const val DNS_PORT = 1053
+
+        /**
+         * 内核选择（W6 选择器读写同一个 SharedPreferences）。
+         *
+         * `meow` = 内嵌内核（出厂默认，行为与多内核改造前完全一致 ——
+         * 三内核二进制要等 W8 CI 注入 jniLibs 才存在，默认 `auto` 会让
+         * 没注入的构建直接起不来）；其余 `auto`/`mihomo`/`xray`/`sing-box`
+         * 走 exec 子进程，由 [GhBoostCore.nativeStartCore] 处理。
+         */
+        const val PREFS_NAME = "ghboost"
+        const val PREF_ENGINE = "engine"
+        const val ENGINE_EMBEDDED = "meow"
 
         /**
          * 代理内核**真的**起来了吗 —— 这是 UI 唯一该信的真相。
@@ -127,6 +140,18 @@ class GhBoostVpnService : VpnService() {
                 builder.allowFamily(OsConstants.AF_INET6)
             }
 
+            // ── 自排除（MULTI-CORE-PLAN 决策 2）：整个 App（本进程 + exec
+            // 内核子进程）不进自己的 TUN —— 内核出站天然绕开隧道，不依赖
+            // protect(fd)（内嵌 meow 的 protect 保留，两条腿互为兜底）。
+            // 若个别 ROM 上失效，表现是「开 VPN 全网断」，这行日志
+            // （连同下面的 establish 结果）就是排障入口。
+            try {
+                builder.addDisallowedApplication(packageName)
+                Log.i(TAG, "self-excluded package=$packageName from VPN")
+            } catch (e: Exception) {
+                Log.w(TAG, "addDisallowedApplication failed: ${e.message}")
+            }
+
             // Protect the app's own sockets from the VPN
             tunFd = builder.establish()
             if (tunFd == null) {
@@ -136,18 +161,19 @@ class GhBoostVpnService : VpnService() {
             }
 
             // 先把代理内核拉起来。顺序不能反：
-            //   - 内核启动时会先装 protector，再 bind 127.0.0.1:1080
+            //   - 自排除已在 establish() 生效：exec 子进程出站绕开 TUN
+            //   - 内嵌 meow 走 protector → bind 127.0.0.1:1080（旧路径不变）
             //   - tun2socks 一启动就会往 1080 送流量
-            // 反过来的话，内核的出站（拉订阅、健康检查）还没被 protect，
-            // 会被自己的 TUN 卷回去形成死循环。
             val configPath = java.io.File(
                 LocalProxySetup.configRoot(this@GhBoostVpnService),
                 "configs/config.yaml",
             ).absolutePath
-            Log.i(TAG, "starting proxy kernel, config=$configPath")
-            val krc = GhBoostCore.nativeStartProxyKernel(this@GhBoostVpnService, configPath)
+            val engine = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getString(PREF_ENGINE, ENGINE_EMBEDDED) ?: ENGINE_EMBEDDED
+            Log.i(TAG, "starting proxy kernel: engine=$engine, config=$configPath")
+            val krc = startProxyKernel(engine, configPath)
             if (krc != 0) {
-                Log.e(TAG, "nativeStartProxyKernel failed, rc=$krc")
+                Log.e(TAG, "proxy kernel start failed (engine=$engine)")
                 stopVpn()
                 return
             }
@@ -175,6 +201,38 @@ class GhBoostVpnService : VpnService() {
         }
     }
 
+    /**
+     * 按选择拉起内核：`meow` 走内嵌（原路径，protector 那条腿），
+     * 其余走 exec 子进程（[GhBoostCore.nativeStartCore]，`auto` 会在
+     * Rust 侧按节点协议矩阵选内核）。
+     *
+     * 返回 0 成功 —— 与两条原生路径的 rc 语义对齐。
+     */
+    private fun startProxyKernel(engine: String, configPath: String): Int {
+        if (engine == ENGINE_EMBEDDED) {
+            return GhBoostCore.nativeStartProxyKernel(this@GhBoostVpnService, configPath)
+        }
+        val root = LocalProxySetup.configRoot(this@GhBoostVpnService).absolutePath
+        val raw = try {
+            GhBoostCore.nativeStartCore(applicationInfo.nativeLibraryDir, engine, root)
+        } catch (e: Exception) {
+            Log.e(TAG, "nativeStartCore threw", e)
+            return -1
+        }
+        val r = try {
+            JSONObject(raw)
+        } catch (e: Exception) {
+            Log.e(TAG, "nativeStartCore returned non-JSON: $raw")
+            return -1
+        }
+        if (r.optBoolean("ok")) {
+            Log.i(TAG, "exec kernel started: ${r.optString("engine")}")
+            return 0
+        }
+        Log.e(TAG, "nativeStartCore failed: ${r.optString("error")}")
+        return -1
+    }
+
     private fun stopVpn() {
         isRunning = false
         // 先把真相翻成「没在跑」，再去做收尾。
@@ -192,6 +250,13 @@ class GhBoostVpnService : VpnService() {
             GhBoostCore.nativeStopProxyKernel()
         } catch (e: Exception) {
             Log.w(TAG, "StopProxyKernel error: ${e.message}")
+        }
+        // exec 内核与它的 DoH 中继同理要真退：1080/1053 不让位，
+        // 下一次开 VPN 会起不来（表现成「第二次起不来」）。幂等。
+        try {
+            GhBoostCore.nativeStopCore()
+        } catch (e: Exception) {
+            Log.w(TAG, "StopCore error: ${e.message}")
         }
         try {
             tunFd?.close()

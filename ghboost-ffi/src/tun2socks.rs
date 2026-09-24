@@ -225,9 +225,12 @@ fn cleanup() {
 fn run_thread(fd: RawFd, socks5: SocketAddrV4, dns_port: u16, notify: Arc<Notify>) {
     crate::logcat::info(&format!("tun2socks: thread start, tun fd={fd}, socks5={socks5}"));
 
-    // Android：先等内嵌内核真正监听 1080，再开始转发。
+    // Android：先等代理内核真正监听 1080，再开始转发。
     //
-    // 为什么在这里等而不是在 meow_kernel::start 里阻塞调用方：
+    // 内核有两个形态：内嵌 meow（meow_kernel）或 exec 子进程（exec_core），
+    // 任一在跑即认 —— 启动哪条路由 Kotlin 的引擎选择决定。
+    //
+    // 为什么在这里等而不是在 kernel start 里阻塞调用方：
     // 实测内核冷启 0.7s → 7.3s → 23s（GeoIP 库解析 + 模拟器 I/O 退化），
     // 阻塞 VpnService 线程既不可控也不该做。本函数已经跑在专属线程上，
     // 在这里等是免费的。
@@ -239,9 +242,9 @@ fn run_thread(fd: RawFd, socks5: SocketAddrV4, dns_port: u16, notify: Arc<Notify
         use std::time::{Duration, Instant};
         const WAIT_MAX: Duration = Duration::from_secs(60);
         let t0 = Instant::now();
-        while !crate::meow_kernel::is_listening() {
-            if !crate::meow_kernel::is_running() {
-                // 内核挂了（配置错误等）。照样转发没意义，但也不该卡死。
+        while !crate::meow_kernel::is_listening() && !crate::exec_core::is_listening() {
+            if !crate::meow_kernel::is_running() && !crate::exec_core::is_running() {
+                // 两个内核都没在跑（配置错误等）。照样转发没意义，但也不该卡死。
                 crate::logcat::error("proxy kernel not running; forwarding anyway");
                 break;
             }

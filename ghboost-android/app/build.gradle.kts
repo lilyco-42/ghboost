@@ -69,6 +69,16 @@ android {
             isUniversalApk = true
         }
     }
+
+    packaging {
+        jniLibs {
+            // exec 内核（W8 注入的 libmihomo.so / libxray.so / libsingbox.so）
+            // 要从 nativeLibraryDir 直接 exec，必须是解包后的真实文件；
+            // AGP 8 默认原地加载（不落盘），exec 会 ENOENT。与 Manifest 的
+            // extractNativeLibs=true 同义双保险。
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {

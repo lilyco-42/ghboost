@@ -45,6 +45,9 @@ parking_lot = "0.12"
 meow-dns = { version = "0.21", features = ["dns-server"] }
 meow-listener = { version = "0.21", default-features = false, features = ["listener-mixed"] }
 meow-tunnel = "0.21"
+# 内建 DoH 中继（exec_core::dns_doh）用：blocking + socks5h 经 1080 隧道发查询。
+# 与根 crate 同版本同 rustls-tls，Cargo 会统一特性，不引入第二套 TLS。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "blocking"] }
 
 [features]
 default = ["android"]
