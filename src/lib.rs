@@ -19,6 +19,9 @@
 // 所以在 wasm 目标上整模块裁掉（这也要求 wasm 只编 lib，见 CI 里的 --lib）。
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deploy;
+/// 多内核配置生成（share URI 解析 + xray/sing-box 配置发射，纯函数）。
+/// 与 deploy/mihomo 不同：零 IO、零进程，wasm 也能编，单测即验。
+pub mod corecfg;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dispatch;
 pub mod hosts;
