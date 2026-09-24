@@ -1538,8 +1538,10 @@ mod tests {
 
     #[test]
     fn base64_subscription_blob() {
-        let raw = "trojan://pw@3.3.3.3:443#C";
+        // try_b64_decode 有 40 字符下限（防短文本误判整块 base64），raw 得够长。
+        let raw = "trojan://pw@3.3.3.3:443#CN-Home-01";
         let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+        assert!(b64.len() >= 40, "raw 太短，进不了 base64 整块分支");
         let (nodes, _) = parse_subscription_text(&b64);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].proto, "trojan");
