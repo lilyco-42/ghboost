@@ -174,6 +174,90 @@ jobs:
             exit 1
           fi
 
+      # W8：三内核随 APK 注入 jniLibs。档名 `libmihomo.so` / `libxray.so` /
+      # `libsingbox.so` 是 exec_core::LIBS 认的三个常量；`.so` 后缀让 AGP
+      # 正常打包，extractNativeLibs=true 落到 nativeLibraryDir 后运行时直接 exec。
+      # 资产名全部实测自 GitHub API（mihomo 的 arm64 叫 arm64-v8 不是 arm64-v8a、
+      # xray 的 x86_64 叫 amd64、xray **没有** armeabi-v7a → 跳过并告警）。
+      - name: Stage proxy cores into jniLibs (mihomo/xray/sing-box)
+        run: |
+          set -e
+          DEST="ghboost-android/app/src/main/jniLibs"
+          MIHOMO="1.19.31"; XRAY="26.3.27"; SING="1.14.2"
+          mkdir -p "$DEST/arm64-v8a" "$DEST/armeabi-v7a" "$DEST/x86_64"
+          TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+          get() { curl -fsSL --retry 3 --max-time 300 -o "$2" "$1"; }
+
+          # ── mihomo：.gz 单文件，gunzip 即可 ──
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            case "$abi" in
+              arm64-v8a)   ma="arm64-v8" ;;
+              armeabi-v7a) ma="armv7" ;;
+              x86_64)      ma="amd64" ;;
+            esac
+            get "https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO}/mihomo-android-${ma}-v${MIHOMO}.gz" "$TMP/mihomo.gz"
+            gunzip -c "$TMP/mihomo.gz" > "$DEST/$abi/libmihomo.so"
+          done
+
+          # ── xray：zip；armeabi-v7a 无官方资产 → 跳过并告警（计划预案）──
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            case "$abi" in
+              arm64-v8a)   xa="arm64-v8a" ;;
+              armeabi-v7a) xa="" ;;
+              x86_64)      xa="amd64" ;;
+            esac
+            if [ -z "$xa" ]; then
+              echo "::warning::Xray has no official armeabi-v7a build; libxray.so skipped for $abi (selector greys it out)"
+              continue
+            fi
+            get "https://github.com/XTLS/Xray-core/releases/download/v${XRAY}/Xray-android-${xa}.zip" "$TMP/xray.zip"
+            rm -rf "$TMP/xz"; mkdir -p "$TMP/xz"
+            unzip -q "$TMP/xray.zip" -d "$TMP/xz"
+            # zip 内档名不保证规范，取最大的那个文件（可执行体）当内核
+            bin=$(find "$TMP/xz" -type f -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-)
+            if [ -z "$bin" ]; then echo "::error::xray zip empty ($abi)"; exit 1; fi
+            cp "$bin" "$DEST/$abi/libxray.so"
+          done
+
+          # ── sing-box：tar.gz 内的 sing-box 可执行体（官方 android 产物）──
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            case "$abi" in
+              arm64-v8a)   sa="arm64" ;;
+              armeabi-v7a) sa="arm" ;;
+              x86_64)      sa="amd64" ;;
+            esac
+            rm -rf "$TMP/sb"; mkdir -p "$TMP/sb"
+            get "https://github.com/SagerNet/sing-box/releases/download/v${SING}/sing-box-${SING}-android-${sa}.tar.gz" "$TMP/sing.tar.gz"
+            tar -xzf "$TMP/sing.tar.gz" -C "$TMP/sb"
+            if [ ! -f "$TMP/sb/sing-box" ]; then echo "::error::sing-box tar missing binary ($abi)"; exit 1; fi
+            cp "$TMP/sb/sing-box" "$DEST/$abi/libsingbox.so"
+          done
+
+          # ── 断言：全部就位 + 体积合理 + 真是 ELF（挡住错误页/空壳）──
+          # 唯一允许缺席的是 armeabi-v7a 的 libxray.so（上游就没发）。
+          fail=0
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            for f in libmihomo.so libxray.so libsingbox.so; do
+              p="$DEST/$abi/$f"
+              if [ ! -f "$p" ]; then
+                if [ "$f" = "libxray.so" ] && [ "$abi" = "armeabi-v7a" ]; then
+                  echo "allowed missing: $p (no upstream build)"
+                  continue
+                fi
+                echo "::error::missing $p"; fail=1; continue
+              fi
+              sz=$(stat -c%s "$p")
+              if [ "$sz" -lt 1000000 ]; then
+                echo "::error::$p implausibly small ($sz bytes)"; fail=1; continue
+              fi
+              if ! head -c4 "$p" | grep -q $'\x7fELF'; then
+                echo "::error::$p is not an ELF binary"; fail=1; continue
+              fi
+              echo "ok $p ($sz bytes)"
+            done
+          done
+          exit $fail
+
       - name: Build APK (Gradle)
         working-directory: ghboost-android
         run: |
