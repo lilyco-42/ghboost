@@ -7,7 +7,12 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -24,6 +29,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnScan: Button
     private lateinit var btnStart: Button
     private lateinit var btnStop: Button
+    private lateinit var spinnerEngine: Spinner
+    private lateinit var tvEngineInfo: TextView
+
+    /** 三内核可用性（id → available），`nativeListCores` 载入后填充。 */
+    private val coreAvail = mutableMapOf<String, Boolean>()
+
+    /**
+     * Spinner 显示名，**就地改写**（+ notifyDataSetChanged），不换 adapter：
+     * 换 adapter 会把选中项重置回第 0 项，还可能让 onItemSelected 拿程序化
+     * 的位置当使用者选择，把 `auto` 静默写进 prefs。
+     */
+    private val engineDisplay = ENGINE_LABELS.toMutableList()
+
+    private lateinit var engineAdapter: ArrayAdapter<String>
 
     private var vpnIntent: Intent? = null
 
@@ -50,6 +69,16 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val VPN_REQUEST_CODE = 100
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 101
+
+        /**
+         * 内核选择器的 token 与显示名（顺序即 Spinner 顺序）。
+         * token 必须与 Rust `CoreKind::parse` 别名、Service 的
+         * [GhBoostVpnService.PREF_ENGINE] 取值完全一致 —— 三处共用一套值。
+         */
+        private val ENGINE_TOKENS =
+            listOf("auto", "meow", "mihomo", "xray", "sing-box")
+        private val ENGINE_LABELS =
+            listOf("自動", "內建 (meow)", "Mihomo", "Xray", "sing-box")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +91,9 @@ class MainActivity : AppCompatActivity() {
         btnScan = findViewById(R.id.btnScan)
         btnStart = findViewById(R.id.btnStart)
         btnStop = findViewById(R.id.btnStop)
+        spinnerEngine = findViewById(R.id.spinnerEngine)
+        tvEngineInfo = findViewById(R.id.tvEngineInfo)
+        setupEngineSelector()
 
         // Initialize native core
         lifecycleScope.launch(Dispatchers.IO) {
@@ -109,6 +141,19 @@ class MainActivity : AppCompatActivity() {
                 // 光有设定档不够：占位节点等于「没有节点」，开了会连不上任何网站。
                 val nodesReady = LocalProxySetup.hasRealNodes(this@MainActivity)
 
+                // 三内核可用性（W8 注入前全部缺 → 选择器只放行「內建」）。
+                val coresRaw = try {
+                    GhBoostCore.nativeListCores(
+                        applicationInfo.nativeLibraryDir,
+                        LocalProxySetup.configRoot(this@MainActivity).absolutePath,
+                    )
+                } catch (e: Throwable) {
+                    // 旧 .so 没这个符号也要当「三内核不可用」处理，不能让 Init 整个挂掉。
+                    Log.w("GhBoost", "nativeListCores unavailable", e)
+                    ""
+                }
+                parseCores(coresRaw)
+
                 tunReady = forwardingReady && nodesReady
 
                 withContext(Dispatchers.Main) {
@@ -127,11 +172,15 @@ class MainActivity : AppCompatActivity() {
                     } else {
                         buildConfigHint(configChanged, configReady, forwardingReady)
                     }
+                    refreshEngineAvailability()
                     updateButtons()
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     tvStatus.text = "Init failed: ${e.message}"
+                    // 可用性没载入也别让状态行卡在「載入中」——
+                    // coreAvail 是空的，全 ✕/只留內建就是此刻的真相。
+                    refreshEngineAvailability()
                 }
             }
         }
@@ -142,6 +191,7 @@ class MainActivity : AppCompatActivity() {
 
         requestNotificationPermissionIfNeeded()
         updateButtons()
+        startEngineStatusLoop()
     }
 
     /**
@@ -195,6 +245,176 @@ class MainActivity : AppCompatActivity() {
             lines += "沒能寫入代理設定檔，請確認 App 儲存空間是否可用。"
         }
         return lines.joinToString("\n")
+    }
+
+    // ── 多内核选择器 + 状态贯通（W6）──────────────────────────
+
+    /**
+     * 选择器初始化：显示名、当前 pref 落位、选择回写。
+     *
+     * 只在使用者真选时回写 prefs：`tok != currentEngine()` 同时挡掉
+     * 初始化落位和 notifyDataSetChanged 后可能的回调 —— 程序化触发
+     * 如果被当成选择写进去，使用者会莫名其妙被切成 auto。
+     */
+    private fun setupEngineSelector() {
+        engineAdapter = object : ArrayAdapter<String>(
+            this,
+            android.R.layout.simple_spinner_item,
+            engineDisplay,
+        ) {
+            // 三内核没随包注入就灰显；auto 只要任一内核在就放行。
+            override fun isEnabled(position: Int): Boolean =
+                engineEnabled(ENGINE_TOKENS[position])
+
+            override fun getDropDownView(
+                position: Int,
+                convertView: View?,
+                parent: ViewGroup,
+            ): View = super.getDropDownView(position, convertView, parent).apply {
+                setTextColor(
+                    if (isEnabled(position)) 0xFFCCCCCC.toInt()
+                    else 0xFF666666.toInt(),
+                )
+            }
+        }
+        engineAdapter.setDropDownViewResource(
+            android.R.layout.simple_spinner_dropdown_item,
+        )
+        spinnerEngine.adapter = engineAdapter
+
+        val cur = currentEngine()
+        val idx = ENGINE_TOKENS.indexOf(cur)
+        spinnerEngine.setSelection(
+            if (idx >= 0) idx else ENGINE_TOKENS.indexOf("meow"),
+        )
+
+        spinnerEngine.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: AdapterView<*>?,
+                    view: View?,
+                    position: Int,
+                    id: Long,
+                ) {
+                    val tok = ENGINE_TOKENS[position]
+                    if (tok != currentEngine()) {
+                        enginePrefs().edit()
+                            .putString(GhBoostVpnService.PREF_ENGINE, tok)
+                            .apply()
+                        renderEngineInfo()
+                    }
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
+    }
+
+    /** `auto` 只要有任一内核就可用；具体内核看自己；內建永远可用。 */
+    private fun engineEnabled(tok: String): Boolean = when {
+        tok == GhBoostVpnService.ENGINE_EMBEDDED -> true
+        tok == "auto" -> coreAvail.values.any { it }
+        else -> coreAvail[tok] == true
+    }
+
+    private fun enginePrefs() =
+        getSharedPreferences(GhBoostVpnService.PREFS_NAME, MODE_PRIVATE)
+
+    private fun currentEngine(): String =
+        enginePrefs()
+            .getString(
+                GhBoostVpnService.PREF_ENGINE,
+                GhBoostVpnService.ENGINE_EMBEDDED,
+            ) ?: GhBoostVpnService.ENGINE_EMBEDDED
+
+    /** `nativeListCores` 的 JSON → `coreAvail`（解析失败就当全缺，只留內建）。 */
+    private fun parseCores(raw: String) {
+        if (raw.isBlank()) return
+        try {
+            val arr = org.json.JSONObject(raw).getJSONArray("cores")
+            for (i in 0 until arr.length()) {
+                val c = arr.getJSONObject(i)
+                coreAvail[c.optString("id")] = c.optBoolean("available")
+            }
+        } catch (e: Exception) {
+            Log.w("GhBoost", "parseCores failed: $raw", e)
+        }
+    }
+
+    /**
+     * 可用性载入后刷新显示名与灰显。就地改写 [engineDisplay] +
+     * `notifyDataSetChanged()`（同 adapter 同长度，选中项不会被重置）。
+     */
+    private fun refreshEngineAvailability() {
+        for ((i, tok) in ENGINE_TOKENS.withIndex()) {
+            engineDisplay[i] = when {
+                tok == "auto" && coreAvail.values.none { it } ->
+                    "${ENGINE_LABELS[i]}（未注入）"
+                tok != "auto" &&
+                    tok != GhBoostVpnService.ENGINE_EMBEDDED &&
+                    coreAvail[tok] != true -> "${ENGINE_LABELS[i]}（缺二進制）"
+                else -> ENGINE_LABELS[i]
+            }
+        }
+        engineAdapter.notifyDataSetChanged()
+        renderEngineInfo()
+    }
+
+    /**
+     * 内核信息两行：
+     *   行1 三内核可用性（长期事实，选择器灰显的依据）；
+     *   行2 运行时真相 —— exec 内核问 `nativeCoreStatus`，
+     *        內建/回落由「在跑但 exec engine 为空」推出来
+     *        （内建没有 exec 状态，回落也一样，按 pref 分叉说人话）。
+     */
+    private fun renderEngineInfo(core: org.json.JSONObject? = null) {
+        val line1 = "三內核：" + listOf("mihomo", "xray", "sing-box")
+            .joinToString(" · ") { id ->
+                val label = ENGINE_LABELS[ENGINE_TOKENS.indexOf(id)]
+                (if (coreAvail[id] == true) "✓ " else "✕ ") + label
+            }
+        val line2 = if (!isRunning) {
+            "未連線；引擎選擇在下次按 Start 時生效。"
+        } else {
+            val ex = core?.optString("engine").orEmpty()
+            when {
+                core == null -> "執行中：內建（狀態查詢失敗）"
+                ex.isEmpty() && currentEngine() ==
+                    GhBoostVpnService.ENGINE_EMBEDDED ->
+                    "執行中：內建 meow（同進程 protect）"
+                ex.isEmpty() -> "執行中：內建（exec內核缺二進制已自動回落）"
+                else -> {
+                    val listen = if (core.optBoolean("listening")) "✓" else "…"
+                    "執行中：$ex · 1080 監聽 $listen"
+                }
+            }
+        }
+        tvEngineInfo.text = "$line1\n$line2"
+    }
+
+    /**
+     * 2s 一轮的 exec 内核状态环。只在跑的时候问原生层；lifecycleScope
+     * 在 onDestroy 自动收掉，不用手停。
+     */
+    private fun startEngineStatusLoop() {
+        lifecycleScope.launch {
+            while (true) {
+                delay(2000)
+                val core = if (isRunning) {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            org.json.JSONObject(GhBoostCore.nativeCoreStatus())
+                        }
+                    } catch (e: Throwable) {
+                        // 旧 .so 没这符号也只是状态行降级，不能崩 UI。
+                        Log.w("GhBoost", "nativeCoreStatus failed", e)
+                        null
+                    }
+                } else {
+                    null
+                }
+                renderEngineInfo(core)
+            }
+        }
     }
 
     private fun scanNodes() {
@@ -301,6 +521,9 @@ class MainActivity : AppCompatActivity() {
         // 转发没接上时 Start 一律锁住：按下去只会断网，没有任何好处。
         btnStart.isEnabled = tunReady && !isRunning
         btnStop.isEnabled = isRunning
+        // 跑着的时候不许换引擎 —— 选择只在下次 Start 生效，跑着改只会让
+        // 使用者以为「切了就切了」，实际行为和显示对不上。
+        spinnerEngine.isEnabled = !isRunning
     }
 
     @Deprecated("Deprecated in Java")

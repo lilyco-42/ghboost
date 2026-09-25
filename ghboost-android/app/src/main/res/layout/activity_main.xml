@@ -41,6 +41,36 @@
             android:padding="16dp"
             android:layout_marginBottom="16dp" />
 
+        <!-- 内核选择器（多内核：自動 / 內建 / Mihomo / Xray / sing-box）-->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="內核 Engine"
+            android:textColor="#888888"
+            android:textSize="12sp"
+            android:textAllCaps="true"
+            android:letterSpacing="0.1"
+            android:layout_marginBottom="8dp" />
+
+        <Spinner
+            android:id="@+id/spinnerEngine"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp" />
+
+        <!-- 三内核可用性 + 运行中内核状态（nativeCoreStatus 轮询）-->
+        <TextView
+            android:id="@+id/tvEngineInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="內核可用性載入中…"
+            android:textColor="#888888"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:background="#16213e"
+            android:padding="12dp"
+            android:layout_marginBottom="16dp" />
+
         <!-- Buttons -->
         <LinearLayout
             android:layout_width="match_parent"

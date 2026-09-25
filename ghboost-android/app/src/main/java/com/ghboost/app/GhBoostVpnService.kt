@@ -206,15 +206,24 @@ class GhBoostVpnService : VpnService() {
      * 其余走 exec 子进程（[GhBoostCore.nativeStartCore]，`auto` 会在
      * Rust 侧按节点协议矩阵选内核）。
      *
+     * 选了 exec 但二进制不在（W8 注入前是常态）→ **回落内建**，
+     * 不能让整条 VPN 起不来：使用者选 Xray 只是想用它，不是想断网。
+     *
      * 返回 0 成功 —— 与两条原生路径的 rc 语义对齐。
      */
     private fun startProxyKernel(engine: String, configPath: String): Int {
-        if (engine == ENGINE_EMBEDDED) {
+        val eff = if (engine != ENGINE_EMBEDDED && !engineAvailable(engine)) {
+            Log.w(TAG, "engine=$engine 二进制缺失，回落内建 meow")
+            ENGINE_EMBEDDED
+        } else {
+            engine
+        }
+        if (eff == ENGINE_EMBEDDED) {
             return GhBoostCore.nativeStartProxyKernel(this@GhBoostVpnService, configPath)
         }
         val root = LocalProxySetup.configRoot(this@GhBoostVpnService).absolutePath
         val raw = try {
-            GhBoostCore.nativeStartCore(applicationInfo.nativeLibraryDir, engine, root)
+            GhBoostCore.nativeStartCore(applicationInfo.nativeLibraryDir, eff, root)
         } catch (e: Exception) {
             Log.e(TAG, "nativeStartCore threw", e)
             return -1
@@ -231,6 +240,34 @@ class GhBoostVpnService : VpnService() {
         }
         Log.e(TAG, "nativeStartCore failed: ${r.optString("error")}")
         return -1
+    }
+
+    /**
+     * exec 引擎的二进制在不在（`nativeListCores` 的 available 位）。
+     * `auto` 看它建议的那个内核；list() 问不到一律当缺 ——
+     * 回落内建总能跑，比起不来强。
+     */
+    private fun engineAvailable(engine: String): Boolean {
+        val root = LocalProxySetup.configRoot(this@GhBoostVpnService).absolutePath
+        val raw = try {
+            GhBoostCore.nativeListCores(applicationInfo.nativeLibraryDir, root)
+        } catch (e: Throwable) {
+            Log.w(TAG, "nativeListCores failed", e)
+            return false
+        }
+        return try {
+            val obj = JSONObject(raw)
+            val want = if (engine == "auto") obj.optString("auto") else engine
+            val arr = obj.getJSONArray("cores")
+            for (i in 0 until arr.length()) {
+                val c = arr.getJSONObject(i)
+                if (c.optString("id") == want) return c.optBoolean("available")
+            }
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "engineAvailable parse failed: $raw", e)
+            false
+        }
     }
 
     private fun stopVpn() {
