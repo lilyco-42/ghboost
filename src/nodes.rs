@@ -1740,8 +1740,14 @@ mod tests {
         };
         let m = mihomo_entry(&n, "node-a").expect("vless reality emits");
         assert_eq!(m.get("type").and_then(|v| v.as_str()), Some("vless"));
-        assert_eq!(m.get("servername").and_then(|v| v.as_str()), Some("cdn.example.com"));
-        assert_eq!(m.get("flow").and_then(|v| v.as_str()), Some("xtls-rprx-vision"));
+        assert_eq!(
+            m.get("servername").and_then(|v| v.as_str()),
+            Some("cdn.example.com")
+        );
+        assert_eq!(
+            m.get("flow").and_then(|v| v.as_str()),
+            Some("xtls-rprx-vision")
+        );
         let ro = m.get("reality-opts").and_then(|v| v.get("public-key"));
         assert_eq!(ro.and_then(|v| v.as_str()), Some("pubkey"));
         assert_eq!(m.get("tls").and_then(|v| v.as_bool()), Some(true));
