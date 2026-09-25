@@ -271,10 +271,14 @@ class MainActivity : AppCompatActivity() {
                 convertView: View?,
                 parent: ViewGroup,
             ): View = super.getDropDownView(position, convertView, parent).apply {
-                setTextColor(
-                    if (isEnabled(position)) 0xFFCCCCCC.toInt()
-                    else 0xFF666666.toInt(),
-                )
+                // 下拉项布局（simple_spinner_dropdown_item）是 TextView，
+                // 但基类声明返回 View —— 判一下再上色，否则 setTextColor 解析不到。
+                if (this is TextView) {
+                    setTextColor(
+                        if (isEnabled(position)) 0xFFCCCCCC.toInt()
+                        else 0xFF666666.toInt(),
+                    )
+                }
             }
         }
         engineAdapter.setDropDownViewResource(
