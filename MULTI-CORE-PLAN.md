@@ -48,7 +48,10 @@
    meow `minimal` feature 目前只编了 ss+trojan —— 全协议主力是三内核。
 4. **配置生成收敛到共享模块 `src/corecfg.rs`**（根 crate，桌面 web/CLI 与 Android FFI 共用）：
    share URI 解析（全协议）→ `emit_xray` / `emit_singbox` / `emit_clash`。
-   mihomo/mehow 走现成的 proxy-provider（`parse-type: v2ray`，内核自己解析 URI）。
+   mihomo/mehow 运行时订阅走现成的 proxy-provider（`parse-type: v2ray`，内核自己解析
+   URI）。**测速（`nodes.rs::test_core`）已改内联 `proxies:`**（2026-09-25 实测
+   provider 两处硬伤：原子解析一行坏节点打死全部、成员不进扁平 `/proxies` 表无法逐个
+   测速；详见 nodes.rs 文件头）。
 5. **DNS 策略**（TUN UDP/53 一律被 tun2socks 转到 127.0.0.1:1053）：
    - mihomo/meow：内核自带 `dns.listen: 1053` + redir-host + DoH 主用（现有 v9 配置直接复用）。
    - xray：无独立 DNS 监听 → dokodemo-door UDP 1053 经出站转发（DNS 包走隧道内，天然抗劫持）；
@@ -76,7 +79,7 @@
 - [x] W8 CI build-all.yml android-apk：三内核按 ABI 注入 jniLibs（xray armv7 缺席则跳过并告警）（2026-09-25 build-all ✓ `94288bb`：`8209854`+结构修复 `d80e739`+打包堆 4G `94288bb`）
 - [x] W9 README 强调多内核（矩阵表 + 使用说明）+ 根 THIRD-PARTY 补 xray/sing-box 段 + 本文件勾选（2026-09-25）
 - [x] W10 验证：CI 全绿 → Windows tray 实跑切三内核 → 模拟器 APK 装机切内核 + logcat 实测（2026-09-25 三闸全绿 `f62bcbb`+`fd26358`+`ab20208`，run 36090061323/36091341002/36092012210+对应 tray、build-all；桌面 mihomo/xray/sing-box 全链矩阵 = subscribe→独占互斥→E2E socks/http 200→stop 清场＋注册表快照还原，Android auto/內建 meow/mihomo/xray/sing-box 五引擎 VPN 实测＋logcat 内核证据＋外部节点导入；实跑修复 6 bug：xray 同端口双 inbound、sing-box `ss`→`shadowsocks`、reg.exe HKCU 键拆参、coreman 吞死因、提权副本被当重复启动全死（交接回归 TEST_A/B 过）、meow 状态渲染 `null`）
-- [ ] W11 Release：tag 出包（tray zip 含三内核；APK 含三内核）
+- [x] W11 Release `v0.3.15`：tag 出包 30 产物全齐（tray zip 含三内核；APK 含三内核）（2026-09-25 三 run 全绿：CI 36094857269 / tray 36094857256 / Build All Platforms 36094857254）
 
 ## 风险与坑（预防清单）
 

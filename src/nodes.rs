@@ -3,10 +3,15 @@
 //! 设计要点：
 //! - **扫描** 只做"聚合 + 分类 + 去重"：把每个订阅源按格式拆成
 //!   ① URI 文本行（`ss://`/`vless://`/...）或 ② Clash YAML 的 `proxies:` 块。
-//! - **测速** 借用本机已有的 Mihomo 内核：生成临时 config，用
-//!   `proxy-providers`（`parse-type: v2ray` / `clash`）直接吃原始订阅，启动
-//!   **独立实例**（独立端口 + external-controller + secret + `-d` 隔离），
-//!   REST API 批量测延迟。绝不动用户正在跑的 Clash Verge。
+//! - **测速** 借用本机已有的 Mihomo 内核：把待测节点**内联**进临时 config 的
+//!   `proxies:`（URI 行经 `corecfg::parse_line` 过滤/转换，Clash 块结构校验后
+//!   原样保留），启动**独立实例**（独立端口 + external-controller + secret +
+//!   `-d` 隔离），REST API 批量测延迟。绝不动用户正在跑的 Clash Verge。
+//!   为什么内联而不用 proxy-provider（2026-09-25 实测 mihomo v1.19.30 两处硬伤）：
+//!   ① file provider 是**原子解析**，一行坏节点（如 `ss://<uuid>@host` 没有
+//!   method）把整个 provider 打死成 0；② provider 成员不进扁平 `/proxies` 表，
+//!   `/proxies/{name}/delay` 恒 404（group `all` 里有、扁平表里没有），
+//!   只有内联静态节点才能逐个测速。
 //! - **添加** 默认只导出：把测过的可用节点写成 `nodes_good_uri.txt` +
 //!   `nodes_good.yaml`。`apply` 才把它们注入用户当前激活的 local profile
 //!   （备份原文件）。
@@ -756,16 +761,14 @@ pub async fn test_core(
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
-    // mihomo 的 file provider 路径必须在 -d home 目录内（安全限制），
-    // 所以把节点文件复制进临时 home，provider 改用相对/内部路径。
-    let uri_in_tmp = tmp.join("nodes_uri.txt");
-    let clash_in_tmp = tmp.join("nodes_clash.yaml");
-    if uri_path.exists() {
-        std::fs::copy(&uri_path, &uri_in_tmp).map_err(|e| format!("复制 URI 失败: {e}"))?;
-    }
-    if clash_path.exists() {
-        std::fs::copy(&clash_path, &clash_in_tmp).map_err(|e| format!("复制 Clash 失败: {e}"))?;
-    }
+    // 待测节点内联装载：坏行只损失它自己（不再 provider 原子连坐），详见文件头
+    let (nodes, stat) = load_test_nodes(dir, app.top)?;
+    let kept = nodes.len();
+    let skip = format!("{}/{}", stat.skip_uri, stat.skip_clash);
+    sink(&Event::Log {
+        level: Level::Info,
+        message: format!("内联装载 {kept} 个待测节点（跳过 {skip}）"),
+    });
 
     let mixed = free_port();
     let ctrl = free_port();
@@ -775,60 +778,27 @@ pub async fn test_core(
         b.iter().map(|x| format!("{x:02x}")).collect()
     };
 
-    // 动态生成 providers。
-    // 注意：mihomo 的 file provider 路径必须是相对 -d home 的文件名
-    //（安全限制，绝对路径会被静默拒绝，导致 0 节点）。文件已复制到 tmp 内，
-    // 这里只用文件名。
-    let uri_rel = uri_in_tmp
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let clash_rel = clash_in_tmp
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut providers = String::new();
-    if uri_in_tmp.exists() {
-        providers.push_str(&format!(
-            "  uri_nodes:\n    type: file\n    path: {}\n    provider-type: Proxy\n    parse-type: v2ray\n    health-check:\n      enable: true\n      url: {}\n      interval: 600\n",
-            uri_rel,
-            app.test_url
-        ));
+    // 配置整体交给 serde_yaml 序列化：节点名里的引号/反斜杠/CJK 由它转义，
+    // 手拼 YAML 在真实免费节点上迟早被一个带 `: #` 的名字打穿。
+    let ctrl_addr = format!("127.0.0.1:{ctrl}");
+    let mut cfg = serde_yaml::Mapping::new();
+    cfg.insert("mixed-port".into(), mixed.into());
+    cfg.insert("allow-lan".into(), false.into());
+    cfg.insert("mode".into(), "rule".into());
+    cfg.insert("log-level".into(), "warning".into());
+    cfg.insert("external-controller".into(), ctrl_addr.into());
+    cfg.insert("secret".into(), secret.as_str().into());
+    let mut entries = Vec::with_capacity(nodes.len());
+    for x in &nodes {
+        entries.push(serde_yaml::Value::Mapping(x.entry.clone()));
     }
-    if clash_in_tmp.exists() {
-        providers.push_str(&format!(
-            "  clash_nodes:\n    type: file\n    path: {}\n    provider-type: Proxy\n    parse-type: clash\n    health-check:\n      enable: true\n      url: {}\n      interval: 600\n",
-            clash_rel,
-            app.test_url
-        ));
-    }
-    let mut uses = Vec::new();
-    if uri_path.exists() {
-        uses.push("uri_nodes");
-    }
-    if clash_path.exists() {
-        uses.push("clash_nodes");
-    }
-
-    let cfg = format!(
-        "mixed-port: {mixed}\n\
-         allow-lan: false\n\
-         mode: rule\n\
-         log-level: warning\n\
-         external-controller: 127.0.0.1:{ctrl}\n\
-         secret: \"{secret}\"\n\
-         profile:\n  store-selected: false\n\
-         proxy-providers:\n{providers}\
-         proxy-groups:\n  - name: ALL\n    type: select\n    use:\n      - {uses}\n\
-         rules:\n  - MATCH,ALL\n",
-        mixed = mixed,
-        ctrl = ctrl,
-        secret = secret,
-        providers = providers,
-        uses = uses.join("\n      - ")
-    );
+    cfg.insert("proxies".into(), serde_yaml::Value::Sequence(entries));
+    let rules = vec![serde_yaml::Value::String("MATCH,DIRECT".into())];
+    cfg.insert("rules".into(), serde_yaml::Value::Sequence(rules));
+    let cfg_text = serde_yaml::to_string(&serde_yaml::Value::Mapping(cfg))
+        .map_err(|e| format!("生成配置失败: {e}"))?;
     let cfg_path = tmp.join("config.yaml");
-    std::fs::write(&cfg_path, cfg).map_err(|e| format!("写临时配置失败: {e}"))?;
+    std::fs::write(&cfg_path, cfg_text).map_err(|e| format!("写临时配置失败: {e}"))?;
 
     // 启动独立 mihomo 实例（stderr 落日志，便于失败时诊断；stdout 丢弃）
     sink(&Event::Log {
@@ -867,10 +837,10 @@ pub async fn test_core(
         return Err(format!("mihomo 启动后 30s 内未就绪。日志:\n{log}"));
     }
 
-    // 拿待测节点名（已是 ASCII 安全名，scan 阶段清理过），top 限制
-    let members = get_all_members(&client, &base, &auth).await;
-    let members: Vec<String> = members.into_iter().take(app.top as usize).collect();
-    let n = members.len();
+    // 待测名单 = 刚装载的内联名单（装箱时已按 top 截断、名字与 add/索引一致）。
+    // 不再查 /providers：provider 成员不进扁平 /proxies，旧实现按 provider
+    // 名单去打 /proxies/{name}/delay 恒 404，测速永远 alive=0。
+    let n = nodes.len();
     sink(&Event::Log {
         level: Level::Info,
         message: format!("实例就绪，共 {} 个节点待测", n),
@@ -880,28 +850,30 @@ pub async fn test_core(
         message: Some("延迟测试".into()),
     });
 
-    // 逐节点测延迟：节点名是 ASCII，URL 路由精确匹配，不会 404。
+    // 逐节点测延迟：名字来自内联装载（scan 已清洗为 ASCII 安全名），
+    // 静态条目在扁平 /proxies 里，路由精确匹配。
     let sem = Arc::new(Semaphore::new(app.concurrency.max(1) as usize));
     let timeout = app.timeout_ms;
     let mut set = JoinSet::new();
-    for (i, name) in members.iter().enumerate() {
+    for (i, node) in nodes.iter().enumerate() {
         let sem = sem.clone();
         let client = client.clone();
         let base = base.clone();
         let auth = auth.clone();
-        let name = name.clone();
+        let name = node.name.clone();
+        let proto = node.proto.clone();
         let url = app.test_url.clone();
         set.spawn(async move {
             let _p = sem.acquire().await;
             let ms = probe_delay(&client, &base, &auth, &name, &url, timeout).await;
-            (i, name, ms)
+            (i, name, proto, ms)
         });
     }
 
     let mut tested: Vec<TestedNode> = Vec::new();
     let mut done = 0u64;
     while let Some(res) = set.join_next().await {
-        if let Ok((_i, name, ms)) = res {
+        if let Ok((_i, name, proto, ms)) = res {
             done += 1;
             if done.is_multiple_of(25) {
                 sink(&Event::Tick {
@@ -913,7 +885,7 @@ pub async fn test_core(
             tested.push(TestedNode {
                 name,
                 delay_ms: ms,
-                protocol: String::new(),
+                protocol: proto,
                 source: String::new(),
             });
         }
@@ -939,7 +911,10 @@ pub async fn test_core(
     let idx_map: HashMap<String, &NodeInfo> = index.iter().map(|n| (n.name.clone(), n)).collect();
     for t in tested.iter_mut() {
         if let Some(info) = idx_map.get(&t.name) {
-            t.protocol = info.protocol.clone();
+            // 协议在装载时已定（比索引的 protocol_of 更准），索引只补 source
+            if t.protocol.is_empty() {
+                t.protocol = info.protocol.clone();
+            }
             t.source = info.source.clone();
         }
     }
@@ -994,44 +969,289 @@ async fn wait_ready(client: &reqwest::Client, base: &str, auth: &str) -> bool {
     false
 }
 
-async fn get_all_members(client: &reqwest::Client, base: &str, auth: &str) -> Vec<String> {
-    // select 组的 `all` 字段不会展开 provider 成员，必须直接从
-    // `/providers/proxies` 拿每个 provider 的节点名列表。
-    // 注意 mihomo 默认还有一个 `default` provider（含 DIRECT/REJECT 等），
-    // 我们只取真实订阅 provider 的节点；用 `provider-name` 字段稳健识别。
-    // provider 节点是异步加载的，启动就绪后可能还没展开，所以重试几次。
-    for _ in 0..20 {
-        let mut names: Vec<String> = Vec::new();
-        if let Ok(r) = client
-            .get(format!("{base}/providers/proxies"))
-            .header("Authorization", auth)
-            .send()
-            .await
-        {
-            if let Ok(j) = r.json::<serde_json::Value>().await {
-                if let Some(providers) = j.get("providers").and_then(|p| p.as_object()) {
-                    for (_k, prov) in providers {
-                        // 跳过 mihomo 内置的 default provider（DIRECT/REJECT 等）
-                        if prov.get("name").and_then(|x| x.as_str()) == Some("default") {
-                            continue;
-                        }
-                        if let Some(proxies) = prov.get("proxies").and_then(|p| p.as_array()) {
-                            for p in proxies {
-                                if let Some(n) = p.get("name").and_then(|x| x.as_str()) {
-                                    names.push(n.to_string());
-                                }
-                            }
-                        }
-                    }
+// ── 内联装载（测速用） ──────────────────────────────────────────
+
+/// 一个待测节点：API 探测用的名字 + 协议 id + 已验证的内联 Clash 条目。
+struct InlineNode {
+    name: String,
+    proto: String,
+    entry: serde_yaml::Mapping,
+}
+
+/// 装载统计（只记不炸：坏行数进日志，方便判断源数据质量）。
+struct LoadStat {
+    skip_uri: usize,
+    skip_clash: usize,
+}
+
+/// 从 scan 产物装载 `top` 个待测节点，写进临时 config 的 `proxies:`。
+///
+/// 顺序：URI 行优先 —— `add` 的 good_uri 导出按 `uri_name` 匹配，URI 节点
+/// 必须先进入 `--top` 名单才导出得出来；Clash 块补足余量。
+/// 解析失败 / mihomo 不支持的协议只跳过该行，绝不连坐整个配置
+/// （proxy-provider 原子失败的替代，见文件头注释）。
+fn load_test_nodes(dir: &Path, top: u64) -> Result<(Vec<InlineNode>, LoadStat), String> {
+    use crate::corecfg::{parse_line, CoreKind};
+
+    let top = top.max(1) as usize;
+    let mut out: Vec<InlineNode> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut skip_uri = 0usize;
+    let mut skip_clash = 0usize;
+
+    // ① URI 行
+    if let Ok(txt) = std::fs::read_to_string(dir.join("nodes_uri.txt")) {
+        for line in txt.lines() {
+            if out.len() >= top {
+                break;
+            }
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some(parsed) = parse_line(line) else {
+                skip_uri += 1;
+                continue;
+            };
+            if !CoreKind::Mihomo.supports(&parsed.proto) {
+                skip_uri += 1;
+                continue;
+            }
+            // 名字必须与 add 导出 / 索引完全一致：都取扫描时已清洗的 uri_name；
+            // 无 # 片段的行 add 导不出（它按 uri_name 硬匹配），测了也是浪费槽位
+            let Some(name) = uri_name(line) else {
+                skip_uri += 1;
+                continue;
+            };
+            let Some(entry) = mihomo_entry(&parsed, &name) else {
+                skip_uri += 1;
+                continue;
+            };
+            if seen.insert(name.clone()) {
+                out.push(InlineNode {
+                    name,
+                    proto: parsed.proto.clone(),
+                    entry,
+                });
+            }
+        }
+    }
+
+    // ② Clash 块补足（原样透传，只做结构校验 + 端口字符串纠偏）
+    if let Ok(txt) = std::fs::read_to_string(dir.join("nodes_clash.yaml")) {
+        let v: serde_yaml::Value = serde_yaml::from_str(&txt).unwrap_or_default();
+        if let Some(arr) = v.get("proxies").and_then(|p| p.as_sequence()) {
+            for p in arr {
+                if out.len() >= top {
+                    break;
+                }
+                let Some(entry) = clash_passthrough(p) else {
+                    skip_clash += 1;
+                    continue;
+                };
+                let name = entry
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let ptype = entry
+                    .get("type")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if seen.insert(name.clone()) {
+                    out.push(InlineNode {
+                        name,
+                        proto: ptype,
+                        entry,
+                    });
                 }
             }
         }
-        if !names.is_empty() {
-            return names;
-        }
-        crate::rt::time::sleep(Duration::from_millis(800)).await;
     }
-    vec![]
+
+    if out.is_empty() {
+        return Err(format!(
+            "数据目录 {} 没有可测节点（URI 全部解析失败且无 Clash 块），请先运行 scan",
+            dir.display()
+        ));
+    }
+    let stat = LoadStat {
+        skip_uri,
+        skip_clash,
+    };
+    Ok((out, stat))
+}
+
+/// Clash 块原样透传：结构校验 + 端口字符串纠偏。
+///
+/// 内联配置是「全有或全无」—— 缺 name/type/server 的条目会让 mihomo
+/// 整份拒收；端口写成 `"443"` 这种字符串同样拒收，这里统一纠成整数。
+fn clash_passthrough(p: &serde_yaml::Value) -> Option<serde_yaml::Mapping> {
+    let mut m = p.as_mapping()?.clone();
+    if m.get("name")?.as_str()?.trim().is_empty() {
+        return None;
+    }
+    if m.get("type")?.as_str()?.trim().is_empty() {
+        return None;
+    }
+    if m.get("server")?.as_str()?.trim().is_empty() {
+        return None;
+    }
+    let port = m.get("port")?.clone();
+    match port {
+        serde_yaml::Value::Number(_) => {}
+        serde_yaml::Value::String(s) => {
+            let n: u16 = s.trim().parse().ok()?;
+            m.insert("port".into(), n.into());
+        }
+        _ => return None,
+    }
+    Some(m)
+}
+
+/// 单个 URI 节点 → mihomo 内联条目。字段命名对齐真实数据：vless 用
+/// `servername`，trojan/hysteria2 用 `sni`，TLS 类两种键都给
+/// （nodes_clash.yaml 里 anytls 就是双键并存、内核照载不误）。
+/// 必备字段缺失 / mihomo 不支持的协议 → None（只跳过这一行）。
+fn mihomo_entry(n: &crate::corecfg::ParsedNode, name: &str) -> Option<serde_yaml::Mapping> {
+    let mut m = serde_yaml::Mapping::new();
+    if n.server.is_empty() || n.port == 0 || name.trim().is_empty() {
+        return None;
+    }
+    m.insert("name".into(), name.into());
+    m.insert("type".into(), clash_type(&n.proto)?.into());
+    m.insert("server".into(), n.server.as_str().into());
+    m.insert("port".into(), n.port.into());
+    m.insert("udp".into(), true.into());
+
+    // ── 协议必备字段（缺 = None 跳过；类型错会连累整份配置，绝不赌） ──
+    match n.proto.as_str() {
+        "ss" => {
+            let cipher = n.extra.get("method").or_else(|| n.extra.get("cipher"))?;
+            m.insert("cipher".into(), cipher.as_str().into());
+            m.insert("password".into(), n.password.as_deref()?.into());
+        }
+        "vmess" => {
+            m.insert("uuid".into(), n.uuid.as_deref()?.into());
+            m.insert("alterId".into(), n.aid.into());
+            let scy = n.extra.get("scy").map(String::as_str).unwrap_or("auto");
+            m.insert("cipher".into(), scy.into());
+        }
+        "vless" => {
+            m.insert("uuid".into(), n.uuid.as_deref()?.into());
+            if let Some(flow) = n.flow.as_deref().filter(|s| !s.is_empty()) {
+                m.insert("flow".into(), flow.into());
+            }
+        }
+        "trojan" | "hysteria2" | "anytls" => {
+            m.insert("password".into(), n.password.as_deref()?.into());
+        }
+        "tuic" => {
+            m.insert("uuid".into(), n.uuid.as_deref()?.into());
+            m.insert("password".into(), n.password.as_deref()?.into());
+        }
+        "socks" | "http" => {
+            if let Some(u) = n.user.as_deref().filter(|s| !s.is_empty()) {
+                m.insert("username".into(), u.into());
+            }
+            if let Some(p) = n.password.as_deref().filter(|s| !s.is_empty()) {
+                m.insert("password".into(), p.into());
+            }
+        }
+        // hysteria/snell/shadowtls/ssh/wireguard：URI 里低频且字段拿不准，
+        // 跳过比赌一把强（赌错 = 内核整份拒收 = alive 归零）。
+        _ => return None,
+    }
+
+    // hysteria2 的 obfs 是对象 {type,password}，不是字符串
+    if n.proto == "hysteria2" {
+        if let Some(obfs) = n.extra.get("obfs").filter(|s| !s.is_empty()) {
+            let mut om = serde_yaml::Mapping::new();
+            om.insert("type".into(), obfs.as_str().into());
+            if let Some(pw) = n.extra.get("obfs-password").filter(|s| !s.is_empty()) {
+                om.insert("password".into(), pw.as_str().into());
+            }
+            m.insert("obfs".into(), om.into());
+        }
+    }
+
+    // ── TLS（trojan/tuic/hysteria2/anytls 由 parse 侧已置 security=tls） ──
+    let tls = matches!(n.security.as_deref(), Some("tls") | Some("reality"));
+    if tls {
+        m.insert("tls".into(), true.into());
+        if let Some(sni) = n.sni.as_deref().filter(|s| !s.is_empty()) {
+            m.insert("servername".into(), sni.into());
+            m.insert("sni".into(), sni.into());
+        }
+        if n.allow_insecure {
+            m.insert("skip-cert-verify".into(), true.into());
+        }
+        if let Some(fp) = n.fp.as_deref().filter(|s| !s.is_empty()) {
+            m.insert("client-fingerprint".into(), fp.into());
+        }
+        if let Some(alpn) = n.alpn.as_deref().filter(|s| !s.is_empty()) {
+            let items: Vec<serde_yaml::Value> = alpn
+                .split(',')
+                .map(|s| serde_yaml::Value::String(s.trim().to_string()))
+                .collect();
+            m.insert("alpn".into(), serde_yaml::Value::Sequence(items));
+        }
+        if n.security.as_deref() == Some("reality") {
+            if let Some(pbk) = n.pbk.as_deref().filter(|s| !s.is_empty()) {
+                let sid = n.sid.as_deref().unwrap_or_default();
+                let mut ro = serde_yaml::Mapping::new();
+                ro.insert("public-key".into(), pbk.into());
+                ro.insert("short-id".into(), sid.into());
+                m.insert("reality-opts".into(), ro.into());
+            }
+        }
+    }
+
+    // ── 传输层：只发射 ws / grpc（真实 URI 里只有这两种）；h2/httpupgrade
+    // 的 opts 键名拿不准，赌错类型会被内核拒收，宁可该节点不通。 ──
+    match n.network.as_deref() {
+        Some("ws") => {
+            let mut opts = serde_yaml::Mapping::new();
+            if let Some(path) = n.path.as_deref().filter(|s| !s.is_empty()) {
+                opts.insert("path".into(), path.into());
+            }
+            if let Some(host) = n.host.as_deref().filter(|s| !s.is_empty()) {
+                let mut headers = serde_yaml::Mapping::new();
+                headers.insert("Host".into(), host.into());
+                opts.insert("headers".into(), headers.into());
+            }
+            m.insert("network".into(), "ws".into());
+            m.insert("ws-opts".into(), opts.into());
+        }
+        Some("grpc") => {
+            m.insert("network".into(), "grpc".into());
+            if let Some(svc) = n.service_name.as_deref().filter(|s| !s.is_empty()) {
+                let mut opts = serde_yaml::Mapping::new();
+                opts.insert("serviceName".into(), svc.into());
+                m.insert("grpc-opts".into(), opts.into());
+            }
+        }
+        _ => {}
+    }
+
+    Some(m)
+}
+
+/// 协议 id → mihomo `type` 字段（socks 要写成 socks5，其余同名）。
+fn clash_type(proto: &str) -> Option<&'static str> {
+    Some(match proto {
+        "ss" => "ss",
+        "vmess" => "vmess",
+        "vless" => "vless",
+        "trojan" => "trojan",
+        "hysteria2" => "hysteria2",
+        "tuic" => "tuic",
+        "socks" => "socks5",
+        "http" => "http",
+        "anytls" => "anytls",
+        _ => return None,
+    })
 }
 
 async fn probe_delay(
@@ -1454,5 +1674,87 @@ mod tests {
         let urlsafe = base64::engine::general_purpose::URL_SAFE.encode(json.as_bytes());
         assert!(decode_vmess(&urlsafe).is_some());
         assert!(decode_vmess("!!!not base64!!!").is_none());
+    }
+
+    #[test]
+    fn load_test_nodes_skips_broken_lines() {
+        let dir = std::env::temp_dir().join("ghboost_load_test_nodes");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 第一行就是当初打死整个 provider 的坏 ss：UUID 当 userinfo、没有 method
+        let bad = "ss://15298f41-e80b-463a-b85b-0c903258a1c8@162.159.1.33:443";
+        let bad = format!("{bad}?security=tls&encryption=none#meli_proxyy");
+        let good = "vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443";
+        let good = format!("{good}?security=tls&type=ws&path=/ws#good_vless");
+        std::fs::write(dir.join("nodes_uri.txt"), format!("{bad}\n{good}\n")).unwrap();
+        // 一个正常 Clash 块（端口故意写成字符串）+ 一个缺 name 的坏块
+        let ok = "proxies:\n  - name: clash_ok\n    type: ss\n    server: 5.6.7.8\n";
+        let ok = format!("{ok}    port: \"8388\"\n    cipher: aes-256-gcm\n");
+        let broken = "  - type: trojan\n    server: 9.9.9.9\n    port: 443\n    password: x\n";
+        std::fs::write(dir.join("nodes_clash.yaml"), format!("{ok}{broken}")).unwrap();
+
+        let (nodes, stat) = load_test_nodes(&dir, 10).unwrap();
+        assert_eq!(nodes.len(), 2, "坏行只损失自己，好行保留");
+        assert_eq!(nodes[0].name, "good_vless", "URI 名字与 add 导出一致");
+        assert_eq!(nodes[0].proto, "vless");
+        assert_eq!(nodes[1].name, "clash_ok");
+        assert_eq!(nodes[1].proto, "ss");
+        assert_eq!(stat.skip_uri, 1, "坏 ss 行计数跳过");
+        assert_eq!(stat.skip_clash, 1, "缺 name 的块计数跳过");
+        let port = nodes[1].entry.get("port").and_then(|v| v.as_u64());
+        assert_eq!(port, Some(8388), "字符串端口被纠成整数");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_test_nodes_uri_first_and_top_truncates() {
+        let dir = std::env::temp_dir().join("ghboost_load_top");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let uri = "vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443#u1\n";
+        std::fs::write(dir.join("nodes_uri.txt"), uri).unwrap();
+        let clash = "proxies:\n  - name: c1\n    type: ss\n    server: 5.6.7.8\n    port: 8388\n";
+        std::fs::write(dir.join("nodes_clash.yaml"), clash).unwrap();
+
+        // top=1 → URI 优先（add 的 good_uri 导出依赖 URI 节点在名单内）
+        let (nodes, stat) = load_test_nodes(&dir, 1).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, "u1");
+        assert_eq!(stat.skip_clash, 0, "被 top 截断不算跳过");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mihomo_entry_emits_reality_keys_and_guards() {
+        let n = crate::corecfg::ParsedNode {
+            name: "x".into(),
+            proto: "vless".into(),
+            server: "a.example.com".into(),
+            port: 443,
+            uuid: Some("11111111-2222-3333-4444-555555555555".into()),
+            security: Some("reality".into()),
+            sni: Some("cdn.example.com".into()),
+            pbk: Some("pubkey".into()),
+            flow: Some("xtls-rprx-vision".into()),
+            ..Default::default()
+        };
+        let m = mihomo_entry(&n, "node-a").expect("vless reality emits");
+        assert_eq!(m.get("type").and_then(|v| v.as_str()), Some("vless"));
+        assert_eq!(m.get("servername").and_then(|v| v.as_str()), Some("cdn.example.com"));
+        assert_eq!(m.get("flow").and_then(|v| v.as_str()), Some("xtls-rprx-vision"));
+        let ro = m.get("reality-opts").and_then(|v| v.get("public-key"));
+        assert_eq!(ro.and_then(|v| v.as_str()), Some("pubkey"));
+        assert_eq!(m.get("tls").and_then(|v| v.as_bool()), Some(true));
+
+        // 缺 uuid 必须整条跳过（None），不能发射半截条目
+        let missing = crate::corecfg::ParsedNode {
+            proto: "vless".into(),
+            server: "a.example.com".into(),
+            port: 443,
+            ..Default::default()
+        };
+        assert!(mihomo_entry(&missing, "no-uuid").is_none());
+        assert_eq!(clash_type("socks"), Some("socks5"));
+        assert_eq!(clash_type("wireguard"), None);
     }
 }
