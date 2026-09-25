@@ -71,10 +71,10 @@
 - [x] W3 web 面板：`/api/cores` + subscribe 选内核（auto/mihomo/xray/singbox）+ panel.html 选择器（2026-09-24，CI 全绿 `750d7a1`）
 - [x] W4 CLI：`ghboost core list/check` 子命令（2026-09-24，CI 全绿 `f6e9c80`）
 - [x] W5 Android exec 内核：`exec_core.rs` + JNI（nativeStartCore/StopCore/ListCores）+ 自排除路由（2026-09-24 三闸全绿 `f532560`+修复 `f067227`，run 36083540091 / 36083540111 / 36083540087）
-- [ ] W6 Android UI：内核选择器（自動/內建/Mihomo/Xray/sing-box）+ 状态贯通
-- [ ] W7 CI tray.yml：随包 xray + sing-box + geoip/geosite 数据 + LICENSE + 安装冒烟断言扩展
-- [ ] W8 CI build-all.yml android-apk：三内核按 ABI 注入 jniLibs（xray armv7 缺席则跳过并告警）
-- [ ] W9 README 强调多内核（矩阵表 + 使用说明）+ 本文件勾选
+- [x] W6 Android UI：内核选择器（自動/內建/Mihomo/Xray/sing-box）+ 状态贯通 + 缺二进制回落 meow（2026-09-25 三闸全绿 `074c5fb`+修复 `2e79276`，run 36086877253 / 36086877272 / 36086877233）
+- [x] W7 CI tray.yml：随包 xray + sing-box + geoip/geosite 数据 + LICENSE + 安装冒烟断言扩展（2026-09-25 tray ✓ `94288bb`：`93f2590`+产物结构修复 `d80e739`，含 libcronet.dll 随包）
+- [x] W8 CI build-all.yml android-apk：三内核按 ABI 注入 jniLibs（xray armv7 缺席则跳过并告警）（2026-09-25 build-all ✓ `94288bb`：`8209854`+结构修复 `d80e739`+打包堆 4G `94288bb`）
+- [x] W9 README 强调多内核（矩阵表 + 使用说明）+ 根 THIRD-PARTY 补 xray/sing-box 段 + 本文件勾选（2026-09-25）
 - [ ] W10 验证：CI 全绿 → Windows tray 实跑切三内核 → 模拟器 APK 装机切内核 + logcat 实测
 - [ ] W11 Release：tag 出包（tray zip 含三内核；APK 含三内核）
 
