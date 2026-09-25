@@ -334,7 +334,7 @@ fn ensure_geo(cfg_dir: &Path, root: &Path) -> Result<(), String> {
 }
 
 /// 子进程输出 → logcat（全量）+ 环形尾巴（秒退时当错误消息）。
-fn pipe_output<R>(mut src: R, id: &'static str, is_err: bool, tail: Tail)
+fn pipe_output<R>(src: R, id: &'static str, is_err: bool, tail: Tail)
 where
     R: std::io::Read + Send + 'static,
 {
@@ -534,7 +534,7 @@ mod dns_doh {
                     // 每条查询一个线程：DNS 突发量级（十/秒）下最简单也够用；
                     // 上游连接复用靠 client 连接池（同一条 SOCKS 隧道长连）。
                     std::thread::spawn(move || {
-                        let resp = query(&client, &q).unwrap_or_else(|| servfail(&q));
+                        let resp = query(&client, &q).or_else(|| servfail(&q));
                         if let Some(r) = resp {
                             let _ = sock.send_to(&r, from);
                         }
