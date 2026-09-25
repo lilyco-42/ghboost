@@ -213,8 +213,12 @@ jobs:
             get "https://github.com/XTLS/Xray-core/releases/download/v${XRAY}/Xray-android-${xa}.zip" "$TMP/xray.zip"
             rm -rf "$TMP/xz"; mkdir -p "$TMP/xz"
             unzip -q "$TMP/xray.zip" -d "$TMP/xz"
-            # zip 内档名不保证规范，取最大的那个文件（可执行体）当内核
-            bin=$(find "$TMP/xz" -type f -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-)
+            # zip 平铺着 xray / geoip.dat / geosite.dat / LICENSE —— 按名取可执行体；
+            # 拿不到再退回最大文件（防上游改名）。
+            bin=$(find "$TMP/xz" -type f -name 'xray*' | head -1)
+            if [ -z "$bin" ]; then
+              bin=$(find "$TMP/xz" -type f -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-)
+            fi
             if [ -z "$bin" ]; then echo "::error::xray zip empty ($abi)"; exit 1; fi
             cp "$bin" "$DEST/$abi/libxray.so"
           done
@@ -229,8 +233,10 @@ jobs:
             rm -rf "$TMP/sb"; mkdir -p "$TMP/sb"
             get "https://github.com/SagerNet/sing-box/releases/download/v${SING}/sing-box-${SING}-android-${sa}.tar.gz" "$TMP/sing.tar.gz"
             tar -xzf "$TMP/sing.tar.gz" -C "$TMP/sb"
-            if [ ! -f "$TMP/sb/sing-box" ]; then echo "::error::sing-box tar missing binary ($abi)"; exit 1; fi
-            cp "$TMP/sb/sing-box" "$DEST/$abi/libsingbox.so"
+            # tar 包了顶层目录（sing-box-<ver>-android-<arch>/sing-box）—— 递归找
+            bin=$(find "$TMP/sb" -type f -name sing-box | head -1)
+            if [ -z "$bin" ]; then echo "::error::sing-box tar missing binary ($abi)"; exit 1; fi
+            cp "$bin" "$DEST/$abi/libsingbox.so"
           done
 
           # ── 断言：全部就位 + 体积合理 + 真是 ELF（挡住错误页/空壳）──

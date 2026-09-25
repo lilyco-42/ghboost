@@ -117,16 +117,24 @@ jobs:
             Write-Host "WARN: could not fetch the Xray MPL text (non-fatal)"
           }
 
-          # ── sing-box（GPL-3.0）── 资产名带版本号，靠钉死的版本拼 URL
+          # ── sing-box（GPL-3.0）── 资产名带版本号，靠钉死的版本拼 URL ──
+          # zip 内是顶层目录（sing-box-<ver>-windows-amd64/），必须 -Recurse 找；
+          # 1.14 起发行包还带 libcronet.dll（Chromium 网络栈），跟内核同目录带上。
           $Zip = Join-Path $env:TEMP "singbox.zip"
           Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v$SingVer/sing-box-$SingVer-windows-amd64.zip" -OutFile $Zip -UseBasicParsing
           $SDir = Join-Path $env:TEMP "singbox-ex"
           Remove-Item $SDir -Recurse -Force -ErrorAction SilentlyContinue
           Expand-Archive -Path $Zip -DestinationPath $SDir -Force
           Remove-Item $Zip -Force
-          $Exe = Get-ChildItem $SDir -Filter "*.exe" -File | Select-Object -First 1
+          $Exe = Get-ChildItem $SDir -Recurse -Filter "*.exe" -File | Select-Object -First 1
           if (-not $Exe) { throw "sing-box zip contains no exe" }
           Move-Item $Exe.FullName "$K/bin/sing-box.exe" -Force
+          $Cronet = Get-ChildItem $SDir -Recurse -Filter "libcronet.dll" -File | Select-Object -First 1
+          if ($Cronet) {
+            Move-Item $Cronet.FullName "$K/bin/libcronet.dll" -Force
+          } else {
+            Write-Host "WARN: libcronet.dll absent in sing-box zip (upstream may have dropped it)"
+          }
           Remove-Item $SDir -Recurse -Force
           try {
             Invoke-WebRequest -Uri "https://raw.githubusercontent.com/SagerNet/sing-box/main/LICENSE" -OutFile "$K/sing-box-LICENSE.txt" -UseBasicParsing
