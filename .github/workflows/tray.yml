@@ -77,6 +77,71 @@ jobs:
           }
           Get-ChildItem $K -Recurse -File | Select-Object FullName, Length | Format-Table
 
+      # W7：xray + sing-box 随包，与 mihomo 同址 kernel/bin ——
+      # coreman::locate 的既有顺序（随包 bin → 档名正规化 → PATH）直接吃到，
+      # 不需要任何新路径逻辑。版本钉死（同 mihomo 做法）：可追溯到确定上游，
+      # 也不受「latest 改资产名」影响；资产名是实测 GitHub API 确认过的
+      # （Xray 是 Xray-windows-64.zip，不是想当然的 Xray-win64.zip）。
+      - name: Stage xray + sing-box kernels
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $ProgressPreference = "SilentlyContinue"
+          $K = "dist/kernel"
+          New-Item -ItemType Directory -Force -Path "$K/bin" | Out-Null
+          $XrayVer = "26.3.27"
+          $SingVer = "1.14.2"
+
+          # ── Xray-core（MPL-2.0）── zip 内 exe 档名不一定规范，统一收成 xray.exe
+          $Zip = Join-Path $env:TEMP "xray.zip"
+          Invoke-WebRequest -Uri "https://github.com/XTLS/Xray-core/releases/download/v$XrayVer/Xray-windows-64.zip" -OutFile $Zip -UseBasicParsing
+          $XDir = Join-Path $env:TEMP "xray-ex"
+          Remove-Item $XDir -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path $Zip -DestinationPath $XDir -Force
+          Remove-Item $Zip -Force
+          $Exe = Get-ChildItem $XDir -Filter "*.exe" -File | Select-Object -First 1
+          if (-not $Exe) { throw "Xray zip contains no exe" }
+          Move-Item $Exe.FullName "$K/bin/xray.exe" -Force
+          Remove-Item $XDir -Recurse -Force
+
+          # xray 的 geo 数据放 exe 旁（装完在 <InstallDir>\bin）。emit_xray 目前
+          # 零 geo 规则（字面 CIDR），这两份是给将来启用 geosite 规则备的；
+          # 与 mihomo 的 country.mmdb/geosite.dat（在 mihomo/ 目录）互不相干。
+          foreach ($f in @("geoip.dat", "geosite.dat")) {
+            Invoke-WebRequest -Uri "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/$f" -OutFile "$K/bin/$f" -UseBasicParsing
+          }
+          try {
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/XTLS/Xray-core/main/LICENSE" -OutFile "$K/xray-LICENSE.txt" -UseBasicParsing
+          } catch {
+            Write-Host "WARN: could not fetch the Xray MPL text (non-fatal)"
+          }
+
+          # ── sing-box（GPL-3.0）── 资产名带版本号，靠钉死的版本拼 URL
+          $Zip = Join-Path $env:TEMP "singbox.zip"
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v$SingVer/sing-box-$SingVer-windows-amd64.zip" -OutFile $Zip -UseBasicParsing
+          $SDir = Join-Path $env:TEMP "singbox-ex"
+          Remove-Item $SDir -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path $Zip -DestinationPath $SDir -Force
+          Remove-Item $Zip -Force
+          $Exe = Get-ChildItem $SDir -Filter "*.exe" -File | Select-Object -First 1
+          if (-not $Exe) { throw "sing-box zip contains no exe" }
+          Move-Item $Exe.FullName "$K/bin/sing-box.exe" -Force
+          Remove-Item $SDir -Recurse -Force
+          try {
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/SagerNet/sing-box/main/LICENSE" -OutFile "$K/sing-box-LICENSE.txt" -UseBasicParsing
+          } catch {
+            Write-Host "WARN: could not fetch the sing-box GPL text (non-fatal)"
+          }
+
+          # 钉死的版本若被上游撤档/改名，这里当场炸 —— 不带着残缺包往下走。
+          foreach ($f in @("xray.exe", "sing-box.exe", "geoip.dat", "geosite.dat")) {
+            $p = Join-Path "$K/bin" $f
+            if (-not (Test-Path $p)) { throw "staged file missing: $p" }
+            if ((Get-Item $p).Length -lt 100KB) { throw "$p implausibly small" }
+          }
+          Get-ChildItem $K -Recurse -File | Select-Object FullName, Length | Format-Table
+
       - name: Package
         shell: pwsh
         run: |
@@ -197,8 +262,12 @@ jobs:
             throw "install.ps1 exited with $LASTEXITCODE"
           }
 
-          # 断言装完之后的实际布局 —— 这才是用户真正会得到的东西
+          # 断言装完之后的实际布局 —— 这才是用户真正会得到的东西。
+          # W7 起 xray/sing-box 也必须落位：只断言 zip 里有、不断言装完有，
+          # 正是当年 mihomo 档名 bug 漏掉的那半段。
           foreach ($rel in @("ghboost-tray.exe", "bin\mihomo.exe",
+                             "bin\xray.exe", "bin\sing-box.exe",
+                             "bin\geoip.dat", "bin\geosite.dat",
                              "mihomo\country.mmdb", "mihomo\geosite.dat")) {
             $f = Join-Path $InstallDir $rel
             if (-not (Test-Path $f)) { throw "missing after install: $f" }

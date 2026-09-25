@@ -42,13 +42,50 @@
   <https://github.com/MetaCubeX/mihomo> 取得同样版本的源码。
   发行包内同时附带了 GPL-3.0 全文（`kernel\mihomo-LICENSE.txt`）。
 
+### Xray-core —— MPL-2.0
+
+- 项目：<https://github.com/XTLS/Xray-core>
+- 许可证：**Mozilla Public License 2.0**
+- 与 mihomo 同理：不修改、不链接，仅以**独立子进程**方式调用官方预编译
+  二进制，属**聚合体（aggregate）**，本仓库代码不因此改变许可。
+- 固定版本与下载来源（见 `.github/workflows/tray.yml` 的
+  “Stage xray + sing-box kernels”步骤）：
+
+  ```
+  https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip
+  ```
+
+  发行包内位于 `kernel\bin\xray.exe`，安装时直接复制、不联网。
+- MPL-2.0 全文随包附带（`kernel\xray-LICENSE.txt`）；对应源码见
+  <https://github.com/XTLS/Xray-core>（tag `v26.3.27`）。
+
+### sing-box —— GPL-3.0
+
+- 项目：<https://github.com/SagerNet/sing-box>
+- 许可证：**GNU General Public License v3.0**
+- 同样以**独立子进程**方式聚合运行，不链接、不修改。
+- 固定版本与下载来源：
+
+  ```
+  https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-windows-amd64.zip
+  ```
+
+  发行包内位于 `kernel\bin\sing-box.exe`。
+- GPL-3.0 全文随包附带（`kernel\sing-box-LICENSE.txt`）；对应源码见
+  <https://github.com/SagerNet/sing-box>（tag `v1.14.2`）。
+
 ### 规则数据库
 
 `country.mmdb`（MaxMind GeoLite2 格式）与 `geosite.dat` 同样随 mihomo 官方
 发布分发，用于 `GEOIP` / `GEOSITE` 规则匹配。**缺少 `country.mmdb` 时
 `GEOIP,TW,DIRECT` 这类规则会静默永不命中**，所以安装脚本把它列为必需项。
 
+`kernel\bin\geoip.dat` 与 `kernel\bin\geosite.dat` 来自
+[Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)
+（公开规则数据聚合，与 xray 配套）。当前 xray 发射配置只用字面 CIDR、
+不引用 geo 规则，这两份属预置数据，随 xray 二进制一同分发。
+
 ## 再分发提示
 
-若你要二次分发本产品并内置 mihomo，请一并保留本文件，并确保 mihomo 的
-对应源码可获取（保留上方下载链接或随包提供源码）。
+若你要二次分发本产品并内置 mihomo / Xray-core / sing-box，请一并保留本
+文件，并确保三者的对应源码可获取（保留上方下载链接或随包提供源码）。
