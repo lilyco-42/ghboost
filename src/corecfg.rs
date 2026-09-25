@@ -835,24 +835,30 @@ fn emit_xray(nodes: &[ParsedNode], opts: &EmitOptions) -> Result<String, String>
     }
     outbounds.push(json!({"tag": "direct", "protocol": "freedom", "settings": {}}));
 
+    // 同端口时只发一个 socks 入站：两个 inbound 绑同一个 socket，xray 启动即死
+    // （bind: Only one usage of each socket address，W10 实跑抓的）。实测 xray
+    // v26.3.27 的 socks 入站兼容 HTTP 代理协议 —— 绝对 URI GET 与 CONNECT
+    // 握手都在这一个口上正常应答；HTTP 入站只在两端口不同时才另起。
+    let mut inbounds = vec![json!({
+        "tag": "socks-in",
+        "listen": "127.0.0.1",
+        "port": opts.socks_port,
+        "protocol": "socks",
+        "settings": {"auth": "noauth", "udp": true}
+    })];
+    if opts.http_port != opts.socks_port {
+        inbounds.push(json!({
+            "tag": "http-in",
+            "listen": "127.0.0.1",
+            "port": opts.http_port,
+            "protocol": "http",
+            "settings": {}
+        }));
+    }
+
     let cfg = json!({
         "log": {"loglevel": "warning"},
-        "inbounds": [
-            {
-                "tag": "socks-in",
-                "listen": "127.0.0.1",
-                "port": opts.socks_port,
-                "protocol": "socks",
-                "settings": {"auth": "noauth", "udp": true}
-            },
-            {
-                "tag": "http-in",
-                "listen": "127.0.0.1",
-                "port": opts.http_port,
-                "protocol": "http",
-                "settings": {}
-            }
-        ],
+        "inbounds": inbounds,
         // 代理服务器域名由内核自解析：`https+local` DoH 不进路由（防回环）、TLS 加密
         // 直连发出（抗局域网 DNS 劫持）—— xray 文档 Local Mode 语义。
         "dns": {"servers": ["https+local://1.1.1.1/dns-query", "https+local://8.8.8.8/dns-query"]},
@@ -1141,8 +1147,10 @@ fn sb_outbound(n: &ParsedNode, tag: &str) -> Result<serde_json::Value, String> {
                 .ss_method()
                 .cloned()
                 .ok_or_else(|| format!("{} 缺少加密方式", n.display_name()))?;
+            // sing-box 只认 "shadowsocks"；写 "ss" 内核直接 FATAL 拒配置
+            // （unknown outbound type: ss —— W10 实跑抓的，单测只验结构没验内核认）。
             let mut o = json!({
-                "type": "ss", "tag": tag,
+                "type": "shadowsocks", "tag": tag,
                 "method": method,
                 "password": n.password.clone().unwrap_or_default()
             });
@@ -1619,6 +1627,29 @@ mod tests {
     }
 
     #[test]
+    fn emit_xray_same_port_uses_single_socks_inbound() {
+        // W10 实跑抓的：同端口双 inbound → xray「Only one usage of each
+        // socket address」启动即死。同端口时只应发一个 socks 入站。
+        let nodes = vec![parse_line("vless://u@1.1.1.1:443#V").unwrap()];
+        let same = EmitOptions {
+            socks_port: 17890,
+            http_port: 17890,
+        };
+        let text = emit(CoreKind::Xray, &nodes, &same).expect("emit 应成功");
+        let cfg: serde_json::Value = serde_json::from_str(&text).expect("合法 JSON");
+        let inbounds = cfg["inbounds"].as_array().unwrap();
+        assert_eq!(inbounds.len(), 1, "同端口只应发一个 socks 入站");
+        assert_eq!(inbounds[0]["protocol"], "socks");
+        assert_eq!(inbounds[0]["port"], 17890);
+
+        // 端口不同（default 1080/1081）时 http 入站照旧单独起
+        let cfg2 = emit_ok(CoreKind::Xray, &nodes);
+        let ib2 = cfg2["inbounds"].as_array().unwrap();
+        assert_eq!(ib2.len(), 2);
+        assert_eq!(ib2[1]["protocol"], "http");
+    }
+
+    #[test]
     fn singbox_emit_selector_urltest_and_rules() {
         let nodes = vec![
             parse_line("ss://YWVzLTI1Ni1nY206cA@1.1.1.1:8388#S").unwrap(),
@@ -1637,6 +1668,9 @@ mod tests {
         assert_eq!(outbounds[0]["tag"], "select");
         assert_eq!(outbounds[0]["outbounds"][0], "auto");
         assert_eq!(outbounds[1]["type"], "urltest");
+        // W10 实跑抓的：ss 出站类型必须是 "shadowsocks" —— "ss" 会让内核
+        // FATAL 拒配置（unknown outbound type: ss）。
+        assert_eq!(outbounds[2]["type"], "shadowsocks");
         assert_eq!(cfg["route"]["final"], "select");
         assert_eq!(cfg["inbounds"][0]["type"], "mixed");
         assert_eq!(cfg["inbounds"][0]["listen_port"], 1080);

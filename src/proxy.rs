@@ -123,8 +123,11 @@ mod windows_impl {
     use super::*;
     use std::process::Command;
 
+    // 注意：reg.exe 的 key 必须是**一个**参数 `HKCU\Software\...` —— 拆成
+    // "HKCU" + "Software\..." 两个位置参数会直接报「无效语法」并打印 usage、
+    // 静默不写注册表（W10 实跑抓的：proxy_ok:false，错误正文里是 "REG ADD /?"）。
     const INTERNET_SETTINGS_KEY: &str =
-        r#"Software\Microsoft\Windows\CurrentVersion\Internet Settings"#;
+        r#"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"#;
 
     pub fn set_proxy(config: &ProxyConfig) -> Result<ProxyState, String> {
         let proxy_server = format!(
@@ -136,7 +139,6 @@ mod windows_impl {
         let output = Command::new("reg")
             .args([
                 "add",
-                "HKCU",
                 INTERNET_SETTINGS_KEY,
                 "/v",
                 "ProxyEnable",
@@ -156,7 +158,6 @@ mod windows_impl {
         let output = Command::new("reg")
             .args([
                 "add",
-                "HKCU",
                 INTERNET_SETTINGS_KEY,
                 "/v",
                 "ProxyServer",
@@ -178,7 +179,6 @@ mod windows_impl {
             let output = Command::new("reg")
                 .args([
                     "add",
-                    "HKCU",
                     INTERNET_SETTINGS_KEY,
                     "/v",
                     "ProxyOverride",
@@ -211,7 +211,6 @@ mod windows_impl {
         let output = Command::new("reg")
             .args([
                 "add",
-                "HKCU",
                 INTERNET_SETTINGS_KEY,
                 "/v",
                 "ProxyEnable",
@@ -233,7 +232,7 @@ mod windows_impl {
 
     pub fn get_proxy_status() -> ProxyState {
         let output = Command::new("reg")
-            .args(["query", "HKCU", INTERNET_SETTINGS_KEY, "/v", "ProxyEnable"])
+            .args(["query", INTERNET_SETTINGS_KEY, "/v", "ProxyEnable"])
             .output();
 
         match output {

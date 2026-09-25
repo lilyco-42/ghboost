@@ -190,19 +190,29 @@ impl CoreManager {
         std::fs::write(&self.config_path, config_json).map_err(|e| format!("写配置失败: {e}"))?;
         self.check_config()?;
         self.stop()?;
+        // 内核的 stdout/stderr 落 kernel.log（与配置同目录）：启动失败时
+        // 「端口没起来」只有配上内核原话才是可排障的 —— null 掉等于把死因扔了
+        //（W10 实跑：xray 的 bind 冲突被吞成一句 connection timed out）。
+        let log_path = self.config_path.with_file_name("kernel.log");
+        let log_out = std::fs::File::create(&log_path)
+            .map_err(|e| format!("建内核日志 {log_path:?} 失败: {e}"))?;
+        let log_err = log_out
+            .try_clone()
+            .map_err(|e| format!("克隆内核日志句柄失败: {e}"))?;
         let mut child = Command::new(&self.binary)
             .args(launch_args(self.kind, &self.config_path))
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(log_out))
+            .stderr(Stdio::from(log_err))
             .spawn()
             .map_err(|e| format!("启动 {} 失败: {e}", binary_stem(self.kind)))?;
         std::thread::sleep(Duration::from_millis(300));
         match child.try_wait() {
             Ok(Some(status)) => Err(format!(
-                "{} 启动后立即退出（状态码 {status}）。配置已过 check，多半是端口被占：{}",
+                "{} 启动后立即退出（状态码 {status}）。配置已过 check，多半是端口被占：{}\n{}",
                 binary_stem(self.kind),
-                self.config_path.display()
+                self.config_path.display(),
+                self.log_tail()
             )),
             Ok(None) => {
                 // 先放锁再探端口：Mutex 不可重入（mihomo.rs 里踩过，见那的注释）。
@@ -223,6 +233,25 @@ impl CoreManager {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.mixed_port));
         let mut last = "从未连上".to_string();
         while Instant::now() < deadline {
+            // 内核若已死，端口永远等不来 —— 先查活，带出 kernel.log 尾巴。
+            // （不查死活只能干等满预算，报一句无信息量的连接超时。）
+            let died = {
+                let mut g = self.process.lock().map_err(|e| e.to_string())?;
+                match g.as_mut() {
+                    Some(c) => match c.try_wait() {
+                        Ok(Some(status)) => Some(status),
+                        _ => None,
+                    },
+                    None => None,
+                }
+            };
+            if let Some(status) = died {
+                return Err(format!(
+                    "{} 启动后退出（{status}）：\n{}",
+                    binary_stem(self.kind),
+                    self.log_tail()
+                ));
+            }
             match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250)) {
                 Ok(_) => return Ok(()),
                 Err(e) => last = e.to_string(),
@@ -230,10 +259,25 @@ impl CoreManager {
             std::thread::sleep(Duration::from_millis(150));
         }
         Err(format!(
-            "{} 的代理端口 {} 没监听到（{last}）",
+            "{} 的代理端口 {} 没监听到（{last}）；内核日志尾部：\n{}",
             binary_stem(self.kind),
-            self.mixed_port
+            self.mixed_port,
+            self.log_tail()
         ))
+    }
+
+    /// kernel.log 尾部若干行（内核致命错误的原话；与 check_config 同款排障闭环）。
+    fn log_tail(&self) -> String {
+        let p = self.config_path.with_file_name("kernel.log");
+        match std::fs::read(&p) {
+            Ok(bytes) => {
+                let s = String::from_utf8_lossy(&bytes);
+                let lines: Vec<&str> = s.lines().collect();
+                let skip = lines.len().saturating_sub(12);
+                lines[skip..].join("\n")
+            }
+            Err(e) => format!("（读内核日志失败: {e}）"),
+        }
     }
 
     /// 停止内核进程。
