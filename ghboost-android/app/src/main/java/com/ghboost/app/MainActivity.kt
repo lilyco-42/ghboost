@@ -379,7 +379,11 @@ class MainActivity : AppCompatActivity() {
         val line2 = if (!isRunning) {
             "未連線；引擎選擇在下次按 Start 時生效。"
         } else {
-            val ex = core?.optString("engine").orEmpty()
+            // org.json 的 optString 会把 JSON null 转成字符串 "null"
+            // （JSONObject.NULL.toString()）—— 內建内核的 status 里 engine
+            // 正是 JSON null，不剥掉就渲染出「執行中：null」（W10 实测抓到）。
+            val raw = core?.optString("engine").orEmpty()
+            val ex = if (raw == "null") "" else raw
             when {
                 core == null -> "執行中：內建（狀態查詢失敗）"
                 ex.isEmpty() && currentEngine() ==
