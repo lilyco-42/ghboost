@@ -75,7 +75,7 @@
 - [x] W7 CI tray.yml：随包 xray + sing-box + geoip/geosite 数据 + LICENSE + 安装冒烟断言扩展（2026-09-25 tray ✓ `94288bb`：`93f2590`+产物结构修复 `d80e739`，含 libcronet.dll 随包）
 - [x] W8 CI build-all.yml android-apk：三内核按 ABI 注入 jniLibs（xray armv7 缺席则跳过并告警）（2026-09-25 build-all ✓ `94288bb`：`8209854`+结构修复 `d80e739`+打包堆 4G `94288bb`）
 - [x] W9 README 强调多内核（矩阵表 + 使用说明）+ 根 THIRD-PARTY 补 xray/sing-box 段 + 本文件勾选（2026-09-25）
-- [ ] W10 验证：CI 全绿 → Windows tray 实跑切三内核 → 模拟器 APK 装机切内核 + logcat 实测
+- [x] W10 验证：CI 全绿 → Windows tray 实跑切三内核 → 模拟器 APK 装机切内核 + logcat 实测（2026-09-25 三闸全绿 `f62bcbb`+`fd26358`+`ab20208`，run 36090061323/36091341002/36092012210+对应 tray、build-all；桌面 mihomo/xray/sing-box 全链矩阵 = subscribe→独占互斥→E2E socks/http 200→stop 清场＋注册表快照还原，Android auto/內建 meow/mihomo/xray/sing-box 五引擎 VPN 实测＋logcat 内核证据＋外部节点导入；实跑修复 6 bug：xray 同端口双 inbound、sing-box `ss`→`shadowsocks`、reg.exe HKCU 键拆参、coreman 吞死因、提权副本被当重复启动全死（交接回归 TEST_A/B 过）、meow 状态渲染 `null`）
 - [ ] W11 Release：tag 出包（tray zip 含三内核；APK 含三内核）
 
 ## 风险与坑（预防清单）
