@@ -268,7 +268,8 @@ jobs:
         working-directory: ghboost-android
         run: |
           chmod +x gradlew 2>/dev/null || true
-          ./gradlew assembleRelease --no-daemon
+          # --stacktrace：packageRelease 这类失败默认不带根因，红了直接拿堆栈
+          ./gradlew assembleRelease --no-daemon --stacktrace
       # 閘門：未簽名的 APK 裝不起來（使用者只看到「應用程式未安裝」），
       # 而這種錯誤在 CI 上完全看不出來 —— 建置會成功、檔案會上傳、
       # Release 會出現 4 個 .apk，只是沒人裝得起來。所以在這裡就擋掉。
