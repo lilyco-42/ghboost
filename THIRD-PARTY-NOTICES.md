@@ -20,6 +20,28 @@ ghboost —— MIT License，见 [LICENSE](LICENSE)。
 途径，并附上 GPL-3.0 全文。Windows 发行包内已包含
 `kernel\mihomo-LICENSE.txt`（GPL-3.0 全文），源码链接也写在本文件里。
 
+## Xray-core（加速器内核）
+
+- **授权**：MPL-2.0
+- **版本**：v26.3.27（随 Windows 发行包附上的构建）
+- **源码**：<https://github.com/XTLS/Xray-core>
+- **使用方式**：以**独立子进程**调用（`xray run -c <配置>`），**未**被链接进
+  ghboost 的二进制文件。
+
+MPL-2.0 属 weak copyleft：对未修改的二进制分发，只需保留授权声明与源码可得性。
+发行包内附 `kernel\xray-LICENSE.txt`（MPL-2.0 全文），源码链接在本文件里。
+
+## sing-box（加速器内核）
+
+- **授权**：GPL-3.0
+- **版本**：v1.14.2（随 Windows 发行包附上的构建）
+- **源码**：<https://github.com/SagerNet/sing-box>
+- **使用方式**：以**独立子进程**调用，**未**被链接进 ghboost 的二进制文件；
+  与 mihomo 同理属聚合体（aggregate），ghboost 本体不受 GPL 传染。
+
+分发义务同 mihomo：发行包内附 `kernel\sing-box-LICENSE.txt`（GPL-3.0 全文），
+源码链接在本文件里。
+
 ## 规则数据库
 
 - `country.mmdb`、`geosite.dat` 来自
@@ -27,6 +49,9 @@ ghboost —— MIT License，见 [LICENSE](LICENSE)。
 - 这两个文件是**必需的**，不是可选优化：没有 `country.mmdb` 时
   `GEOIP,TW,DIRECT` 这类规则会**静默地永不匹配**，导致台湾本地站点被送去绕
   代理 —— 更慢，且部分网银会判定为异地登录而挡下。
+- `kernel\bin\geoip.dat`、`kernel\bin\geosite.dat` 来自
+  [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)，
+  与 xray 配套（当前发射配置只用字面 CIDR，属预置数据）。
 
 ## 编译期依赖
 

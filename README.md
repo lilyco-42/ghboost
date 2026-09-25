@@ -35,6 +35,35 @@ ghboost 是一個 Windows 系統託盤工具。裝好之後，托盤上會多一
 > 沒有節點？我們也提供 [節點訂閱服務](https://lain42.top/panel/redeem)，
 > 買一組卡密、貼回面板就能用。**客戶端本身永遠免費開源**，不買節點也不會少任何功能。
 
+## 多內核引擎：mihomo / Xray / sing-box
+
+同一份訂閱、三顆內核任選，`auto` 模式按協議自動挑最合適的那顆
+（Reality → Xray，Hysteria2 / TUIC → sing-box，規則系 → mihomo）。
+三顆都是**官方預編譯二進制，隨安裝包附帶、不聯網下載**。
+
+| 協議 | mihomo | Xray | sing-box | 備註 |
+|------|--------|------|----------|------|
+| Shadowsocks（含 2022-blake3） | ✅ | ✅ | ✅ | |
+| VMess | ✅ | ✅ | ✅ | |
+| VLESS（Reality / XTLS-flow） | ✅ | ✅ 首選 | ✅ | auto：Reality → Xray |
+| Trojan | ✅ | ✅ | ✅ | |
+| Hysteria2 | ✅ | — | ✅ 首選 | auto → sing-box |
+| TUIC | ✅ | — | ✅ 首選 | auto → sing-box |
+| AnyTLS | ✅（1.19+） | — | ✅ | auto → sing-box |
+| ShadowTLS | ✅ | — | ✅ | auto → sing-box |
+| WireGuard | ✅ | — | ✅ | auto → sing-box |
+| SOCKS4/5 / HTTP(S) | ✅ | ✅ | ✅ | 出站型節點 |
+| SSH | —（以實測為準） | ✅ | ✅ | auto → sing-box |
+
+> SSR 三顆內核上游都不支援 → 明確不支援。
+
+在哪裡切換：
+
+- **桌面面板**：匯入訂閱時選內核（自動 / mihomo / xray / sing-box）
+- **CLI**：`ghboost core list` 看三內核可用性，`ghboost core check` 驗內核配置
+- **Android APK**：首頁「內核」下拉（自動 / 內建 / Mihomo / Xray / sing-box）——
+  缺二進制的選項自動灰顯；就算選了不可用的內核也會回落內建引擎，**不會斷網**
+
 ## 下載安裝
 
 ### 方式一：直接下載（推薦）
@@ -47,8 +76,8 @@ ghboost 是一個 Windows 系統託盤工具。裝好之後，托盤上會多一
 安裝腳本會：
 - 建立桌面捷徑
 - 設定開機自動啟動
-- 裝好 mihomo 內核：**直接用包裡 `kernel\` 那份，不聯網**
-  （要升級內核才加 `-WithKernel` 強制重新下載）
+- 裝好三顆內核：`kernel\bin\` 的 mihomo / xray / sing-box **直接複製、不聯網**
+  （`-WithKernel` 只用來強制重新下載 mihomo）
 
 ### 方式二：從原始碼編譯
 
@@ -78,7 +107,7 @@ powershell -ExecutionPolicy Bypass -File tools/install.ps1 -WithKernel
 ### 一鍵加速按鈕
 
 面板正中間有一個大按鈕：
-- 點一下 → 啟動 mihomo 內核 + 設定系統代理 → 按鈕變綠
+- 點一下 → 啟動代理內核（面板可選自動 / mihomo / Xray / sing-box）+ 設定系統代理 → 按鈕變綠
 - 再點一下 → 關閉代理 + 停止內核 → 按鈕變紅
 
 就這樣。不用碰任何設定。
@@ -126,6 +155,8 @@ ghboost/
 │   ├── nodes.rs         # 節點掃描/測速/匯出
 │   ├── proxy.rs         # 跨平台代理設定
 │   ├── mihomo.rs        # Mihomo 內核管理
+│   ├── corecfg.rs       # 多內核配置發射（share URI → xray/sing-box/clash）
+│   ├── coreman.rs       # 三內核定位 / 啟動 / 探活 / 版本
 │   ├── deploy.rs        # SSH 遠程部署
 │   └── web.rs           # 訂閱配置生成
 ├── ghboost-ffi/         # FFI crate（JNI + iOS）
@@ -170,20 +201,23 @@ ghboost/
 ## CI/CD
 
 使用 GitHub Actions：
-- **tray.yml**：編譯 Windows 托盤二進制 + 上傳 Release
-- **build-all.yml**：8 平台 CLI 二進制 + MSI；**tag push 時自動建立 Release**
+- **tray.yml**：編譯 Windows 托盤二進制 + 隨包三內核（mihomo / Xray / sing-box）+ 上傳 Release
+- **build-all.yml**：8 平台 CLI 二進制 + MSI + Android APK（每 ABI 注入三內核）；
+  **tag push 時自動建立 Release**
 - **ci.yml**：lint + test
 
 ## 依賴
 
 - **Rust** 1.98+（CI 釘 1.98.1，避免 rustfmt 小版本漂移讓 CI 無徵兆飄紅）
-- **mihomo** v1.19+（內核，託管下載或 bundle 自帶）
+- **代理內核**（官方預編譯、版本釘死在 CI、隨包附帶）：
+  mihomo v1.19+、Xray v26.3.27、sing-box v1.14.2
 - **PowerShell**（安裝腳本用）
 
 ## 授權
 
 MIT（見 [LICENSE](LICENSE)）。
 
-執行期以獨立子進程調用的 mihomo 內核遵循 GPL-3.0。兩者構成聚合體
-（aggregate）—— mihomo 未被鏈接進本項目的二進制文件，因此不影響本項目的
-MIT 授權。詳見 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+執行期以獨立子進程調用的三顆內核 —— mihomo（GPL-3.0）、Xray-core（MPL-2.0）、
+sing-box（GPL-3.0）—— 與本項目構成聚合體（aggregate）：內核**未被鏈接**進本
+項目的二進制文件，因此不影響本項目的 MIT 授權。各內核的授權全文（隨包附帶
+`kernel\*-LICENSE.txt`）與源碼索取方式見 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
