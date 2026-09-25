@@ -436,10 +436,27 @@ fn main() {
 
     // 已经在跑：只把浏览器再开一次，绝不启第二个实例
     // （小白会反复双击图标，启第二个只会让端口漂移、状态互相打架）
+    //
+    // 但先给一段「交接窗口」：`/api/elevate` 授权通过后，提权副本和旧实例的
+    // 退出是在赛跑 —— 副本跑得快，先到这行时旧实例还活着（它要等 400ms 才
+    // 自杀），若直接按重复启动退出，紧接着旧实例一死就一个不剩：提權后整个
+    // ghboost 消失、页面只剩「與控制台失去連線」（用户报过两次）。所以这里
+    // 轮询等旧实例收摊：等到了就自己接班；等满 5 秒还活着才是真重复启动。
     if let Some(p) = running_port() {
         let url = format!("http://127.0.0.1:{p}");
         let _ = webbrowser::open(&url);
-        return;
+        let mut handover = false;
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(100));
+            if running_port().is_none() {
+                handover = true;
+                break;
+            }
+        }
+        if !handover {
+            return;
+        }
+        trace("handover: previous instance exited, taking over");
     }
 
     let admin = hosts::is_admin();
