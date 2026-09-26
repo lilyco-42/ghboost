@@ -97,10 +97,11 @@
      `nodes=20` 对不上才暴露出来。新增 `corecfg::strip_bom` 在 4 个入口统一收口，
      修后设备实测 `kept 20, dropped 1 of 21`。
   同时 `69d77a5` 的 scan 去重让重名行 708 → 86，`add` 导出从「22 行 20 个名
-  （`US-VPNine1`×3）」变成 20 行 20 个名。详见
-  `C:\Users\liuqi\AppData\Local\Temp\opencode\w10\freevpn_report_20260926.md`。
+  （`US-VPNine1`×3）」变成 20 行 20 个名。完整报告见
+  [`FREEVPN-TEST-2026-09-26.md`](FREEVPN-TEST-2026-09-26.md)。
   遗留（已记录未修）：`mihomo.rs` 排空 stdout/stderr（顺带解 64KB 死锁风险）、
-  `do_stop` 只关自己开的系统代理、Android 补 `nativeTest` 入口、cipher 白名单。
+  `do_stop` 只关自己开的系统代理、Android 补 `nativeTest` 入口、cipher 白名单、
+  给 CI/Build All 也加 `--locked`。
 
 ## 风险与坑（预防清单）
 
