@@ -15,6 +15,7 @@ import android.net.VpnService
  *   Java_com_ghboost_app_GhBoostCore_nativeScan
  *   Java_com_ghboost_app_GhBoostCore_nativeTest
  *   Java_com_ghboost_app_GhBoostCore_nativeAdd
+ *   Java_com_ghboost_app_GhBoostCore_nativeSanitizeNodes
    *   Java_com_ghboost_app_GhBoostCore_nativeStartTun2Socks
    *   Java_com_ghboost_app_GhBoostCore_nativeStopTun2Socks
    *   Java_com_ghboost_app_GhBoostCore_nativeTunForwardingImplemented
@@ -64,6 +65,22 @@ object GhBoostCore {
      * @return JSON 结果串
      */
     external fun nativeAdd(params: String): String
+
+    /**
+     * 清洗节点清单（链接文本或 Clash `proxies:` 都行），返回一份**保证能被
+     * mihomo 载入**的 `proxies:` YAML。
+     *
+     * 为什么必须有这一步：mihomo 的 `type: file` provider 是**原子**解析 ——
+     * 一行坏节点（`ss://<uuid>@host?security=tls&encryption=none` 这种，UUID 当
+     * userinfo、没有 cipher）会让整个 provider 初始化失败，20 条好节点 + 1 条
+     * 这种行 = 0 节点。症状是「VPN 显示已连接、每个请求都失败」，比报错更难查。
+     *
+     * @param text 使用者导入的节点清单原文
+     * @return JSON `{"yaml": "...", "kept": N, "dropped": M, "total": T}`。
+     *   `kept == 0` 表示这不是节点清单（例如填的是 `proxy-providers: type: http`
+     *   的订阅配置），此时 `yaml` 是空串，**调用方必须保留原文**。
+     */
+    external fun nativeSanitizeNodes(text: String): String
 
     // ── TUN mode ───────────────────────────────────────────────
 

@@ -1300,6 +1300,107 @@ fn clash_type(proto: &str) -> Option<&'static str> {
     })
 }
 
+/// 清洗一份外来节点清单（Android 导入 / 托盘订阅共用），返回**保证可被
+/// mihomo 载入**的 `proxies:` YAML 文本。
+///
+/// 存在的原因：mihomo 的 `type: file` provider 对坏行是**原子**的 ——
+/// `ss://<uuid>@host?security=tls&encryption=none` 这种（UUID 当 userinfo、没有
+/// cipher）会让整个 provider 初始化失败，20 条好节点 + 1 条这种行 = 0 节点
+/// （2026-09-26 实测 v1.19.30，日志 `initial proxy provider ... unknown method`）。
+/// 症状是「VPN 显示已连接、每个请求都失败」，比直接报错更难排查。
+///
+/// 走的是和 `test_core` **同一条**已被实测跑通的路（`parse_line` → `mihomo_entry`）：
+/// 解析不了 / 字段不全的行只丢自己。输入是 Clash `proxies:` 就结构校验后透传，
+/// 是链接文本就逐行转成内联条目。同名只留首条（内联 proxies 重名整份拒收）。
+///
+/// `kept == 0` 时 `yaml` 为空串 —— 调用方**必须**保留用户原文（那份文件可能是
+/// `proxy-providers: type: http` 的订阅配置，不是节点清单，覆写等于删掉用户的订阅）。
+#[derive(Debug, Clone, Serialize)]
+pub struct Sanitized {
+    /// 可直接写进 provider 文件的 YAML；`kept == 0` 时为空串
+    pub yaml: String,
+    pub kept: usize,
+    pub dropped: usize,
+    pub total: usize,
+}
+
+pub fn sanitize_nodes_text(text: &str) -> Sanitized {
+    use crate::corecfg::CoreKind;
+
+    let mut entries: Vec<serde_yaml::Mapping> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut total = 0usize;
+    let mut saw_proxies = false;
+
+    // ① Clash `proxies:` 块：结构校验 + 端口纠偏后原样透传
+    if let Ok(v) = serde_yaml::from_str::<serde_yaml::Value>(text) {
+        if let Some(arr) = v.get("proxies").and_then(|p| p.as_sequence()) {
+            saw_proxies = true;
+            for p in arr {
+                total += 1;
+                if let Some(entry) = clash_passthrough(p) {
+                    let name = entry
+                        .get("name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    if seen.insert(name) {
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    // ② URI 链接文本：逐行 parse_line → mihomo 内联条目
+    if !saw_proxies {
+        for line in text.lines() {
+            let l = line.trim();
+            if l.is_empty() {
+                continue;
+            }
+            total += 1;
+            let Some(parsed) = crate::corecfg::parse_line(l) else {
+                continue;
+            };
+            if !CoreKind::Mihomo.supports(&parsed.proto) {
+                continue;
+            }
+            let name = uri_name(l).unwrap_or_else(|| parsed.display_name());
+            let cleaned = clean_label(&name);
+            if cleaned.is_empty() || !seen.insert(cleaned.clone()) {
+                continue;
+            }
+            if let Some(entry) = mihomo_entry(&parsed, &cleaned) {
+                entries.push(entry);
+            } else {
+                seen.remove(&cleaned);
+            }
+        }
+    }
+
+    let kept = entries.len();
+    let yaml = if kept == 0 {
+        String::new()
+    } else {
+        let doc = serde_yaml::to_string(&serde_yaml::Value::Mapping(
+            serde_yaml::Mapping::from_iter(vec![(
+                serde_yaml::Value::from("proxies"),
+                serde_yaml::Value::Sequence(
+                    entries.into_iter().map(serde_yaml::Value::Mapping).collect(),
+                ),
+            )]),
+        ))
+        .unwrap_or_default()
+    };
+    Sanitized {
+        yaml,
+        kept,
+        dropped: total.saturating_sub(kept),
+        total,
+    }
+}
+
 async fn probe_delay(
     client: &reqwest::Client,
     base: &str,
@@ -1866,5 +1967,55 @@ mod tests {
                    ss://YWVzLTI1Ni1nY206cGFzcw==@2.2.2.2:8388#a\n";
         let got2 = filter_uri_by_names(dup, &names);
         assert_eq!(got2.len(), 1, "同名重复行只导出首条");
+    }
+
+    // ── sanitize_nodes_text（Android 导入 / 托盘订阅共用）──────────
+
+    const POISON: &str = "ss://15298f41-e80b-463a-b85b-0c903258a1c8@162.159.1.33:443\
+                           ?security=tls&encryption=none#meli_proxyy";
+
+    #[test]
+    fn sanitize_links_drops_the_kernel_poison_line() {
+        // 实测 v1.19.30：这条行会让**整个** file provider 初始化失败（0 节点），
+        // 而同批的其它行都是好的。洗完必须只剩好的那些。
+        let good = "ss://YWVzLTI1Ni1nY206cGFzcw==@1.2.3.4:8388#S";
+        let txt = format!("{good}\n{POISON}\n");
+        let r = sanitize_nodes_text(&txt);
+        assert_eq!(r.total, 2);
+        assert_eq!(r.kept, 1, "坏行必须被剔掉");
+        assert_eq!(r.dropped, 1);
+        assert!(r.yaml.starts_with("proxies:"), "{}", r.yaml);
+        assert!(!r.yaml.contains("162.159.1.33"), "坏行不能进 YAML: {}", r.yaml);
+        assert!(r.yaml.contains("1.2.3.4"));
+        // mihomo 内联 proxies 重名整份拒收 → 同名只留首条
+        let dup = format!("{good}\nss://YWVzLTI1Ni1nY206cGFzcw==@5.6.7.8:8388#S\n");
+        assert_eq!(sanitize_nodes_text(&dup).kept, 1, "同名只留首条");
+    }
+
+    #[test]
+    fn sanitize_keeps_original_when_not_a_node_list() {
+        // 出厂模板教用户填的就是这种：`proxy-providers: type: http` 的订阅配置。
+        // 洗不出节点时必须报 kept=0（yaml 空串），让调用方保留原文 ——
+        // 覆写等于替用户把订阅删了。
+        let sub = "proxy-providers:\n  ghboost:\n    type: http\n    url: \"https://x/y\"\n";
+        let r = sanitize_nodes_text(sub);
+        assert_eq!(r.kept, 0);
+        assert_eq!(r.dropped, 0, "不是节点清单就不算「丢节点」");
+        assert!(r.yaml.is_empty());
+    }
+
+    #[test]
+    fn sanitize_passthrough_clash_yaml_with_bad_entry() {
+        // Clash 块走结构校验：缺 server/port 的条目丢掉，其余原样透传
+        // （port 是字符串 "443" 这种也要纠偏 —— 真实订阅里到处都是）。
+        let yaml = "proxies:\n\
+                    - {name: a, type: ss, server: 1.2.3.4, port: '8388', cipher: aes-256-gcm, password: p}\n\
+                    - {name: b, type: ss, server: 5.6.7.8, port: 9000, cipher: aes-256-gcm, password: p}\n\
+                    - {name: broken, type: ss}\n";
+        let r = sanitize_nodes_text(yaml);
+        assert_eq!(r.kept, 2, "缺 server/port 的条目丢掉，其余透传");
+        assert_eq!(r.dropped, 1);
+        assert!(r.yaml.contains("port: 8388"), "字符串端口要纠偏: {}", r.yaml);
+        assert!(!r.yaml.contains("'8388'"));
     }
 }

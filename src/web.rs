@@ -713,8 +713,13 @@ const LINK_SCHEMES: &[&str] = &[
 /// 判断输入是订阅网址还是节点链接。
 ///
 /// 只做**分流**，不做解析 —— 解析是内核的活，自己写就是造轮子 + 永远追不上新协议。
-/// 实测（mihomo v1.19.30）：`type: file` provider 能吃原始链接、能吃 base64、
-/// 能吃五种协议混排，全部正确解析，所以这里只要别误杀就行。
+/// 实测（mihomo v1.19.30，2026-09-26 逐条核过）：
+/// - `type: file` provider **大部分**坏行只 warning 跳过（20 条里 1 条 cipher 认不出 → 仍载入 19 条）；
+/// - 但 `ss://<uuid>@host:443?security=tls&encryption=none` 这种（UUID 当 userinfo、
+///   没有 method）会让 **整个 provider 初始化失败** → 0 节点：
+///   `initial proxy provider subscription error: proxy 19 error: ss 162.159.1.33:443
+///    cipher: ... unknown method: ...`
+///   落盘前先按行过一道（[split_parsable_links]）就是为这一条兜底。
 fn classify_subscription(input: &str) -> Result<NodeSource, String> {
     let s = input.trim();
     if s.is_empty() {
@@ -782,6 +787,36 @@ fn file_provider(path: &std::path::Path) -> String {
          health-check:\n      enable: true\n      \
          url: https://www.gstatic.com/generate_204\n      interval: 300\n"
     )
+}
+
+/// 落盘前按行剔除内核一定不认的链接。返回 (留下的行, 剔掉的行数)。
+///
+/// **为什么必须做**：file provider 对「认不出的行」有两种反应 ——
+/// 多数是逐行 warning 跳过，但 `ss://<uuid>@host?security=tls&encryption=none`
+/// 这类（UUID 当 userinfo、没有 cipher）会让**整个 provider 初始化失败**，
+/// 20 条好节点 + 1 条这种行 = 0 节点（实测 mihomo v1.19.30，log:
+/// `initial proxy provider ... error: proxy 19 error: ss ... unknown method`）。
+/// 表现就是 UI 报「内核没能认出这些链接里的任何节点」，而用户贴的其实没问题。
+///
+/// 判据用 `corecfg::parse_line`（我们自己那套解析器，覆盖 LINK_SCHEMES 全部协议），
+/// **不发射任何配置** —— 协议解析仍然只有内核在做，我们只负责剔掉自己都读不动的行。
+/// 协议前缀不在我们模型里的行**一律保留**：宁可让内核试，也不替用户扔节点。
+fn split_parsable_links(text: &str) -> (Vec<String>, usize) {
+    let mut keep: Vec<String> = Vec::new();
+    let mut bad = 0usize;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        let known = LINK_SCHEMES.iter().any(|p| l.to_ascii_lowercase().starts_with(*p));
+        if !known || crate::corecfg::parse_line(l).is_some() {
+            keep.push(l.to_string());
+        } else {
+            bad += 1;
+        }
+    }
+    (keep, bad)
 }
 
 /// 订阅配置 —— 关键点：**一行协议解析都不写**。
@@ -1094,6 +1129,8 @@ fn do_subscribe(input: &str, mixed_port: u16, kernel: &str) -> Result<Value, Str
 
     // file provider 要读的那份文本，和配置放在同一个目录（内核的 -d 就是这里）。
     let is_links = matches!(source, NodeSource::Links(_));
+    // 内核一定不认的行先剔掉：留着会让**整个** provider 初始化失败 → 0 节点。
+    let mut dropped_bad = 0usize;
     let provider = match &source {
         NodeSource::Url(u) => http_provider(u),
         NodeSource::Links(text) => {
@@ -1102,7 +1139,12 @@ fn do_subscribe(input: &str, mixed_port: u16, kernel: &str) -> Result<Value, Str
                 .parent()
                 .map(|d| d.join("nodes.txt"))
                 .ok_or_else(|| "配置文件路径异常".to_string())?;
-            std::fs::write(&path, format!("{text}\n"))
+            let (lines, bad) = split_parsable_links(text);
+            dropped_bad = bad;
+            if bad > 0 {
+                eprintln!("[subscribe] 剔除 {bad} 条内核一定不认的链接");
+            }
+            std::fs::write(&path, format!("{}\n", lines.join("\n")))
                 .map_err(|e| format!("写入节点文件失败: {e}"))?;
             file_provider(&path)
         }
@@ -1134,11 +1176,16 @@ fn do_subscribe(input: &str, mixed_port: u16, kernel: &str) -> Result<Value, Str
         }
         *slot = None;
         let _ = crate::proxy::unset_proxy();
-        return Err("内核没能认出这些链接里的任何节点。\n\
-             请确认整条链接是完整的（从 vless:// 一路到 #备注都要复制到）。\n\
-             一次贴了很多条的话，先只贴一条试试 —— \n\
-             只要有一条格式坏掉，内核会把整批都丢掉（不是跳过那一条）。"
-            .to_string());
+        let dropped_note = if dropped_bad > 0 {
+            format!("（另有 {dropped_bad} 条格式无法识别的链接已被自动剔除）\n")
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "内核没能认出这些链接里的任何节点。\n\
+             {dropped_note}请确认整条链接是完整的（从 vless:// 一路到 #备注都要复制到）。\n\
+             一次贴了很多条的话，先只贴一条试试。"
+        ));
     }
     if nodes == 0 {
         // 网址的情况不判死：可能是对方服务器慢，也可能订阅要带特殊 header。
@@ -1173,6 +1220,7 @@ fn do_subscribe(input: &str, mixed_port: u16, kernel: &str) -> Result<Value, Str
         "mixed_port": mixed_port,
         "api_port": api_port,
         "nodes": nodes,
+        "dropped_bad": dropped_bad,
         "proxy_ok": proxy_ok,
         "system_proxy": proxy_state,
     }))
@@ -1464,6 +1512,28 @@ mod tests {
             NodeSource::Url(_) => "Url",
             NodeSource::Links(_) => "Links",
         }
+    }
+
+    /// 回归护栏：内核一定不认的行，必须在落盘前剔掉。
+    ///
+    /// file provider 对「认不出的行」有两种反应：多数逐行 warning 跳过，
+    /// 但 `ss://<uuid>@host?security=tls&encryption=none`（UUID 当 userinfo、
+    /// 没有 cipher）会让**整个 provider 初始化失败** —— 实测 mihomo v1.19.30：
+    /// 20 条好节点 + 1 条这种行 = 0 节点（log: `initial proxy provider ...
+    /// unknown method`）。用户看到的却是「内核没能认出这些链接里的任何节点」。
+    #[test]
+    fn 落盘前要剔掉内核一定不认的行() {
+        let good = "ss://YWVzLTI1Ni1nY206cGFzcw==@1.2.3.4:8388#S";
+        let bad = "ss://15298f41-e80b-463a-b85b-0c903258a1c8@162.159.1.33:443\
+                   ?security=tls&encryption=none#meli_proxyy";
+        let (lines, dropped) = split_parsable_links(&format!("{good}\n{bad}\n"));
+        assert_eq!(dropped, 1, "坏行必须剔掉");
+        assert_eq!(lines, vec![good.to_string()]);
+
+        // 不认识的协议前缀一律保留：宁可让内核试，也不替用户扔节点
+        let (kept, dropped2) = split_parsable_links("ssr://xxx@1.2.3.4:1234#A\n");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(dropped2, 0);
     }
 
     /// 回归护栏：订阅缓存档必须**按网址区分**。

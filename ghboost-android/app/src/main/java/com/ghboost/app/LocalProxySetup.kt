@@ -3,6 +3,7 @@ package com.ghboost.app
 import android.content.Context
 import android.util.Log
 import java.io.File
+import org.json.JSONObject
 
 /**
  * 使用者第一次按 Start 时，本机还没有可用的 SOCKS5 代理。
@@ -275,21 +276,70 @@ object LocalProxySetup {
             return false
         }
 
+        val out = sanitize(text) ?: text
+
         val dst = providerFile(context)
-        if (dst.isFile && runCatching { dst.readText() }.getOrNull() == text) {
+        if (dst.isFile && runCatching { dst.readText() }.getOrNull() == out) {
             Log.i(TAG, "import: already up to date")
             return false
         }
 
         return try {
             dst.parentFile?.mkdirs()
-            dst.writeText(text)
+            dst.writeText(out)
             Log.i(TAG, "imported nodes: ${src.absolutePath} -> ${dst.absolutePath}")
             true
         } catch (e: Exception) {
             Log.w(TAG, "import nodes failed", e)
             false
         }
+    }
+
+    /**
+     * 交给 Rust 侧（`corecfg::parse_line` → `mihomo_entry`）把清单洗成一份
+     * **保证能被 mihomo 载入**的 `proxies:` YAML。
+     *
+     * 为什么要洗：mihomo 的 `type: file` provider 是**原子**解析，一行坏节点
+     * （`ss://<uuid>@host?security=tls&encryption=none` 这种 —— UUID 当 userinfo、
+     * 没有 cipher）会让整个 provider 初始化失败，20 条好节点 + 1 条这种行 = 0 节点。
+     * 实测 2026-09-26（mihomo v1.19.30）日志：
+     * `initial proxy provider ... error: proxy 19 error: ss ... unknown method`。
+     * 而 [hasRealNodes] 只看「有没有占位标记」，那种情况下它返回 true ——
+     * 于是 Start 可按、VPN 显示已连接、每个请求都失败。比直接报错更难排查。
+     *
+     * 洗不干净时（`kept == 0`）返回 null，调用方**保留用户原文**：那份文件
+     * 多半不是节点清单（例如 `proxy-providers: type: http` 的订阅配置，
+     * 出厂模板的注释里就教用户这么改），覆写等于替用户把订阅删了。
+     */
+    private fun sanitize(text: String): String? = try {
+        val r = JSONObject(GhBoostCore.nativeSanitizeNodes(text))
+        val kept = r.optInt("kept", 0)
+        val yaml = r.optString("yaml", "")
+        when {
+            kept <= 0 || yaml.isBlank() -> {
+                Log.i(TAG, "sanitize: kept=0, not a node list; keeping original text")
+                null
+            }
+            r.optInt("dropped", 0) > 0 -> {
+                Log.w(
+                    TAG,
+                    "sanitize: kept $kept, dropped ${r.optInt("dropped")}" +
+                        " of ${r.optInt("total")} (kernel would drop the whole batch)"
+                )
+                yaml
+            }
+            else -> {
+                Log.i(TAG, "sanitize: kept $kept, all clean")
+                yaml
+            }
+        }
+    } catch (e: Throwable) {
+        // .so 里没有这个符号（老 FFI 库）也不该让导入失败：原文照用。
+        // 抓 Throwable 而不是 Exception —— UnsatisfiedLinkError 是 Error 不是
+        // Exception，符号拼错时只有抓 Throwable 才兜得住（这正是 GhBoostCore.kt
+        // 开头那段历史坑要防的事）。
+        Log.w(TAG, "sanitize: unavailable, keeping original text", e)
+        null
     }
 
     /** 外部导入文件应该放的位置，给 UI 显示用。 */

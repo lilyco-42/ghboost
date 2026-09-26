@@ -282,6 +282,29 @@ pub unsafe extern "C" fn ghboost_add(params: *const c_char) -> *mut c_char {
     }
 }
 
+/// 清洗一份外来节点清单（链接文本或 Clash `proxies:`），返回可安全写进
+/// mihomo `type: file` provider 的 YAML（JSON 串： `{yaml, kept, dropped, total}`）。
+///
+/// Android 导入节点 / 托盘订阅共用。存在的理由：file provider 是**原子**解析，
+/// 一行坏节点（`ss://<uuid>@host?security=tls&encryption=none` 这种）会让整个
+/// provider 初始化失败 → 0 节点，而 UI 只看得到「已连接但没网」。
+///
+/// `kept == 0` 表示这份文本不是节点清单（例如用户填的是 `proxy-providers: type: http`
+/// 的订阅配置），`yaml` 为空串 —— 调用方必须保留用户原文。
+///
+/// # Safety
+/// `text` 可为 NULL 或指向 UTF-8 字符串；返回的指针需由调用方用 `ghboost_free` 释放。
+#[no_mangle]
+pub unsafe extern "C" fn ghboost_sanitize_nodes(text: *const c_char) -> *mut c_char {
+    if text.is_null() {
+        return ok_json(serde_json::json!({
+            "yaml": "", "kept": 0, "dropped": 0, "total": 0
+        }));
+    }
+    let input = CStr::from_ptr(text).to_string_lossy().into_owned();
+    ok_json(serde_json::to_value(nodes::sanitize_nodes_text(&input)).unwrap_or_default())
+}
+
 /// 版本信息（返回 JSON，需 `ghboost_free` 释放）。
 ///
 /// # Safety

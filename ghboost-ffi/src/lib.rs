@@ -281,6 +281,30 @@ mod android {
         to_jstring(&mut env, exec_core::status().to_string())
     }
 
+    /// 清洗外来节点清单（链接文本 / Clash `proxies:`），返回
+    /// `{"yaml","kept","dropped","total"}`。`kept == 0` 时调用方要保留原文。
+    #[no_mangle]
+    pub extern "system" fn Java_com_ghboost_app_GhBoostCore_nativeSanitizeNodes(
+        mut env: JNIEnv,
+        _class: JClass,
+        text: JString,
+    ) -> jstring {
+        let text_str = from_jstring(&mut env, &text);
+        let text_c = std::ffi::CString::new(text_str).unwrap_or_default();
+
+        let result = unsafe { ghboost::ghboost_sanitize_nodes(text_c.as_ptr()) };
+
+        let result_str = unsafe {
+            std::ffi::CStr::from_ptr(result)
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        unsafe { ghboost::ghboost_free(result) };
+
+        to_jstring(&mut env, result_str)
+    }
+
     #[no_mangle]
     pub extern "system" fn Java_com_ghboost_app_GhBoostCore_nativeVersion(
         mut env: JNIEnv,
