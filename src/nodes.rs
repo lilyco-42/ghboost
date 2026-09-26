@@ -1394,14 +1394,17 @@ pub fn sanitize_nodes_text(text: &str) -> Sanitized {
     let yaml = if kept == 0 {
         String::new()
     } else {
-        serde_yaml::to_string(&serde_yaml::Value::Mapping(
-            serde_yaml::Mapping::from_iter(vec![(
+        serde_yaml::to_string(&serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter(
+            vec![(
                 serde_yaml::Value::from("proxies"),
                 serde_yaml::Value::Sequence(
-                    entries.into_iter().map(serde_yaml::Value::Mapping).collect(),
+                    entries
+                        .into_iter()
+                        .map(serde_yaml::Value::Mapping)
+                        .collect(),
                 ),
-            )]),
-        ))
+            )],
+        )))
         .unwrap_or_default()
     };
     Sanitized {
@@ -2005,7 +2008,11 @@ mod tests {
         assert_eq!(r.kept, 1, "坏行必须被剔掉");
         assert_eq!(r.dropped, 1);
         assert!(r.yaml.starts_with("proxies:"), "{}", r.yaml);
-        assert!(!r.yaml.contains("162.159.1.33"), "坏行不能进 YAML: {}", r.yaml);
+        assert!(
+            !r.yaml.contains("162.159.1.33"),
+            "坏行不能进 YAML: {}",
+            r.yaml
+        );
         assert!(r.yaml.contains("1.2.3.4"));
         // mihomo 内联 proxies 重名整份拒收 → 同名只留首条
         let dup = format!("{good}\nss://YWVzLTI1Ni1nY206cGFzcw==@5.6.7.8:8388#S\n");
@@ -2035,7 +2042,11 @@ mod tests {
         let r = sanitize_nodes_text(yaml);
         assert_eq!(r.kept, 2, "缺 server/port 的条目丢掉，其余透传");
         assert_eq!(r.dropped, 1);
-        assert!(r.yaml.contains("port: 8388"), "字符串端口要纠偏: {}", r.yaml);
+        assert!(
+            r.yaml.contains("port: 8388"),
+            "字符串端口要纠偏: {}",
+            r.yaml
+        );
         assert!(!r.yaml.contains("'8388'"));
     }
 }
