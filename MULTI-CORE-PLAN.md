@@ -80,6 +80,27 @@
 - [x] W9 README 强调多内核（矩阵表 + 使用说明）+ 根 THIRD-PARTY 补 xray/sing-box 段 + 本文件勾选（2026-09-25）
 - [x] W10 验证：CI 全绿 → Windows tray 实跑切三内核 → 模拟器 APK 装机切内核 + logcat 实测（2026-09-25 三闸全绿 `f62bcbb`+`fd26358`+`ab20208`，run 36090061323/36091341002/36092012210+对应 tray、build-all；桌面 mihomo/xray/sing-box 全链矩阵 = subscribe→独占互斥→E2E socks/http 200→stop 清场＋注册表快照还原，Android auto/內建 meow/mihomo/xray/sing-box 五引擎 VPN 实测＋logcat 内核证据＋外部节点导入；实跑修复 6 bug：xray 同端口双 inbound、sing-box `ss`→`shadowsocks`、reg.exe HKCU 键拆参、coreman 吞死因、提权副本被当重复启动全死（交接回归 TEST_A/B 过）、meow 状态渲染 `null`）
 - [x] W11 Release `v0.3.15`：tag 出包 30 产物全齐（tray zip 含三内核；APK 含三内核）（2026-09-25 三 run 全绿：CI 36094857269 / tray 36094857256 / Build All Platforms 36094857254）
+- [x] W12 free-VPN 接入测试 + P1 修复：README → scan → test → add → 托盘订阅 → 出口 IP
+  全链打通（出口 `43.108.11.215` 直连基线 → `5.78.51.123` 节点），修掉两个用户可见缺陷
+  （2026-09-26）：
+  1. **mihomo file provider 的原子性** —— 一行 `ss://<uuid>@host?security=tls&encryption=none`
+     就能让整份 provider 初始化失败（20 好 + 1 坏 = 0 节点，症状是「显示已连接、
+     每个请求都失败」）。桌面落盘前预筛（`web.rs::split_parsable_links`，响应新增
+     `dropped_bad`），Android 新 C ABI `ghboost_sanitize_nodes` + JNI
+     `nativeSanitizeNodes`（`kept==0` 保留用户原文，那份文件可能是
+     `proxy-providers: type: http` 的订阅配置）。判据只用 `corecfg::MODELLED_SCHEMES`
+     ——「我们解析不了」≠「内核一定不认」，`ssr`/`juicity`/`mieru` 一律留给内核。
+     实测 `ok:false/0 节点` → `ok:true/nodes:20/dropped_bad:1`。
+  2. **行首 UTF-8 BOM 静默吃掉第一个节点** —— BOM 不是 Rust 认的空白，`trim()` 不动它
+     → 首行 scheme 变 `\u{feff}ss` → `modelled_link` 判「不是链接」直接 continue，
+     连 `total` 都不进，节点凭空消失。Android 侧 `kept 19, dropped 1 of 20` 与桌面
+     `nodes=20` 对不上才暴露出来。新增 `corecfg::strip_bom` 在 4 个入口统一收口，
+     修后设备实测 `kept 20, dropped 1 of 21`。
+  同时 `69d77a5` 的 scan 去重让重名行 708 → 86，`add` 导出从「22 行 20 个名
+  （`US-VPNine1`×3）」变成 20 行 20 个名。详见
+  `C:\Users\liuqi\AppData\Local\Temp\opencode\w10\freevpn_report_20260926.md`。
+  遗留（已记录未修）：`mihomo.rs` 排空 stdout/stderr（顺带解 64KB 死锁风险）、
+  `do_stop` 只关自己开的系统代理、Android 补 `nativeTest` 入口、cipher 白名单。
 
 ## 风险与坑（预防清单）
 
