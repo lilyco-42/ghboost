@@ -3,6 +3,9 @@
 //! 设计要点：
 //! - **扫描** 只做"聚合 + 分类 + 去重"：把每个订阅源按格式拆成
 //!   ① URI 文本行（`ss://`/`vless://`/...）或 ② Clash YAML 的 `proxies:` 块。
+//!   去重到 **name 全局唯一**（`dedup_scanned`）—— 下游三处都按 name 硬匹配，
+//!   同名多行会让 add 导出行数对不上 kept、导出的配置带重名被 mihomo 拒收。
+//!   顺带把每个节点的来源订阅 URL 记进索引（`NodeInfo.source`）。
 //! - **测速** 借用本机已有的 Mihomo 内核：把待测节点**内联**进临时 config 的
 //!   `proxies:`（URI 行经 `corecfg::parse_line` 过滤/转换，Clash 块结构校验后
 //!   原样保留），启动**独立实例**（独立端口 + external-controller + secret +
@@ -54,6 +57,7 @@ const MIHOMO_CANDIDATES: &[&str] = &[
 pub struct NodeInfo {
     pub name: String,
     pub protocol: String,
+    /// 来源订阅 URL（scan 时按行/名回填，test 据此补全 TestedNode.source）
     pub source: String,
     /// 原始 URI 行（如果是 URI 型），或空（Clash 型）
     pub raw: String,
@@ -429,6 +433,34 @@ fn clean_uri_name(line: &str) -> String {
     }
 }
 
+/// 扫描产物去重：整行相同 → 同名 → 跨池同名，全部只留首条。
+///
+/// 维持一条下游全都依赖的不变量：**`nodes_uri.txt` + `nodes_clash.yaml` 的
+/// name 全局唯一**。三处依赖它：
+/// 1. mihomo 的 proxy name 不允许重复，重名整份配置拒收（内联 `proxies:` 尤其致命）；
+/// 2. `add` 的 `nodes_good_uri.txt` 导出是按 name 硬匹配源行的 —— 同名多行会
+///    让导出行数 > kept，且导出的配置带重名照样被拒；
+/// 3. `test` 的索引回填按 name 建 map，重名会取错条目（source 串台）。
+///
+/// 同名跨池时 URI 池优先，与 `load_test_nodes` 的装载顺序一致。
+fn dedup_scanned(uri_lines: &mut Vec<String>, clash_proxies: &mut Vec<serde_yaml::Value>) {
+    uri_lines.sort();
+    uri_lines.dedup();
+    let mut seen: HashSet<String> = HashSet::new();
+    uri_lines.retain(|l| match uri_name(l) {
+        Some(n) => seen.insert(n),
+        // 无名行测速/导出都用不上（都按 uri_name 硬匹配），但仍原样保留
+        None => true,
+    });
+    clash_proxies.retain(|p| {
+        if let Some(n) = p.get("name").and_then(|x| x.as_str()) {
+            seen.insert(n.to_string())
+        } else {
+            false
+        }
+    });
+}
+
 /// 从 README 提取 raw.githubusercontent 订阅链接（剥掉 # 片段）
 fn extract_repo_sources(readme: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -610,7 +642,10 @@ pub async fn scan_core(
 
     let mut uri_lines: Vec<String> = Vec::new();
     let mut clash_proxies: Vec<serde_yaml::Value> = Vec::new();
-    let mut used_sources: HashSet<String> = HashSet::new();
+    // 行/名 → 来源 URL。索引的 source 字段靠它回填（可追溯到具体订阅），
+    // 键在下面清洗名时同步换成清洗后的行/名。
+    let mut uri_src: HashMap<String, String> = HashMap::new();
+    let mut clash_src: HashMap<String, String> = HashMap::new();
     let mut sources_ok = 0usize;
 
     while let Some(res) = set.join_next().await {
@@ -622,36 +657,46 @@ pub async fn scan_core(
             });
             let Some(text) = text else { continue };
             sources_ok += 1;
-            used_sources.insert(url.clone());
             let (uris, clash) = classify(&text);
             for u in uris.into_iter().take(app.per_limit as usize) {
+                uri_src.insert(u.clone(), url.clone());
                 uri_lines.push(u);
             }
-            clash_proxies.extend(clash);
+            for c in clash {
+                if let Some(n) = c.get("name").and_then(|x| x.as_str()) {
+                    clash_src.insert(n.to_string(), url.clone());
+                }
+                clash_proxies.push(c);
+            }
         }
     }
 
     // 清理节点名：emoji/中文/空格会导致 mihomo REST 端点 `/proxies/{name}` 404，
-    // 清理为 ASCII 安全名后再写入，测速才能精确匹配。
-    uri_lines = uri_lines.into_iter().map(|l| clean_uri_name(&l)).collect();
+    // 清理为 ASCII 安全名后再写入，测速才能精确匹配。来源映射同步换键。
+    let mut uri_src_clean: HashMap<String, String> = HashMap::new();
+    uri_lines = uri_lines
+        .into_iter()
+        .map(|l| {
+            let cleaned = clean_uri_name(&l);
+            if let Some(src) = uri_src.get(&l) {
+                uri_src_clean.insert(cleaned.clone(), src.clone());
+            }
+            cleaned
+        })
+        .collect();
+    let mut clash_src_clean: HashMap<String, String> = HashMap::new();
     for p in &mut clash_proxies {
         if let Some(n) = p.get("name").and_then(|x| x.as_str()) {
-            p["name"] = serde_yaml::Value::String(clean_label(n));
+            let cleaned = clean_label(n);
+            if let Some(src) = clash_src.get(n) {
+                clash_src_clean.insert(cleaned.clone(), src.clone());
+            }
+            p["name"] = serde_yaml::Value::String(cleaned);
         }
     }
 
-    // 去重
-    uri_lines.sort();
-    uri_lines.dedup();
-    // clash 按 name 去重
-    let mut seen: HashSet<String> = HashSet::new();
-    clash_proxies.retain(|p| {
-        if let Some(n) = p.get("name").and_then(|x| x.as_str()) {
-            seen.insert(n.to_string())
-        } else {
-            false
-        }
-    });
+    // 去重：整行相同 → 同名 → 跨池同名
+    dedup_scanned(&mut uri_lines, &mut clash_proxies);
 
     // 写磁盘
     let uri_path = data_dir.join("nodes_uri.txt");
@@ -676,7 +721,7 @@ pub async fn scan_core(
         index.push(NodeInfo {
             name: name.clone(),
             protocol: proto,
-            source: "".into(),
+            source: uri_src_clean.get(u).cloned().unwrap_or_default(),
             raw: u.clone(),
         });
     }
@@ -691,10 +736,11 @@ pub async fn scan_core(
             .and_then(|x| x.as_str())
             .unwrap_or("?")
             .to_string();
+        let source = clash_src_clean.get(&name).cloned().unwrap_or_default();
         index.push(NodeInfo {
             name,
             protocol: proto,
-            source: "".into(),
+            source,
             raw: String::new(),
         });
     }
@@ -1316,13 +1362,7 @@ pub async fn add_core(app: AddParams, sink: &dyn Fn(&Event)) -> Result<serde_jso
     let mut good_uri: Vec<String> = Vec::new();
     if uri_path.exists() {
         let txt = std::fs::read_to_string(&uri_path).unwrap_or_default();
-        for line in txt.lines() {
-            if let Some(name) = uri_name(line) {
-                if alive_names.contains(&name) {
-                    good_uri.push(line.to_string());
-                }
-            }
-        }
+        good_uri = filter_uri_by_names(&txt, &alive_names);
     }
     let good_uri_path = dir.join("nodes_good_uri.txt");
     std::fs::write(&good_uri_path, good_uri.join("\n") + "\n")
@@ -1335,9 +1375,10 @@ pub async fn add_core(app: AddParams, sink: &dyn Fn(&Event)) -> Result<serde_jso
         let txt = std::fs::read_to_string(&clash_path).unwrap_or_default();
         if let Ok(v) = serde_yaml::from_str::<serde_yaml::Value>(&txt) {
             if let Some(arr) = v.get("proxies").and_then(|p| p.as_sequence()) {
+                let mut taken: HashSet<String> = HashSet::new();
                 for p in arr {
                     if let Some(n) = p.get("name").and_then(|x| x.as_str()) {
-                        if alive_names.contains(n) {
+                        if alive_names.contains(n) && taken.insert(n.to_string()) {
                             good_clash.push(p.clone());
                         }
                     }
@@ -1386,6 +1427,22 @@ pub async fn add_core(app: AddParams, sink: &dyn Fn(&Event)) -> Result<serde_jso
         elapsed_ms: 0,
     });
     Ok(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null))
+}
+
+/// 从 `nodes_uri.txt` 原文里挑出 name 命中 `names` 的行（`add` 的 good_uri 导出）。
+///
+/// 按 name 硬匹配，所以导出行数能对上 kept 的前提是源文件里 name 全局唯一
+/// —— `dedup_scanned` 负责保证这条不变量，这里再兜一层重复行。
+fn filter_uri_by_names(txt: &str, names: &HashSet<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for line in txt.lines() {
+        let Some(name) = uri_name(line) else { continue };
+        if names.contains(&name) && seen.insert(name) {
+            out.push(line.to_string());
+        }
+    }
+    out
 }
 
 /// 定位当前激活的 Clash Verge local profile
@@ -1762,5 +1819,52 @@ mod tests {
         assert!(mihomo_entry(&missing, "no-uuid").is_none());
         assert_eq!(clash_type("socks"), Some("socks5"));
         assert_eq!(clash_type("wireguard"), None);
+    }
+
+    #[test]
+    fn dedup_scanned_keeps_names_globally_unique() {
+        // 同名不同 server：实测 scan 产物里 `US-VPNine1` 出现过 3 条，
+        // add 按 name 硬匹配导出会多写 2 行，且导出的配置带重名被 mihomo 拒收
+        let mut uris: Vec<String> = vec![
+            "ss://YWVzLTI1Ni1nY206cGFzcw==@1.1.1.1:8388#dup".into(),
+            "ss://YWVzLTI1Ni1nY206cGFzcw==@2.2.2.2:8388#dup".into(),
+            "ss://YWVzLTI1Ni1nY206cGFzcw==@3.3.3.3:8388#other".into(),
+            "ss://YWVzLTI1Ni1nY206cGFzcw==@1.1.1.1:8388#other".into(),
+        ];
+        // clash：与 URI 同名的、自身重名的、缺 name 的
+        let yaml = "proxies:\n\
+                    - {name: dup, type: ss, server: 9.9.9.9, port: 1}\n\
+                    - {name: c1, type: ss, server: 8.8.8.8, port: 2}\n\
+                    - {name: c1, type: ss, server: 7.7.7.7, port: 3}\n\
+                    - {type: ss, server: 6.6.6.6, port: 4}\n";
+        let doc = serde_yaml::from_str::<serde_yaml::Value>(yaml).unwrap();
+        let mut blocks: Vec<serde_yaml::Value> = doc["proxies"].as_sequence().unwrap().clone();
+
+        dedup_scanned(&mut uris, &mut blocks);
+        assert_eq!(uris.len(), 2, "同名只留首行");
+        assert_eq!(uri_name(&uris[0]).as_deref(), Some("dup"));
+        assert_eq!(uri_name(&uris[1]).as_deref(), Some("other"));
+        let names: Vec<String> = blocks
+            .iter()
+            .map(|p| p["name"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(names, vec!["c1".to_string()], "跨池与自身重名都剔除");
+    }
+
+    #[test]
+    fn filter_uri_by_names_exports_exactly_kept_lines() {
+        let txt = "ss://YWVzLTI1Ni1nY206cGFzcw==@1.1.1.1:8388#a\n\
+                   ss://YWVzLTI1Ni1nY206cGFzcw==@2.2.2.2:8388#b\n\
+                   ss://YWVzLTI1Ni1nY206cGFzcw==@3.3.3.3:8388#c\n";
+        let names: HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let got = filter_uri_by_names(txt, &names);
+        assert_eq!(got.len(), 2, "导出行数 == kept");
+        assert!(!got.iter().any(|l| l.contains("3.3.3.3")));
+
+        // 旧数据目录（未按名去重）也不会导出重名行
+        let dup = "ss://YWVzLTI1Ni1nY206cGFzcw==@1.1.1.1:8388#a\n\
+                   ss://YWVzLTI1Ni1nY206cGFzcw==@2.2.2.2:8388#a\n";
+        let got2 = filter_uri_by_names(dup, &names);
+        assert_eq!(got2.len(), 1, "同名重复行只导出首条");
     }
 }
