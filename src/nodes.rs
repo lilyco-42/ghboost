@@ -2040,7 +2040,7 @@ mod tests {
 
     #[test]
     fn bom_line_still_parses_in_every_entry_point() {
-        use crate::corecfg::{modelled_link, strip_bom};
+        use crate::corecfg::{modelled_link, parse_line, strip_bom};
 
         let uri = "ss://YWVzLTI1Ni1nY206cGFzcw==@1.2.3.4:8388#BOM";
         let bom = format!("\u{feff}{uri}");

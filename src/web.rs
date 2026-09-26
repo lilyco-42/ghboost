@@ -809,7 +809,7 @@ fn split_parsable_links(text: &str) -> (Vec<String>, usize) {
     let mut keep: Vec<String> = Vec::new();
     let mut bad = 0usize;
     for line in text.lines() {
-        let l = line.trim();
+        let l = crate::corecfg::strip_bom(line);
         if l.is_empty() {
             continue;
         }
