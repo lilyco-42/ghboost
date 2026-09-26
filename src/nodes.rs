@@ -1355,7 +1355,7 @@ pub fn sanitize_nodes_text(text: &str) -> Sanitized {
     // ② URI 链接文本：逐行 parse_line → mihomo 内联条目
     if !saw_proxies {
         for line in text.lines() {
-            let l = line.trim();
+            let l = crate::corecfg::strip_bom(line);
             if l.is_empty() {
                 continue;
             }
@@ -2017,6 +2017,41 @@ mod tests {
         // mihomo 内联 proxies 重名整份拒收 → 同名只留首条
         let dup = format!("{good}\nss://YWVzLTI1Ni1nY206cGFzcw==@5.6.7.8:8388#S\n");
         assert_eq!(sanitize_nodes_text(&dup).kept, 1, "同名只留首条");
+    }
+
+    #[test]
+    fn sanitize_survives_utf8_bom_on_first_line() {
+        // Windows 记事本 / PowerShell 的 `>` 存出来的清单都带 BOM，而 BOM
+        // （U+FEFF）不是 Rust 认的空白 → 首行 scheme 变成 `\u{feff}ss`。
+        // 修之前：首行被 modelled_link 判成「不是链接」跳过，连 total 都不进，
+        // 21 行的文件报成「kept 19, dropped 1 of 20」，少的那个数就是它 ——
+        // 节点静默消失，用户完全看不见。
+        let good = "ss://YWVzLTI1Ni1nY206cGFzcw==@1.2.3.4:8388#first";
+        let txt = format!(
+            "\u{feff}{good}\n{POISON}\nss://YWVzLTI1Ni1nY206cGFzcw==@5.6.7.8:8388#second\n"
+        );
+        let r = sanitize_nodes_text(&txt);
+        assert_eq!(r.total, 3, "BOM 行也要算进 total");
+        assert_eq!(r.kept, 2, "BOM 行不能被吃掉");
+        assert_eq!(r.dropped, 1);
+        assert!(r.yaml.contains("1.2.3.4"), "首行必须留下: {}", r.yaml);
+        assert!(r.yaml.contains("5.6.7.8"));
+    }
+
+    #[test]
+    fn bom_line_still_parses_in_every_entry_point() {
+        use crate::corecfg::{modelled_link, strip_bom};
+
+        let uri = "ss://YWVzLTI1Ni1nY206cGFzcw==@1.2.3.4:8388#BOM";
+        let bom = format!("\u{feff}{uri}");
+        assert_eq!(strip_bom(&bom), uri);
+        assert!(modelled_link(&bom), "带 BOM 也算建模过的链接");
+        assert!(modelled_link(&format!("\u{feff}  {uri}  ")), "BOM + 空白");
+        let n = parse_line(&bom).expect("带 BOM 也必须解得开");
+        assert_eq!(n.server, "1.2.3.4");
+        assert_eq!(n.port, 8388);
+        // 非链接行（订阅配置那种）仍然不能被当成链接
+        assert!(!modelled_link("\u{feff}proxy-providers:"));
     }
 
     #[test]

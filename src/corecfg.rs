@@ -269,6 +269,19 @@ pub const MODELLED_SCHEMES: &[&str] = &[
     "snell",
 ];
 
+/// 掐掉行首的 UTF-8 BOM（U+FEFF）。
+///
+/// 为什么非做不可：Windows 上记事本 / PowerShell 的 `>` 重定向存出来的文本
+/// 默认带 BOM，而 `str::trim()` **不**把 U+FEFF 当空白（Rust 认的空白是
+/// Unicode White_Space，FEFF 是 Cf 类格式字符）。于是第一行的 scheme 变成
+/// `\u{feff}ss`，[modelled_link] 判它「不是链接」、[parse_line] 也解不出来 ——
+/// 节点**静默消失**，连 `dropped` 都不计（实测 2026-09-26：一份 21 行的清单
+/// 被报成「kept 19, dropped 1 of 20」，少的那个数就是 BOM 吃掉的首行）。
+/// 内核自己解析链接时是吃 BOM 的，所以只有我们这条路上会丢人。
+pub fn strip_bom(line: &str) -> &str {
+    line.trim().trim_start_matches('\u{feff}').trim()
+}
+
 /// 这行是不是我们**建模过**的节点链接。
 ///
 /// 为什么不能直接拿「[parse_line] 解析不了」当「内核一定不认」：mihomo 支持的
@@ -277,7 +290,7 @@ pub const MODELLED_SCHEMES: &[&str] = &[
 /// 「我们读不动 → 内核也读不动」这个推理（实测 mihomo v1.19.30 对
 /// `ss://<uuid>@host?security=tls&encryption=none` 是整份 provider 拒收）。
 pub fn modelled_link(line: &str) -> bool {
-    match line.trim().split_once("://") {
+    match strip_bom(line).split_once("://") {
         Some((scheme, _)) => MODELLED_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()),
         None => false,
     }
@@ -288,7 +301,7 @@ pub fn modelled_link(line: &str) -> bool {
 /// 支持：ss / vmess / vless / trojan / hysteria / hysteria2(hy2) / tuic /
 /// socks(socks5/socks5h) / http(s) / anytls / shadowtls / ssh / wireguard(wg) / snell。
 pub fn parse_line(raw: &str) -> Option<ParsedNode> {
-    let line = raw.trim();
+    let line = strip_bom(raw);
     let (scheme, rest) = line.split_once("://")?;
     let scheme = scheme.to_ascii_lowercase();
     let mut n = match scheme.as_str() {
