@@ -1359,6 +1359,17 @@ pub fn sanitize_nodes_text(text: &str) -> Sanitized {
             if l.is_empty() {
                 continue;
             }
+            // 只有「我们建模过、看着又确实是条链接」的行才算进 total：用户填的
+            // 这份文件也可能根本不是节点清单（例如 `proxy-providers: type: http`
+            // 的订阅配置，出厂模板注释里教的就是这么改），那些行数进 total 会让
+            // 日志报出「4 条里掉了 4 条」这种吓人且没意义的话。
+            //
+            // 我们没建模的协议（ssr / juicity / mieru）也**不能**算「丢节点」：
+            // 内联 `proxies:` 里放不下原始链接，只能算我们用不上（kept 不含它们，
+            // dropped 也不含它们），不该报成「内核不认」。
+            if !crate::corecfg::modelled_link(l) {
+                continue;
+            }
             total += 1;
             let Some(parsed) = crate::corecfg::parse_line(l) else {
                 continue;
@@ -1383,7 +1394,7 @@ pub fn sanitize_nodes_text(text: &str) -> Sanitized {
     let yaml = if kept == 0 {
         String::new()
     } else {
-        let doc = serde_yaml::to_string(&serde_yaml::Value::Mapping(
+        serde_yaml::to_string(&serde_yaml::Value::Mapping(
             serde_yaml::Mapping::from_iter(vec![(
                 serde_yaml::Value::from("proxies"),
                 serde_yaml::Value::Sequence(
@@ -1978,6 +1989,15 @@ mod tests {
     fn sanitize_links_drops_the_kernel_poison_line() {
         // 实测 v1.19.30：这条行会让**整个** file provider 初始化失败（0 节点），
         // 而同批的其它行都是好的。洗完必须只剩好的那些。
+        //
+        // 为什么我们能剔掉它：userinfo `15298f41-…` 不是 `method:password`。
+        // b64_flex 会先试 STANDARD（`-` 不在标准表里 → 失败），再试 URL_SAFE
+        // （能解出 27 字节，但 `F1 FE` 不是合法 UTF-8 → from_utf8 失败），
+        // 两条路都拿不到字符串，就走 `split_once(':')` 分支，而 UUID 里没有
+        // 冒号 → parse_line 返回 None。
+        // **这条依赖是有脆性的**：哪天 b64_flex 改用 from_utf8_lossy，它就会
+        // 解析出一个垃圾 method，内核对不上 cipher 又会整批拒收。这个测试就是
+        // 那根保险丝 —— 有人动 b64_flex 时它会先红。
         let good = "ss://YWVzLTI1Ni1nY206cGFzcw==@1.2.3.4:8388#S";
         let txt = format!("{good}\n{POISON}\n");
         let r = sanitize_nodes_text(&txt);

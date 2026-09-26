@@ -242,6 +242,47 @@ pub fn emit(kind: CoreKind, nodes: &[ParsedNode], opts: &EmitOptions) -> Result<
 // share URI 解析
 // ─────────────────────────────────────────────────────────────
 
+/// [parse_line] 建模了的协议前缀（小写，不含 `://`）。
+///
+/// 与 [parse_line] 的 match 分支一一对应 —— 改那边就要改这里，否则
+/// [modelled_link] 会开始替内核做它做不了的判断。
+pub const MODELLED_SCHEMES: &[&str] = &[
+    "ss",
+    "vmess",
+    "vless",
+    "trojan",
+    "hysteria",
+    "hysteria2",
+    "hy2",
+    "hy",
+    "tuic",
+    "socks",
+    "socks5",
+    "socks5h",
+    "http",
+    "https",
+    "wireguard",
+    "wg",
+    "anytls",
+    "shadowtls",
+    "ssh",
+    "snell",
+];
+
+/// 这行是不是我们**建模过**的节点链接。
+///
+/// 为什么不能直接拿「[parse_line] 解析不了」当「内核一定不认」：mihomo 支持的
+/// 协议比我们建模的多（`ssr` / `juicity` / `mieru`），内核本来能用的节点会被
+/// 连坐删掉 —— 那是自己制造新故障。只有**我们确实建模了**这个协议，才轮到
+/// 「我们读不动 → 内核也读不动」这个推理（实测 mihomo v1.19.30 对
+/// `ss://<uuid>@host?security=tls&encryption=none` 是整份 provider 拒收）。
+pub fn modelled_link(line: &str) -> bool {
+    match line.trim().split_once("://") {
+        Some((scheme, _)) => MODELLED_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()),
+        None => false,
+    }
+}
+
 /// 解析一行 v2rayN / NekoBox 风格 share URI。
 ///
 /// 支持：ss / vmess / vless / trojan / hysteria / hysteria2(hy2) / tuic /

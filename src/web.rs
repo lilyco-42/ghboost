@@ -798,9 +798,13 @@ fn file_provider(path: &std::path::Path) -> String {
 /// `initial proxy provider ... error: proxy 19 error: ss ... unknown method`）。
 /// 表现就是 UI 报「内核没能认出这些链接里的任何节点」，而用户贴的其实没问题。
 ///
-/// 判据用 `corecfg::parse_line`（我们自己那套解析器，覆盖 LINK_SCHEMES 全部协议），
-/// **不发射任何配置** —— 协议解析仍然只有内核在做，我们只负责剔掉自己都读不动的行。
-/// 协议前缀不在我们模型里的行**一律保留**：宁可让内核试，也不替用户扔节点。
+/// 判据用 `corecfg::parse_line`（我们自己那套解析器，覆盖 MODELLED_SCHEMES
+/// 全部协议），**不发射任何配置** —— 协议解析仍然只有内核在做，我们只负责剔掉
+/// 自己都读不动的行。
+///
+/// 只对**我们建模过**的协议动手（`corecfg::modelled_link`）：`ssr://` /
+/// `juicity://` / `mieru://` 这类 mihomo 认得、我们没建模的行一律保留 ——
+/// 「我们解析不了」不等于「内核也认不了」，拿它当删除依据就是在制造新故障。
 fn split_parsable_links(text: &str) -> (Vec<String>, usize) {
     let mut keep: Vec<String> = Vec::new();
     let mut bad = 0usize;
@@ -809,8 +813,7 @@ fn split_parsable_links(text: &str) -> (Vec<String>, usize) {
         if l.is_empty() {
             continue;
         }
-        let known = LINK_SCHEMES.iter().any(|p| l.to_ascii_lowercase().starts_with(*p));
-        if !known || crate::corecfg::parse_line(l).is_some() {
+        if !crate::corecfg::modelled_link(l) || crate::corecfg::parse_line(l).is_some() {
             keep.push(l.to_string());
         } else {
             bad += 1;
@@ -1530,7 +1533,8 @@ mod tests {
         assert_eq!(dropped, 1, "坏行必须剔掉");
         assert_eq!(lines, vec![good.to_string()]);
 
-        // 不认识的协议前缀一律保留：宁可让内核试，也不替用户扔节点
+        // 我们**没建模**的协议一律保留：mihomo 认 ssr / juicity / mieru，
+        // 「我们解析不了」不等于「内核也认不了」，拿它当删除依据是在制造新故障
         let (kept, dropped2) = split_parsable_links("ssr://xxx@1.2.3.4:1234#A\n");
         assert_eq!(kept.len(), 1);
         assert_eq!(dropped2, 0);
