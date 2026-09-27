@@ -16,6 +16,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -29,11 +30,32 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnScan: Button
     private lateinit var btnStart: Button
     private lateinit var btnStop: Button
+    private lateinit var btnTest: Button
+    private lateinit var tvTestHint: TextView
     private lateinit var spinnerEngine: Spinner
     private lateinit var tvEngineInfo: TextView
 
     /** 三内核可用性（id → available），`nativeListCores` 载入后填充。 */
     private val coreAvail = mutableMapOf<String, Boolean>()
+
+    /**
+     * 三内核二进制路径（id → path），同上。
+     *
+     * 测速要自己拉一个 mihomo 子进程（`nativeTest` 内部就是 exec mihomo + 问它
+     * 自己的 REST API），而 App 内置的「內建 meow」是**同进程**内核、没有可执行
+     * 文件可指 —— 所以这条路径只能走 `nativeLibraryDir` 里那个 `libmihomo.so`。
+     */
+    private val corePaths = mutableMapOf<String, String>()
+
+    /**
+     * 上一次 Scan 真正用的数据目录（`ScanResult.data_dir` 原样存）。
+     *
+     * 测速必须喂**同一个**目录的 `nodes_uri.txt` / `nodes_clash.yaml`。不能写死
+     * `filesDir/nodes_data`：`resolve_data_dir` 在目录不可写时会回退到
+     * `fallback_data_dir()`，那时候 Scan 成功、节点却落在别处，写死的路径
+     * 就会读到空目录，报「请先运行 scan」—— 而 scan 明明刚跑完。
+     */
+    private var scanDataDir: String? = null
 
     /**
      * Spinner 显示名，**就地改写**（+ notifyDataSetChanged），不换 adapter：
@@ -71,6 +93,15 @@ class MainActivity : AppCompatActivity() {
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 101
 
         /**
+         * 上次 Scan 的数据目录（存 prefs 而不是只留内存）。
+         *
+         * 只留内存的话，Activity 每次重建（转屏 / 从后台被回收）都会把
+         * `scanDataDir` 清空，于是明明上次扫过、清单还在盘上，按 Test 却提示
+         * 「先按 Scan」—— 逼用户重扫一次才能测。
+         */
+        private const val PREF_SCAN_DIR = "scan_data_dir"
+
+        /**
          * 内核选择器的 token 与显示名（顺序即 Spinner 顺序）。
          * token 必须与 Rust `CoreKind::parse` 别名、Service 的
          * [GhBoostVpnService.PREF_ENGINE] 取值完全一致 —— 三处共用一套值。
@@ -91,6 +122,8 @@ class MainActivity : AppCompatActivity() {
         btnScan = findViewById(R.id.btnScan)
         btnStart = findViewById(R.id.btnStart)
         btnStop = findViewById(R.id.btnStop)
+        btnTest = findViewById(R.id.btnTest)
+        tvTestHint = findViewById(R.id.tvTestHint)
         spinnerEngine = findViewById(R.id.spinnerEngine)
         tvEngineInfo = findViewById(R.id.tvEngineInfo)
         setupEngineSelector()
@@ -100,6 +133,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 GhBoostCore.nativeInit()
                 GhBoostCore.nativeSetHomeDir(filesDir.absolutePath)
+                restoreScanDataDir()
                 val version = GhBoostCore.nativeVersion()
                 // nativeVersion() 回的是 JSON（例如 {"name":"ghboost","version":"0.3.12"}），
                 // 直接拼進字串使用者就會看到一坨原始 JSON。取出 version 欄位，
@@ -173,6 +207,7 @@ class MainActivity : AppCompatActivity() {
                         buildConfigHint(configChanged, configReady, forwardingReady)
                     }
                     refreshEngineAvailability()
+                    updateTestHint()
                     updateButtons()
                 }
             } catch (e: Exception) {
@@ -181,6 +216,7 @@ class MainActivity : AppCompatActivity() {
                     // 可用性没载入也别让状态行卡在「載入中」——
                     // coreAvail 是空的，全 ✕/只留內建就是此刻的真相。
                     refreshEngineAvailability()
+                    updateTestHint()
                 }
             }
         }
@@ -188,6 +224,7 @@ class MainActivity : AppCompatActivity() {
         btnScan.setOnClickListener { scanNodes() }
         btnStart.setOnClickListener { startVpn() }
         btnStop.setOnClickListener { stopVpn() }
+        btnTest.setOnClickListener { testNodes() }
 
         requestNotificationPermissionIfNeeded()
         updateButtons()
@@ -330,14 +367,18 @@ class MainActivity : AppCompatActivity() {
                 GhBoostVpnService.ENGINE_EMBEDDED,
             ) ?: GhBoostVpnService.ENGINE_EMBEDDED
 
-    /** `nativeListCores` 的 JSON → `coreAvail`（解析失败就当全缺，只留內建）。 */
+    /** `nativeListCores` 的 JSON → `coreAvail` / `corePaths`（解析失败就当全缺，只留內建）。 */
     private fun parseCores(raw: String) {
         if (raw.isBlank()) return
         try {
             val arr = org.json.JSONObject(raw).getJSONArray("cores")
             for (i in 0 until arr.length()) {
                 val c = arr.getJSONObject(i)
-                coreAvail[c.optString("id")] = c.optBoolean("available")
+                val id = c.optString("id")
+                coreAvail[id] = c.optBoolean("available")
+                if (coreAvail[id] == true) {
+                    corePaths[id] = c.optString("path")
+                }
             }
         } catch (e: Exception) {
             Log.w("GhBoost", "parseCores failed: $raw", e)
@@ -425,6 +466,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * FFI 结果里的 `error` 字段，非空才真的有错。
+     *
+     * 判据只能是「有没有 error 字段」：FFI 层成功时把结果原样序列化，
+     * **没有** `ok:true` 可查；失败时回 `{"error":"…"}`。
+     *
+     * 另外 org.json 的 `optString` 撞上 JSON null 会回字面量 `"null"`
+     * （不是空串）—— 一并当空处理，免得哪天序列化器改了字段就误判成成功。
+     */
+    private fun errOf(o: org.json.JSONObject): String {
+        val e = o.optString("error")
+        return if (e == "null") "" else e
+    }
+
     private fun scanNodes() {
         tvNodes.text = "Scanning..."
         btnScan.isEnabled = false
@@ -432,17 +487,138 @@ class MainActivity : AppCompatActivity() {
             try {
                 // nativeScan 需要一个 JSON 参数串；"{}" = 全部走默认参数
                 val json = GhBoostCore.nativeScan("{}")
+                val o = org.json.JSONObject(json)
                 withContext(Dispatchers.Main) {
                     tvNodes.text = json
-                    tvStatus.text = "Scan complete"
+                    // 以前这里无条件写 "Scan complete"，而 nativeScan 失败也
+                    // return JSON（不抛异常）—— 于是「创建数据目录失败」被
+                    // 显示成扫描成功（2026-09-26 AVD 实测）。
+                    val err = errOf(o)
+                    if (err.isBlank()) {
+                        val dir = o.optString("data_dir").takeIf { it.isNotBlank() }
+                        scanDataDir = dir
+                        // 记下来，下次进 App 不用重扫（见 PREF_SCAN_DIR）
+                        enginePrefs().edit().putString(PREF_SCAN_DIR, dir).apply()
+                        val n = o.optInt("uri_nodes") + o.optInt("clash_nodes")
+                        tvStatus.text = "Scan complete: $n nodes"
+                    } else {
+                        scanDataDir = null
+                        enginePrefs().edit().remove(PREF_SCAN_DIR).apply()
+                        tvStatus.text = "Scan failed: $err"
+                    }
+                    updateTestHint()
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
+                    scanDataDir = null
+                    enginePrefs().edit().remove(PREF_SCAN_DIR).apply()
                     tvNodes.text = "Scan failed: ${e.message}"
+                    tvStatus.text = "Scan failed: ${e.message}"
+                    updateTestHint()
                 }
             } finally {
                 withContext(Dispatchers.Main) { btnScan.isEnabled = true }
             }
+        }
+    }
+
+    /**
+     * 测速（`nativeTest`）—— Android 侧第一次有 `alive` 的入口。
+     *
+     * 为什么必须在 App 里做而不是靠脚本：`nativeTest` 自己 exec 一个 mihomo
+     * 子进程、问它的 REST API 拿延迟。要在设备上证明「Sanitize 之后的清单
+     * 真的连得通」，就得有人在设备上按这个按钮；以前只有 FFI 导出，指标
+     * 在手机上没有任何入口（v0.3.15 报告 4.2）。
+     *
+     * 参数全部显式给，两个都不能靠默认：
+     * - `mihomo`：默认探测只认 Windows/Linux 路径和 PATH 上的 `mihomo`，
+     *   Android 上必然落空 → 必须喂 `nativeLibraryDir/libmihomo.so`。
+     * - `input`：必须是 Scan 真正写过的那个目录，见 [scanDataDir]。
+     */
+    private fun testNodes() {
+        val dir = scanDataDir
+        if (dir.isNullOrBlank()) {
+            tvTestHint.text = "先按 Scan：没有节点清单就没得测"
+            return
+        }
+        val mihomo = corePaths["mihomo"]
+        if (mihomo.isNullOrBlank()) {
+            tvTestHint.text = "这个 APK 没带 Mihomo 内核，测不了"
+            return
+        }
+        tvTestHint.text = "测速中…（最多 60 个节点）"
+        btnTest.isEnabled = false
+        lifecycleScope.launch(Dispatchers.IO) {
+            val params = org.json.JSONObject()
+                .put("input", dir)
+                .put("mihomo", mihomo)
+                // 手机上别按桌面的 300 个 / 8s 超时跑：一次按到底要好几分钟，
+                // 用户会以为卡死。60 个 / 6s 足够回答「这批节点能不能用」。
+                .put("top", 60)
+                .put("timeout_ms", 6000)
+                .toString()
+            try {
+                val json = GhBoostCore.nativeTest(params)
+                val o = org.json.JSONObject(json)
+                withContext(Dispatchers.Main) {
+                    tvNodes.text = json
+                    val err = errOf(o)
+                    if (err.isNotBlank()) {
+                        tvTestHint.text = "测速失败: $err"
+                        return@withContext
+                    }
+                    val alive = o.optInt("alive")
+                    val tested = o.optInt("tested")
+                    // alive==0 要说清「不是 App 的问题」：清单被内核整份拒收时
+                    // 也是 0，而这正是 Sanitize 要防的那一类故障。
+                    tvTestHint.text = if (alive > 0) {
+                        "$alive/$tested 可用 · 最快 ${o.opt("best_ms")}ms"
+                    } else {
+                        "0/$tested 可用（节点都在但一个都连不上）"
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    tvTestHint.text = "测速失败: ${e.message}"
+                }
+            } finally {
+                withContext(Dispatchers.Main) { btnTest.isEnabled = true }
+            }
+        }
+    }
+
+    /**
+     * 测速按钮旁的提示行 —— 测不了的时候必须**提前说清是哪一环缺**，
+     * 否则用户看到的是一个按了没反应、也没解释的按钮。
+     *
+     * 幂等且以当前状态为准：Scan 跑完 / 初始化完都调它，好把上一轮那句
+     * 「先按 Scan」擦掉。只在「没有清单」或「没有内核」时才改写，
+     * 测速过程自己写的进度与结果不会被它盖掉（测完不回调这里）。
+     */
+    private fun updateTestHint() {
+        tvTestHint.text = when {
+            scanDataDir.isNullOrBlank() -> "先按 Scan：没有节点清单就没得测"
+            corePaths["mihomo"].isNullOrBlank() -> "这个 APK 没带 Mihomo 内核，测不了"
+            else -> "测 Scan 出来的节点能不能连"
+        }
+    }
+
+    /**
+     * 恢复上次 Scan 的数据目录，但要**先确认清单还在**。
+     *
+     * 只信 prefs 里的路径不够：用户清过 App 数据、或内核目录被系统清过，
+     * 路径还在而文件没了 —— 那时按 Test 会得到一句「请先运行 scan」，
+     * 用户明明刚扫过，只能怀疑自己。把话说准：文件不在就当没扫过。
+     */
+    private fun restoreScanDataDir() {
+        val saved = enginePrefs().getString(PREF_SCAN_DIR, null)
+        if (saved.isNullOrBlank()) return
+        val d = File(saved)
+        val hasNodes = File(d, "nodes_uri.txt").isFile || File(d, "nodes_clash.yaml").isFile
+        if (hasNodes) {
+            scanDataDir = saved
+        } else {
+            enginePrefs().edit().remove(PREF_SCAN_DIR).apply()
         }
     }
 

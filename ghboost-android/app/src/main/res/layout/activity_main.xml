@@ -106,6 +106,39 @@
                 android:enabled="false" />
         </LinearLayout>
 
+        <!--
+          测速（nativeTest）。以前 nativeTest 只有 FFI 导出、没有任何 UI 入口，
+          Android 端拿不到 alive 指标 —— 唯一的出网路径（Start）又被 tunReady
+          挡着，于是「节点清单到底能不能用」这件事在手机上永远无法自证。
+          单独一行而不是塞进上面那排：三个主按钮的语义是「VPN 生命周期」，
+          测速是「体检」，混在一排会让人以为按它会连上去。
+        -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <Button
+                android:id="@+id/btnTest"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Test 測速"
+                android:backgroundTint="#0f3460" />
+
+            <TextView
+                android:id="@+id/tvTestHint"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:paddingStart="12dp"
+                android:paddingEnd="0dp"
+                android:text="测 Scan 出来的节点能不能连"
+                android:textColor="#888888"
+                android:textSize="12sp" />
+        </LinearLayout>
+
         <!-- Nodes output -->
         <TextView
             android:layout_width="wrap_content"

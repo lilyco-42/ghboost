@@ -56,6 +56,19 @@ mod android {
         // Initialize logging if needed
     }
 
+    /// Set home directory for config storage.
+    ///
+    /// 这个以前是**空实现**（`dir_str` 拿到就扔），后果不是「少了个功能」而是
+    /// 扫描在 Android 上必然失败：所有走默认值的相对路径都对着进程 cwd 解析，
+    /// 而 App 进程的 cwd 是 `/`，`create_dir_all("nodes_data")` 直接 EACCES →
+    /// `fallback_data_dir()` 又找不到 APPDATA / XDG_DATA_HOME / HOME →
+    /// `nativeScan` 回 `{"error":"创建数据目录失败…"}`。而 UI 那句
+    /// 「Scan complete」不看 error 字段，于是失败被显示成成功（2026-09-26 AVD 实测）。
+    ///
+    /// 现在真的切 cwd：相对路径落到 App 私有目录，写得进去、读得回来、卸载即清理。
+    /// 切 cwd 是进程级的，但本模块其余路径（`exec_core` 的 config root、
+    /// `tun2socks`、Kotlin 侧全部 `filesDir` / `nativeLibraryDir`）都是绝对路径，
+    /// 不依赖 cwd，所以这一下只影响「默认值恰好是相对路径」的那些 API。
     #[no_mangle]
     pub extern "system" fn Java_com_ghboost_app_GhBoostCore_nativeSetHomeDir(
         mut env: JNIEnv,
@@ -63,7 +76,12 @@ mod android {
         dir: JString,
     ) {
         let dir_str = from_jstring(&mut env, &dir);
-        // Set home directory for config storage
+        if dir_str.is_empty() {
+            return;
+        }
+        if let Err(e) = std::env::set_current_dir(&dir_str) {
+            crate::logcat::error(&format!("set_current_dir({dir_str}) 失败: {e}"));
+        }
     }
 
     #[no_mangle]
