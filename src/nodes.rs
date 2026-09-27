@@ -418,19 +418,60 @@ fn clean_label(s: &str) -> String {
         .collect()
 }
 
-/// 清理单行 URI 的 #name 部分（协议/参数不变），返回新 URI
+/// 清理单行 URI 的 #name 部分（协议/参数不变），返回新 URI。
+///
+/// 名字必须**非空**：下游全都按 name 硬匹配（`load_test_nodes` 装载、`add` 的
+/// good_uri 导出、索引回填），无名行不是「少个显示名」，而是一个永远选不中
+/// 的死节点 —— `load_test_nodes` 直接 skip 掉，还白占 `--top` 槽位。
+///
+/// 两种情况会没有名字，在这里都补齐（补的名字直接写进 `#` 片段，产出即自洽，
+/// 不用改任何下游）：
+///
+/// 1. 源里本来就没有片段。实测一份免费订阅的 2539 行里，21 行
+///    `http://ip:port` + 4 行 `socks://…` 全是这个形态 —— 也就是清单里
+///    看得见、却一个都测不了的节点；
+/// 2. 名字被 `clean_label` 清空。emoji / 纯中文名（`🇭🇰`、`香港`）逐字都不在
+///    `[A-Za-z0-9-_.]` 里，清完是空串（以前这里就把片段丢了，节点当场变死）。
 fn clean_uri_name(line: &str) -> String {
-    if let Some(pos) = line.rfind('#') {
-        let (head, rest) = line.split_at(pos);
-        let cleaned = clean_label(&rest[1..]);
-        if cleaned.is_empty() {
-            head.to_string()
-        } else {
-            format!("{head}#{cleaned}")
+    let head = match line.rfind('#') {
+        Some(pos) => {
+            let cleaned = clean_label(&line[pos + 1..]);
+            if !cleaned.is_empty() {
+                return format!("{}#{cleaned}", &line[..pos]);
+            }
+            &line[..pos]
         }
-    } else {
-        line.to_string()
+        None => line,
+    };
+    match synth_name(head) {
+        Some(n) => format!("{head}#{n}"),
+        // 连协议都解析不出来就别硬造名字：那种行本来也进不了内核，
+        // 补个假名只会让 `uri_nodes` 这个数字更好看。
+        None => head.to_string(),
     }
+}
+
+/// 无名链接的名字兜底：`协议_主机_端口`。
+///
+/// 为什么不用 [`crate::corecfg::ParsedNode::display_name`] 的 `host:port`：
+/// 名字要活过 `clean_label`（只留 `[A-Za-z0-9-_.]`，因为 mihomo 的
+/// `/proxies/{name}` 是 URL 路径，emoji / 中文 / 冒号都会 404 或逼人转义），
+/// 冒号被清掉之后 `1.2.3.4:8080` 变成 `1.2.3.48080`，地址和端口粘一起就成了
+/// 噪声。
+///
+/// 带协议是为了分开同地址不同用途的两条节点（`http://1.2.3.4:8080` 与
+/// `socks://1.2.3.4:8080` 是两个节点）。同协议同地址不同凭据仍会撞名，
+/// 撞了由 `dedup_scanned` 留首条 —— 和真名重复时的处理一致，不额外开口子。
+///
+/// 明明 `p.name` 里有东西也不取：整段 base64 的 `ss://`（SIP002-JSON）
+/// 名字是 `parse_ss` 从解码后的 `ps` 读出来的，而实测那批 `ps` 基本是
+/// emoji 乱码（`\ud83c\uddef…`），过 `clean_label` 又是空串 —— 与其绕一圈
+/// 拿回一个必然被清空的名字，不如直接用地址。
+fn synth_name(head: &str) -> Option<String> {
+    let p = crate::corecfg::parse_line(head)?;
+    let proto = clean_label(&p.proto);
+    let server = clean_label(&p.server);
+    Some(format!("{proto}_{server}_{}", p.port))
 }
 
 /// 扫描产物去重：整行相同 → 同名 → 跨池同名，全部只留首条。
@@ -1991,6 +2032,54 @@ mod tests {
             .map(|p| p["name"].as_str().unwrap_or_default().to_string())
             .collect();
         assert_eq!(names, vec!["c1".to_string()], "跨池与自身重名都剔除");
+    }
+
+    #[test]
+    fn 无名链接会被补上_协议_主机_端口_的名字() {
+        // 实测源数据形态：整行就是地址，连 `#` 都没有
+        let got = clean_uri_name("http://1.2.3.4:8080");
+        assert_eq!(got, "http://1.2.3.4:8080#http_1.2.3.4_8080");
+        // 关键回归：补名字不能把链接本身改坏（片段是每个 parser 都会剥掉的）
+        let p = crate::corecfg::parse_line(&got).expect("补完名字仍要解析得动");
+        assert_eq!(p.proto, "http");
+        assert_eq!(p.server, "1.2.3.4");
+        assert_eq!(p.port, 8080);
+        // 有名字了才谈得上「被选中」：uri_name 认得出，load_test_nodes 才不 skip
+        assert_eq!(uri_name(&got).as_deref(), Some("http_1.2.3.4_8080"));
+    }
+
+    #[test]
+    fn 名字被清空后按地址补而不是丢掉() {
+        // emoji / 纯中文名逐字都过不了 clean_label：以前这里直接丢片段，节点变死
+        let got = clean_uri_name("socks://Og%3D%3D@5.6.7.8:1080#🇭🇰");
+        assert_eq!(got, "socks://Og%3D%3D@5.6.7.8:1080#socks_5.6.7.8_1080");
+        // 凭据不许漏进名字：名字会进 UI、也进 profile 文件
+        assert_eq!(uri_name(&got).as_deref(), Some("socks_5.6.7.8_1080"));
+        // 有正常名字的行不受影响
+        assert_eq!(
+            clean_uri_name("ss://YWVzLTI1Ni1nY206cGFzcw==@1.1.1.1:8388#US 01"),
+            "ss://YWVzLTI1Ni1nY206cGFzcw==@1.1.1.1:8388#US01"
+        );
+        // 解析不了就不硬造
+        assert_eq!(clean_uri_name("http://"), "http://");
+    }
+
+    #[test]
+    fn 补出来的名字_同样参与去重_且分得开同地址不同协议() {
+        let mut blocks: Vec<serde_yaml::Value> = vec![];
+        let mut uris = vec![
+            clean_uri_name("http://1.2.3.4:8080"),
+            clean_uri_name("socks://1.2.3.4:8080"),
+        ];
+        dedup_scanned(&mut uris, &mut blocks);
+        assert_eq!(uris.len(), 2, "同地址不同协议是两个节点，不能互相挤掉");
+
+        let mut same = vec![
+            clean_uri_name("http://1.2.3.4:8080"),
+            clean_uri_name("http://1.2.3.4:8080"),
+        ];
+        dedup_scanned(&mut same, &mut blocks);
+        assert_eq!(same.len(), 1, "同协议同地址就是同一个节点");
     }
 
     #[test]
