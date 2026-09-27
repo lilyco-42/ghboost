@@ -1640,10 +1640,8 @@ mod tests {
         assert!(ss_method_of(&u).is_none(), "解出非加密方式要丢掉整行");
 
         // 2. 真实毒行（P1 那条）：UUID 当 userinfo，里面根本没有冒号
-        let poison = concat!(
-            "ss://15298f41-e80b-463a-b85b-0c903258a1c8@162.159.1.33:443",
-            "?security=tls&encryption=none"
-        );
+        let poison = "ss://15298f41-e80b-463a-b85b-0c903258a1c8@162.159.1.33:443\
+                      ?security=tls&encryption=none";
         assert!(ss_method_of(poison).is_none(), "P1 毒行必须被丢掉");
 
         // 3. 明文 userinfo，method 不认识

@@ -2088,9 +2088,7 @@ mod tests {
                       server: 5.5.5.5\n\
                       port: 8388\n\
                       cipher: aes-256-gcm";
-        let txt = format!(
-            "proxies:\n{good}\n{upper}\n{bad_cipher}\n{no_cipher}\n{no_pw}\n"
-        );
+        let txt = format!("proxies:\n{good}\n{upper}\n{bad_cipher}\n{no_cipher}\n{no_pw}\n");
 
         let r = sanitize_nodes_text(&txt);
         assert_eq!(r.total, 5, "五条都要算进 total");
