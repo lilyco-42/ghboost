@@ -38,14 +38,14 @@ jobs:
       - name: Format check
         run: cargo fmt -- --check
       - name: Clippy (default features)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
       # webview 已从发布构建中移除（默认构建双击即开浏览器控制台，不再依赖本机
       # WebView2/WebKit）。这里只做一次 check 防止这条可选路径悄悄腐烂。
       # 注意是 check 不是 build：check 不链接，所以不需要装 webkit2gtk。
       - name: Check (optional webview feature)
-        run: cargo check --all-targets --features webview
+        run: cargo check --all-targets --locked --features webview
       - name: Run tests
-        run: cargo test
+        run: cargo test --locked
 
   # ============ Android (.so 交叉编译) ============
   android:
@@ -408,7 +408,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Stage artifact
         shell: bash
         run: |
@@ -651,7 +651,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Stage artifact
         run: |
           set -e
@@ -699,7 +699,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build static lib
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Stage artifact
         run: |
           set -e
@@ -756,7 +756,7 @@ jobs:
       - name: Build WASM
         # --lib：bin 依赖被裁掉的 deploy/mihomo/proxy 模块，编不了也没意义
         # （wasm32-unknown-unknown 的 bin 没有可用的入口，产物是个空壳）。
-        run: cargo build --lib --target wasm32-unknown-unknown --release --no-default-features
+        run: cargo build --locked --lib --target wasm32-unknown-unknown --release --no-default-features
       - name: Stage artifact
         run: |
           set -e

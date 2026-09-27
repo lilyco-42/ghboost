@@ -1180,10 +1180,7 @@ fn do_subscribe(input: &str, mixed_port: u16, kernel: &str) -> Result<Value, Str
         // 「为什么 0 节点」的原话只在 kernel.log 里（v0.3.15 的 P1 就是
         // `initial proxy provider subscription error: ... unknown method`，
         // 那时这条信息完全拿不到，只能手工搭一份内核才复现出来）。
-        let kernel_log = slot
-            .as_ref()
-            .map(|m| m.log_tail(20))
-            .unwrap_or_default();
+        let kernel_log = slot.as_ref().map(|m| m.log_tail(20)).unwrap_or_default();
         if let Some(m) = slot.as_mut() {
             let _ = m.stop();
         }
