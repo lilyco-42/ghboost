@@ -1716,19 +1716,15 @@ mod tests {
     /// 会把排障引到错方向），以及大写 cipher 归一化成小写再存。
     #[test]
     fn clash_yaml_的_ss_cipher_同样过白名单并归一化() {
+        // 缩进必须写在**字面量里面**（接在 `\n` 之后、行尾 `\` 之前）：
+        // `\`+换行会吃掉下一行的**全部**前导空白，靠源码缩进拼出来的块状
+        // YAML 会塌成非法标量流，serde_yaml 解析失败 → 一条都读不出来
+        // （2026-09-27 CI 实测：这条测试曾因此报「实际 0」）。
         let yaml = "proxies:\n\
-                    - name: 好节点\n\
-                      type: ss\n\
-                      server: 1.2.3.4\n\
-                      port: 8388\n\
-                      cipher: AES-256-GCM\n\
-                      password: pw\n\
-                    - name: 坏节点\n\
-                      type: ss\n\
-                      server: 5.6.7.8\n\
-                      port: 8388\n\
-                      cipher: aes-128-ofb\n\
-                      password: pw\n";
+- name: 好节点\n  type: ss\n  server: 1.2.3.4\n  port: 8388\n  \
+cipher: AES-256-GCM\n  password: pw\n\
+- name: 坏节点\n  type: ss\n  server: 5.6.7.8\n  port: 8388\n  \
+cipher: aes-128-ofb\n  password: pw\n";
         let (nodes, skipped) = parse_subscription_text(yaml);
         assert_eq!(nodes.len(), 1, "只该留一个节点，实际 {}", nodes.len());
         let m = nodes[0].extra["method"].clone();

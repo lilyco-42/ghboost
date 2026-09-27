@@ -2145,38 +2145,22 @@ mod tests {
     /// 所有节点清零 —— 和毒行那条链接等价。
     #[test]
     fn sanitize_clash_丢掉_会让内核整份拒收的_ss_条目() {
-        let good = "  - name: good\n\
-                    type: ss\n\
-                    server: 1.1.1.1\n\
-                    port: 8388\n\
-                    cipher: aes-256-gcm\n\
-                    password: pw";
+        // 缩进写在字面量里面（接在 `\n` 之后、行尾 `\` 之前）—— `\`+换行会
+        // 吃掉下一行的全部前导空白，靠源码缩进拼的 YAML 会塌成非法标量流。
+        let good = "  - name: good\n    type: ss\n    server: 1.1.1.1\n    \
+                    port: 8388\n    cipher: aes-256-gcm\n    password: pw";
         // 大写 cipher：内核大小写敏感（实测 unknown method），我们归一化后应当**留下**
-        let upper = "  - name: upper\n\
-                      type: ss\n\
-                      server: 2.2.2.2\n\
-                      port: 8388\n\
-                      cipher: AES-256-GCM\n\
-                      password: pw";
+        let upper = "  - name: upper\n    type: ss\n    server: 2.2.2.2\n    \
+                     port: 8388\n    cipher: AES-256-GCM\n    password: pw";
         // 内核不认的 cipher
-        let bad_cipher = "  - name: badcipher\n\
-                           type: ss\n\
-                           server: 3.3.3.3\n\
-                           port: 8388\n\
-                           cipher: aes-128-ofb\n\
-                           password: pw";
+        let bad_cipher = "  - name: badcipher\n    type: ss\n    server: 3.3.3.3\n    \
+                         port: 8388\n    cipher: aes-128-ofb\n    password: pw";
         // 缺 cipher
-        let no_cipher = "  - name: nocipher\n\
-                          type: ss\n\
-                          server: 4.4.4.4\n\
-                          port: 8388\n\
-                          password: pw";
+        let no_cipher = "  - name: nocipher\n    type: ss\n    server: 4.4.4.4\n    \
+                         port: 8388\n    password: pw";
         // 缺 password
-        let no_pw = "  - name: nopw\n\
-                      type: ss\n\
-                      server: 5.5.5.5\n\
-                      port: 8388\n\
-                      cipher: aes-256-gcm";
+        let no_pw = "  - name: nopw\n    type: ss\n    server: 5.5.5.5\n    \
+                     port: 8388\n    cipher: aes-256-gcm";
         let txt = format!("proxies:\n{good}\n{upper}\n{bad_cipher}\n{no_cipher}\n{no_pw}\n");
 
         let r = sanitize_nodes_text(&txt);

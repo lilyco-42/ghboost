@@ -624,8 +624,12 @@ mod tests {
         let tail = mgr.log_tail(2);
         let got: Vec<&str> = tail.lines().collect();
         assert_eq!(got.len(), 2, "只要尾部 2 行，实际: {tail}");
-        assert!(got[1].ends_with("…（已截断）"), "超长行要截断: {}", got[1]);
-        assert!(got[1].chars().count() <= 210, "截断后仍要短");
+        // 输出保持原始时间顺序（老 → 新）：超长行是尾部窗口的**第一**行，
+        // 最后一行仍是完整短行（截断只动超长那行，不许连邻居一起削）。
+        assert_eq!(got[1], "最后一行", "尾部窗口要含最后一整行: {tail}");
+        const MARK: &str = "…（已截断）";
+        assert!(got[0].ends_with(MARK), "超长行要截断: {}", got[0]);
+        assert!(got[0].chars().count() <= 210, "截断后仍要短");
         // 短行原样保留（只去行尾空白，不许动内容）
         let all = mgr.log_tail(10);
         assert!(
