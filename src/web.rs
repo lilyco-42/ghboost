@@ -1188,7 +1188,9 @@ fn do_subscribe(input: &str, mixed_port: u16, kernel: &str) -> Result<Value, Str
             let _ = m.stop();
         }
         *slot = None;
-        let _ = crate::proxy::unset_proxy();
+        // 同 do_stop：只收自己开的那次。系统代理指向别人的端口时更不能碰 ——
+        // 这时候把全局代理关掉，用户连自己的代理软件也一起用不了了。
+        let _ = crate::proxy::unset_owned_proxy();
         let dropped_note = if dropped_bad > 0 {
             format!("（另有 {dropped_bad} 条格式无法识别的链接已被自动剔除）\n")
         } else {
@@ -1270,8 +1272,18 @@ fn do_stop() -> Result<Value, String> {
         let _ = mgr.stop();
     }
     *g = None;
-    let state = crate::proxy::unset_proxy()?;
-    Ok(serde_json::json!({ "ok": true, "system_proxy": format!("{state:?}") }))
+    // 系统代理只收「自己开的那次」：用户的 Clash Verge / v2rayN / 公司网关
+    // 开着代理时点停 ghboost，不该把它们一起关掉（本机实测踩过：
+    // ghboost 一停，用户的 Clash Verge 也失效了，且没有任何提示）。
+    let (state, note) = match crate::proxy::unset_owned_proxy() {
+        Ok(Some(s)) => (format!("{s:?}"), "已关掉 ghboost 自己开的系统代理"),
+        Ok(None) => (
+            "保持原样".to_string(),
+            "系统代理不是 ghboost 开的（你自己的代理软件在用），没有动它",
+        ),
+        Err(e) => return Err(e),
+    };
+    Ok(serde_json::json!({ "ok": true, "system_proxy": state, "note": note }))
 }
 
 /// 内核日志尾部（诊断闭环的最后一环）。

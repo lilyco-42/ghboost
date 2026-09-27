@@ -42,53 +42,46 @@ pub enum ProxyState {
 /// 设置系统代理（自动选择当前平台）
 pub fn set_proxy(config: &ProxyConfig) -> Result<ProxyState, String> {
     #[cfg(target_os = "windows")]
-    {
-        windows_set_proxy(config)
-    }
-
+    let st = windows_set_proxy(config);
     #[cfg(target_os = "macos")]
-    {
-        macos_set_proxy(config)
-    }
-
+    let st = macos_set_proxy(config);
     #[cfg(target_os = "linux")]
-    {
-        linux_set_proxy(config)
-    }
-
+    let st = linux_set_proxy(config);
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        Err(format!(
-            "系统代理设置不支持当前平台: {}",
-            std::env::consts::OS
-        ))
+    let st: Result<ProxyState, String> = Err(format!(
+        "系统代理设置不支持当前平台: {}",
+        std::env::consts::OS
+    ));
+
+    // 归属记账必须与「真的改成功了」同步：只有 Enabled 才记。
+    // 反过来记账（失败的设置也记）会让 stop 去关别人的代理 —— 那正是本模块
+    // 要消灭的故障。
+    if matches!(st, Ok(ProxyState::Enabled)) {
+        remember_owned(&format!("{}:{}", config.host, config.port));
     }
+    st
 }
 
 /// 关闭系统代理
 pub fn unset_proxy() -> Result<ProxyState, String> {
     #[cfg(target_os = "windows")]
-    {
-        windows_unset_proxy()
-    }
-
+    let st = windows_unset_proxy();
     #[cfg(target_os = "macos")]
-    {
-        macos_unset_proxy()
-    }
-
+    let st = macos_unset_proxy();
     #[cfg(target_os = "linux")]
-    {
-        linux_unset_proxy()
-    }
-
+    let st = linux_unset_proxy();
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        Err(format!(
-            "系统代理设置不支持当前平台: {}",
-            std::env::consts::OS
-        ))
+    let st: Result<ProxyState, String> = Err(format!(
+        "系统代理设置不支持当前平台: {}",
+        std::env::consts::OS
+    ));
+
+    // 关失败时**保留**记账：代理很可能还开着且仍是我们开的，
+    // 下次 stop 还得去收拾它。
+    if st.is_ok() {
+        forget_owned();
     }
+    st
 }
 
 /// 获取当前代理状态
@@ -112,6 +105,109 @@ pub fn get_proxy_status() -> ProxyState {
     {
         ProxyState::Error("不支持的平台".into())
     }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 归属记账：「现在这个系统代理是 ghboost 开的吗」
+// ═══════════════════════════════════════════════════════════
+//
+// 为什么需要：以前「停内核」无条件 unset_proxy()，会把**别的代理软件**的系统
+// 代理一起关掉。本机实测：Clash Verge 监听 7897，ghboost 一停它的代理就失效了，
+// 而且全程没有任何提示 —— 用户视角就是「用了 ghboost 之后我的代理软件坏了」。
+//
+// 记账写文件而不是只放内存：崩在「代理开着」的状态上时，下次启动仍认得这是
+// 自己开的，会去收拾它。只放内存的话重启后归属丢失 = 留下一个指向死端口的
+// 系统代理（整机断网，而且 ghboost 自己都说不出它开过）。
+//
+// 关之前还要核对当前 `ProxyServer` 仍指向我们开的那一次：中途用户换了端口、
+// 或干脆换了别的代理软件，那就不再是我们的东西，不能动。
+
+fn owned_path() -> std::path::PathBuf {
+    crate::web::ghboost_dir().join("proxy.owned")
+}
+
+fn remember_owned(endpoint: &str) {
+    let _ = std::fs::write(owned_path(), endpoint);
+}
+
+fn forget_owned() {
+    let _ = std::fs::remove_file(owned_path());
+}
+
+/// 记账里的 endpoint；`None` = 没有记账 = 按「不是我们开的」处理。
+pub fn owned_endpoint() -> Option<String> {
+    let s = std::fs::read_to_string(owned_path()).ok()?;
+    let t = s.trim().to_string();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t)
+    }
+}
+
+/// 当前系统代理指向哪里；读不出来（或形状不认识）返回 `None` = 核对不了。
+pub fn current_endpoint() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    let raw = platform::current_endpoint();
+    #[cfg(target_os = "macos")]
+    let raw = platform::current_endpoint();
+    #[cfg(target_os = "linux")]
+    let raw = platform::current_endpoint();
+    // Android / iOS 等目标没有本模块的平台实现，核对不了就是核对不了。
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    let raw: Option<String> = None;
+    raw.as_deref().and_then(parse_proxy_server)
+}
+
+/// 只在「系统代理确实是 ghboost 自己开的那一次」时才关掉它。
+///
+/// - `Ok(Some(state))` —— 关掉了
+/// - `Ok(None)` —— **没动**：不是我们开的，或中途被别人换掉了
+///
+/// 「停内核」这类收自己摊子的场景用它；用户显式点「关闭系统代理」仍然走
+/// `unset_proxy()`（那个必须无条件执行 —— 用户明确要求了）。
+pub fn unset_owned_proxy() -> Result<Option<ProxyState>, String> {
+    let Some(mine) = owned_endpoint() else {
+        return Ok(None);
+    };
+    // 核对不了（macOS / Linux / 读失败）时按记账走；核对得了就必须一致。
+    if let Some(cur) = current_endpoint() {
+        if !cur.eq_ignore_ascii_case(&mine) {
+            forget_owned();
+            return Ok(None);
+        }
+    }
+    Ok(Some(unset_proxy()?))
+}
+
+/// `ProxyServer` 原始值 → `host:port`。
+///
+/// Windows 上我们自己写进去的形状是 `http=H:P;https=H:P`（见 windows_impl），
+/// 但别的软件可能写裸 `H:P`，也可能写 `socks=...` —— 认不出来就返回 `None`：
+/// 宁可不下结论，也不要把别人的代理误判成自己的。
+fn parse_proxy_server(raw: &str) -> Option<String> {
+    let v = raw.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if v.contains('=') {
+        let http = v.split(';').find_map(|seg| {
+            let seg = seg.trim();
+            seg.strip_prefix("http=")
+                .or_else(|| seg.strip_prefix("HTTP="))
+        })?;
+        return normalize_endpoint(http);
+    }
+    normalize_endpoint(v)
+}
+
+fn normalize_endpoint(s: &str) -> Option<String> {
+    let t = s.trim().trim_matches('"').to_ascii_lowercase();
+    let (host, port) = t.rsplit_once(':')?;
+    if host.is_empty() || port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("{host}:{port}"))
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -246,6 +342,24 @@ mod windows_impl {
             }
             Err(e) => ProxyState::Error(e.to_string()),
         }
+    }
+
+    /// `ProxyServer` 的原始值。输出形如
+    /// `    ProxyServer    REG_SZ    http=127.0.0.1:7897;https=127.0.0.1:7897`
+    pub fn current_endpoint() -> Option<String> {
+        let out = Command::new("reg")
+            .args(["query", INTERNET_SETTINGS_KEY, "/v", "ProxyServer"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        stdout
+            .lines()
+            .find(|l| l.contains("ProxyServer"))
+            .and_then(|l| l.split_whitespace().nth(2))
+            .map(|v| v.to_string())
     }
 }
 
@@ -389,6 +503,12 @@ mod macos_impl {
             }
             Err(e) => ProxyState::Error(e.to_string()),
         }
+    }
+
+    /// 核对不了就返回 `None`：macOS 要按网络服务逐个问 `networksetup`，
+    /// 代价不值当。此时归属判断退回「只认记账」。
+    pub fn current_endpoint() -> Option<String> {
+        None
     }
 }
 
@@ -628,6 +748,11 @@ mod linux_impl {
             Err(e) => ProxyState::Error(e.to_string()),
         }
     }
+
+    /// 核对不了就返回 `None`（见 macos_impl 的同款说明）。
+    pub fn current_endpoint() -> Option<String> {
+        None
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -739,5 +864,57 @@ pub fn unset_env_proxy() {
         "no_proxy",
     ] {
         std::env::remove_var(key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ProxyServer` 的形状各种各样，认错一个 = 把别人的代理当成自己的关掉。
+    /// 这里只钉死「能认的」和「必须认不出的」，认不出时上层会保守地不动手。
+    #[test]
+    fn parse_proxy_server_认得我们自己写进去的形状() {
+        // 我们自己 set_proxy 写进去的就是这个形状（见 windows_impl）
+        assert_eq!(
+            parse_proxy_server("http=127.0.0.1:7897;https=127.0.0.1:7897").as_deref(),
+            Some("127.0.0.1:7897")
+        );
+        // 别的软件常写的裸值
+        assert_eq!(
+            parse_proxy_server("127.0.0.1:7890").as_deref(),
+            Some("127.0.0.1:7890")
+        );
+        // 大小写 / 空白 / 引号
+        assert_eq!(
+            parse_proxy_server("  HTTP=LocalHost:1080 ; https=x ").as_deref(),
+            Some("localhost:1080")
+        );
+    }
+
+    #[test]
+    fn parse_proxy_server_认不出的必须返回_none() {
+        for raw in [
+            "",
+            "   ",
+            "socks=127.0.0.1:1080",       // 只有 socks：核对不了
+            "proxy.company.local",          // 没有端口
+            "127.0.0.1:",                  // 端口为空
+            "127.0.0.1:abc",               // 端口不是数字
+            "http=;https=127.0.0.1:7897",  // http 段是空的
+        ] {
+            assert_eq!(
+                parse_proxy_server(raw),
+                None,
+                "不该被认出来: {raw:?}"
+            );
+        }
+    }
+
+    /// 归属比较必须忽略大小写（`LOCALHOST` vs `localhost` 是同一个东西）。
+    #[test]
+    fn endpoint_比较忽略大小写() {
+        assert!("LOCALHOST:7890".eq_ignore_ascii_case("localhost:7890"));
+        assert!(!"localhost:7890".eq_ignore_ascii_case("localhost:7897"));
     }
 }
