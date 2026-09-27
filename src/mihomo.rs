@@ -122,6 +122,38 @@ impl MihomoManager {
         &self.config_path
     }
 
+    /// 内核日志路径（stdout/stderr 都落这儿，与配置同目录）。
+    ///
+    /// 和 `coreman::kernel.log` 同一个约定：诊断只看得到内核原话才算闭环。
+    pub fn kernel_log_path(&self) -> PathBuf {
+        self.config_path.with_file_name("kernel.log")
+    }
+
+    /// kernel.log 尾部若干行（内核致命错误的原话）。
+    ///
+    /// 单行截断到 200 字符：mihomo 会把整份配置的错误堆在一行里（实测 provider
+    /// 报错带 400+ 字符），不截的话「尾部 20 行」可能就是一堵墙。
+    pub fn log_tail(&self, lines: usize) -> String {
+        match std::fs::read_to_string(self.kernel_log_path()) {
+            Ok(s) => {
+                let all: Vec<String> = s
+                    .lines()
+                    .map(|l| {
+                        let l = l.trim_end();
+                        if l.chars().count() > 200 {
+                            l.chars().take(200).collect::<String>() + "…（已截断）"
+                        } else {
+                            l.to_string()
+                        }
+                    })
+                    .collect();
+                let skip = all.len().saturating_sub(lines);
+                all[skip..].join("\n")
+            }
+            Err(e) => format!("（读内核日志失败: {e}）"),
+        }
+    }
+
     /// 查找 Mihomo 可执行文件
     pub fn find_binary(&self) -> Result<PathBuf, String> {
         // 1. 检查配置中的路径
@@ -254,17 +286,34 @@ rules:
 
         // 查找并启动
         let binary = self.find_binary()?;
+        // 内核的 stdout/stderr 落 kernel.log（与配置同目录，和 coreman.rs 同款做法）。
+        // 原来是 `Stdio::piped()` 接管之后**从不读** —— 两条后果：
+        //   1. 诊断全丢：`initial proxy provider subscription error: ... unknown method`
+        //      这类致命信息一条都拿不到（v0.3.15 的 P1「20 好 + 1 坏 = 0 节点」只能
+        //      手工搭一份 mihomo 才复现出原文），用户只看到"已连接但每个请求都失败"；
+        //   2. **输出超 64KB 会永久阻塞**：内核往管道写、没人读 → 管道写满 →
+        //      内核卡死在 write 上，整个代理静默死掉。
+        // 直接重定向到文件，两个问题一起消失，也不用为它开读取线程。
+        let log_out = std::fs::File::create(self.kernel_log_path())
+            .map_err(|e| format!("建内核日志失败: {e}"))?;
+        let log_err = log_out
+            .try_clone()
+            .map_err(|e| format!("克隆内核日志句柄失败: {e}"))?;
         let mut child = Command::new(&binary)
             .args(["-d", self.config_path.parent().unwrap().to_str().unwrap()])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log_out))
+            .stderr(Stdio::from(log_err))
             .spawn()
             .map_err(|e| format!("启动 Mihomo 失败: {e}"))?;
 
         // 等待一下确认启动成功
         std::thread::sleep(Duration::from_millis(500));
         match child.try_wait() {
-            Ok(Some(status)) => Err(format!("Mihomo 启动后立即退出，状态码: {}", status)),
+            Ok(Some(status)) => Err(format!(
+                "Mihomo 启动后立即退出，状态码: {status}。内核日志尾部：\n{}",
+                self.log_tail(20)
+            )),
             Ok(None) => {
                 // 启动成功（先放锁再 get_status，理由同上）
                 {
@@ -544,5 +593,68 @@ mod tests {
         let body = MihomoManager::reload_body(yaml);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["payload"], yaml);
+    }
+
+    /// kernel.log 的尾部抽取 + 单行截断。
+    ///
+    /// 这条尾巴是 P1「20 好 + 1 坏 = 0 节点」唯一的诊断线索
+    /// （`initial proxy provider subscription error: proxy 19 error: ss ... unknown method`），
+    /// 而内核会把整段配置的错误堆进一行（实测 400+ 字符）—— 不截断的话
+    /// 「最近 20 行」就是一堵墙，真正的原因反而被埋在后面。
+    #[test]
+    fn kernel_log_尾部按行数截断且单行超长要截断() {
+        let dir = std::env::temp_dir().join(format!("ghb-klog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mgr = MihomoManager::new(MihomoConfig {
+            config_dir: Some(dir.clone()),
+            ..Default::default()
+        });
+
+        // 日志还不存在时不能 panic 也不能空字串糊弄，得说清读失败
+        let missing = mgr.log_tail(5);
+        assert!(
+            missing.starts_with("（读内核日志失败"),
+            "日志缺失时要说明原因，实际: {missing}"
+        );
+
+        let long = "x".repeat(500);
+        let body = format!("第一行\n第二行\n{long}\n最后一行\n");
+        std::fs::write(mgr.kernel_log_path(), body).unwrap();
+
+        let tail = mgr.log_tail(2);
+        let got: Vec<&str> = tail.lines().collect();
+        assert_eq!(got.len(), 2, "只要尾部 2 行，实际: {tail}");
+        assert!(got[1].ends_with("…（已截断）"), "超长行要截断: {}", got[1]);
+        assert!(got[1].chars().count() <= 210, "截断后仍要短");
+        // 短行原样保留（只去行尾空白，不许动内容）
+        let all = mgr.log_tail(10);
+        assert!(
+            all.lines().any(|l| l == "最后一行"),
+            "尾部窗口够大时要能看到最后一行: {all}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// kernel.log 必须与 config.yaml 同目录（coreman 的同名约定）。
+    ///
+    /// 钉死这条是因为「日志和配置分家」是这类实现最常见的退化方式：
+    /// 用户按文档去 config.yaml 旁边找日志找不到，就等于没有。
+    #[test]
+    fn kernel_log_与配置同目录() {
+        let dir = std::env::temp_dir().join(format!("ghb-klog2-{}", std::process::id()));
+        let mgr = MihomoManager::new(MihomoConfig {
+            config_dir: Some(dir.clone()),
+            ..Default::default()
+        });
+        assert_eq!(
+            mgr.kernel_log_path(),
+            dir.join("kernel.log"),
+            "kernel.log 必须在配置同目录"
+        );
+        assert_eq!(
+            mgr.kernel_log_path().parent().unwrap(),
+            mgr.config_path().parent().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

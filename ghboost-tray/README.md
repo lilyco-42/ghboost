@@ -167,8 +167,16 @@ ghboost-tray.exe --selftest     # 无头跑一遍加速链路并打印结果
 ```
 
 运行期文件（都在这一个目录里，`uninstall` 直接删）：
-`%LOCALAPPDATA%\ghboost\` → `console.port`（当前端口）、`trace.log`（排障日志）、
+`%LOCALAPPDATA%\ghboost\` → `console.port`（当前端口）、`trace.log`（托盘/面板自己的排障日志）、
 `mihomo\`（内核配置与订阅缓存）
+
+排障时**两个日志都要看**，它们记的不是一回事：
+
+- `trace.log` —— 托盘/面板这一侧（点击、端口、panic）。
+- `mihomo\kernel.log` —— **内核的 stdout/stderr 原话**。节点一个都没出来的时候，
+  原因只写在这儿（例如 `initial proxy provider subscription error: ... unknown method`：
+  一条坏链接会让整份 file provider 初始化失败）。面板里也能直接看：
+  `GET /api/kernel-log?lines=200`。
 
 ---
 

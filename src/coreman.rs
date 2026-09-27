@@ -193,7 +193,7 @@ impl CoreManager {
         // 内核的 stdout/stderr 落 kernel.log（与配置同目录）：启动失败时
         // 「端口没起来」只有配上内核原话才是可排障的 —— null 掉等于把死因扔了
         //（W10 实跑：xray 的 bind 冲突被吞成一句 connection timed out）。
-        let log_path = self.config_path.with_file_name("kernel.log");
+        let log_path = self.kernel_log_path();
         let log_out = std::fs::File::create(&log_path)
             .map_err(|e| format!("建内核日志 {log_path:?} 失败: {e}"))?;
         let log_err = log_out
@@ -266,15 +266,23 @@ impl CoreManager {
         ))
     }
 
+    /// kernel.log 路径（与配置同目录；和 `mihomo::kernel_log_path` 同一约定）
+    pub fn kernel_log_path(&self) -> std::path::PathBuf {
+        self.config_path.with_file_name("kernel.log")
+    }
+
     /// kernel.log 尾部若干行（内核致命错误的原话；与 check_config 同款排障闭环）。
     fn log_tail(&self) -> String {
-        let p = self.config_path.with_file_name("kernel.log");
-        match std::fs::read(&p) {
+        self.log_tail_lines(12)
+    }
+
+    /// 同上，但行数由调用方定（Web 控制台的 `/api/kernel-log` 用它）。
+    pub fn log_tail_lines(&self, lines: usize) -> String {
+        match std::fs::read_to_string(self.kernel_log_path()) {
             Ok(bytes) => {
-                let s = String::from_utf8_lossy(&bytes);
-                let lines: Vec<&str> = s.lines().collect();
-                let skip = lines.len().saturating_sub(12);
-                lines[skip..].join("\n")
+                let all: Vec<&str> = bytes.lines().collect();
+                let skip = all.len().saturating_sub(lines);
+                all[skip..].join("\n")
             }
             Err(e) => format!("（读内核日志失败: {e}）"),
         }

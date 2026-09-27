@@ -98,6 +98,7 @@ pub async fn serve_at(port: u16, html: &str) -> Result<(), String> {
         .route("/api/proxy/subscribe", post(api_proxy_subscribe))
         .route("/api/proxy/stop", post(api_proxy_stop))
         .route("/api/proxy/state", get(api_proxy_state))
+        .route("/api/kernel-log", get(api_kernel_log))
         .layer(axum::middleware::from_fn(guard_loopback_mw))
         .with_state(state);
 
@@ -1174,6 +1175,15 @@ fn do_subscribe(input: &str, mixed_port: u16, kernel: &str) -> Result<Value, Str
         // 链接是**同步**解析的，0 个就说明输入一定有问题。
         // 关键：必须把内核和系统代理一起收掉。留着的话系统代理指向一个没有节点的
         // 内核，故障形态是"点了开启代理以后整个网都断了"—— 比没开还糟。
+        //
+        // 内核日志必须在 stop **之前**取：stop 之后 slot 置 None，manager 一起没了。
+        // 「为什么 0 节点」的原话只在 kernel.log 里（v0.3.15 的 P1 就是
+        // `initial proxy provider subscription error: ... unknown method`，
+        // 那时这条信息完全拿不到，只能手工搭一份内核才复现出来）。
+        let kernel_log = slot
+            .as_ref()
+            .map(|m| m.log_tail(20))
+            .unwrap_or_default();
         if let Some(m) = slot.as_mut() {
             let _ = m.stop();
         }
@@ -1184,9 +1194,14 @@ fn do_subscribe(input: &str, mixed_port: u16, kernel: &str) -> Result<Value, Str
         } else {
             String::new()
         };
+        let kernel_note = if kernel_log.trim().is_empty() {
+            String::new()
+        } else {
+            format!("内核日志原话：\n{kernel_log}\n")
+        };
         return Err(format!(
             "内核没能认出这些链接里的任何节点。\n\
-             {dropped_note}请确认整条链接是完整的（从 vless:// 一路到 #备注都要复制到）。\n\
+             {dropped_note}{kernel_note}请确认整条链接是完整的（从 vless:// 一路到 #备注都要复制到）。\n\
              一次贴了很多条的话，先只贴一条试试。"
         ));
     }
@@ -1257,6 +1272,58 @@ fn do_stop() -> Result<Value, String> {
     *g = None;
     let state = crate::proxy::unset_proxy()?;
     Ok(serde_json::json!({ "ok": true, "system_proxy": format!("{state:?}") }))
+}
+
+/// 内核日志尾部（诊断闭环的最后一环）。
+///
+/// 内核的 stdout/stderr 落 `kernel.log`（见 `mihomo::MihomoManager::kernel_log_path`
+/// 与 `coreman`），但托盘/WebView 是 GUI 子系统，stderr 是黑洞 —— 只落文件等于
+/// 用户仍然拿不到。这次 P1（`initial proxy provider subscription error`）就是这么
+/// 查了半天的：文件里没有，就只能手工搭一份内核复现。
+///
+/// `?lines=` 默认 200、上限 2000：mihomo 一条 provider 报错能带 400+ 字符，
+/// 一次拉几千行会把浏览器直接卡死。
+async fn api_kernel_log(
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Json<Value> {
+    let want = q
+        .get("lines")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200)
+        .clamp(1, 2000);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        // 读文件是阻塞 IO，丢到普通线程里做，别占着 axum 的 worker。
+        let mut acc: Option<(String, std::path::PathBuf, String)> = None;
+        if let Ok(slot) = mihomo_slot().lock() {
+            if let Some(m) = slot.as_ref() {
+                let p = m.kernel_log_path();
+                let t = m.log_tail(want);
+                acc = Some((String::from("mihomo"), p, t));
+            }
+        }
+        if acc.is_none() {
+            if let Ok(g) = core_slot().lock() {
+                if let Some(m) = g.as_ref() {
+                    let p = m.kernel_log_path();
+                    let t = m.log_tail_lines(want);
+                    acc = Some((m.kind().as_str().to_string(), p, t));
+                }
+            }
+        }
+        let _ = tx.send(acc);
+    });
+    let (kernel, path, text) = match rx.await {
+        Ok(Some(a)) => a,
+        // 没有内核在跑：这不是错误状态，返回空日志让前端显示"还没起内核"。
+        _ => (String::new(), std::path::PathBuf::new(), String::new()),
+    };
+    Json(serde_json::json!({
+        "kernel": kernel,
+        "path": path.display().to_string(),
+        "lines": text.lines().count(),
+        "log": text,
+    }))
 }
 
 /// 内核 + 系统代理的合并状态（前端据此决定按钮显示"开启"还是"关闭"）
