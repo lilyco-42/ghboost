@@ -1,6 +1,6 @@
 # free-VPN 接入测试报告
 
-**日期**：2026-09-26　**结论**：接入链打通并有真实出口证明；过程中修掉两个用户可见缺陷，发布 `v0.3.16`。
+**日期**：2026-09-26　**结论**：接入链打通并有真实出口证明；过程中修掉两个用户可见缺陷，已发布 [`v0.3.16`](https://github.com/lilyco-42/ghboost/releases/tag/v0.3.16)。
 
 测试数据源：[`lilyco-42/free-VPN`](https://github.com/lilyco-42/free-VPN) 的 README
 （`src/nodes.rs:38` 把它当订阅源索引）。
@@ -249,7 +249,12 @@ PowerShell 的 `>` 重定向存出来的文本默认都带 BOM，触发条件非
 | `a3395cd` BOM 修复 | CI 36235555198 | ❌ `parse_line` 不在作用域（E0425） |
 | `55a40d2` 修作用域 + `strip_bom` 补 web.rs | CI 36235852968 ✅、Build All 36235852986 ✅、tray 36235852987 ✅、pages 36235853184 ✅ | ✅ |
 | `706db64` 发版 0.3.16 | CI 36236421634 ✅、Build All 36236421612 ✅、pages 36236421376 ✅、tray 36236421522 ❌ `--locked` | 部分 |
-| `365973c` 补 lock 文件 | 见 7. 发布 | — |
+| `365973c` 补 lock 文件 | CI 36237266673 ✅、tray 36237266699 ✅、Build All 36237266660 ✅、pages 36237266406 ✅ | ✅ |
+| `5ea1bcf` 报告入仓 | CI 36237323026 ✅、Build All 36237323009 ✅、tray 36237323002 ✅、pages 36237322594 ✅ | ✅ |
+
+`v0.3.16` 的 30 个产物取自 Build All 36237323009 + CI 36237323026 + tray 36237323002
+（`ghboost-x86_64-pc-windows-gnu.exe` / `libghboost-aarch64-linux-android.so` /
+两个 `libghboost-*.dll` 只有 CI 那份 zigbuild 产物有，Build All 不产）。
 
 失败的三轮都不是设计问题，是「没有本地 cargo，靠 CI 当唯一裁判」的代价；
 两次都靠明确信号定位而不是猜：fmt 那次是 `cargo fmt -- --check` 一次给全文件 diff 当权威裁判，
@@ -259,8 +264,11 @@ PowerShell 的 `>` 重定向存出来的文本默认都带 BOM，触发条件非
 
 ## 7. 发布 `v0.3.16`
 
-含 P1 file provider 修复 + BOM 修复 + `69d77a5` 的 scan 去重。tag 与产物待
-`365973c` 三闸全绿后补。
+- tag `v0.3.16` → `5ea1bcfe5a4e8927e8ea07dbce28dfe428b95d6f`（轻量 tag，与 `v0.3.15` 同形）
+- https://github.com/lilyco-42/ghboost/releases/tag/v0.3.16
+- 30 个资产 / 649.3 MB：4 个 APK（含 universal）、tray zip（含 mihomo+xray+sing-box 三内核）、
+  MSI、wasm、7 个平台 CLI、8 个 `libghboost` 动态库、3 个 `libghboost_ffi`。
+  资产名与 `v0.3.15` 逐一对应，只有 MSI 从 `0.3.15` 变 `0.3.16`。
 
 ---
 
