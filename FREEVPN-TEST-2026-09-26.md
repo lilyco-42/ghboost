@@ -274,14 +274,57 @@ PowerShell 的 `>` 重定向存出来的文本默认都带 BOM，触发条件非
 
 ## 8. 遗留 / 待办
 
-**代码**
+**代码 —— 6 条已全部落地**（2026-09-27 收口。这份清单是 2026-09-26 写的，
+当时把「已提交但 CI 没验过」和「还没提交」混着列，容易读成都没做）：
 
-1. `mihomo.rs` 排空 stdout/stderr（顺带解掉 64 KB 阻塞风险）—— 优先级最高。
-2. `do_stop` 只关自己开的系统代理。
-3. `parse_line` 加 cipher 白名单，把 2.2 那条脆性依赖变成显式契约。
-4. Android 补节点测试入口（`nativeTest` 已有导出，缺 UI 调用），或先接 tun2socks。
-5. `nodes_uri.txt` 里 2 组同源同名行 + 83 行无名 `http://` 的清理（不影响正确性）。
-6. 给 CI / Build All 也加 `--locked`，让 lock 一致性有硬闸（见 5.4）。
+| # | 项 | 落在 | 怎么做的 |
+|---|---|---|---|
+| 1 | `mihomo.rs` 排空 stdout/stderr | `63b8d1f` | 不是「排空」而是**不建管道**：两个流直接 `Stdio::from(File)` 落到 `kernel.log`，64 KB 写死与诊断丢失一起消失，另加 `/api/kernel-log` |
+| 2 | `do_stop` 只关自己开的系统代理 | `6b1b329` | `proxy.owned` 记账 + 停前核对 `ProxyServer` 端点；不是自己的就返回 `Ok(None)`，UI 明说「系统代理不是 ghboost 开的，没有动它」 |
+| 3 | `parse_line` 加 cipher 白名单 | `a645107` | `SS_CIPHERS` 23 项（mihomo v1.19.30 逐个试出来的），三个入口都守：share URI / Clash YAML / `clash_passthrough`；method **归一化成小写再落盘**（内核大小写敏感），缺 cipher 或缺 password 的 ss 整条丢 |
+| 4 | Android 节点测试入口 | `bca9c1c` | Test 按钮（`nativeTest` 之前是死导出）。顺带修两处「失败显示成成功」：`scanNodes()` 改成看 `error` 字段；`nativeSetHomeDir` 原来**是空实现**（`dir_str` 拿到就扔），所有相对路径都对着进程 cwd `/` 解析 → Android 扫描一直必然失败，而 UI 无条件写 "Scan complete" |
+| 5 | `nodes_uri.txt` 清理 | `6757c2b` + `69d77a5` | 拆成两件事，见 8.1 |
+| 6 | CI / Build All 加 `--locked` | `194a86d` | 4 个 workflow 全量 `--locked` |
+
+### 8.1 第 5 项拆开是两件事，其中一件早就是旧账
+
+**无名行（`6757c2b` 今天做的）**：`load_test_nodes` 装载、`add` 的 good_uri 导出、
+索引回填全都按 name 硬匹配，所以「没有 `#` 片段」不是少个显示名，而是这个
+节点**永远选不中、也永远导不出去**，还白占 `--top` 槽位。实测那份 2539 行的
+scan 产物里 **88 行**没有名字：21 行 `http://ip:port` + 4 行 `socks://` + 63 行
+其它协议。来源两类 —— 源里本来就没有片段；名字被 `clean_label` 清空（emoji /
+纯中文名逐字都不在 `[A-Za-z0-9-_.]` 里，而旧代码在这里**直接把片段丢掉**，
+节点当场变死）。改成按 `协议_主机_端口` 合成后写进片段，产出即自洽，下游一行
+没动。不用 `display_name()` 的 `host:port` 是因为冒号过不了 `clean_label`。
+
+实测（mihomo v1.19.30）：
+
+- 88 行里正则能取到 host:port 的 81 条，按 `http`/`socks5` + 合成名拼
+  `proxies:` 喂 `mihomo -t -f` → **exit=0，0 error / 0 warning**；
+- 再按 `add` 注入 profile 的真实形态（file provider + `parse-type: v2ray`）
+  起 mihomo 查 `/providers/proxies` → **85/86 条载入，21 个 `http_*` 全在，
+  provider 无报错**（差的 1 条是 mihomo 自己给重名节点补 `-01` 后缀）；
+- 剩下 7 条是整段 base64 的 `ss://`（SIP002-JSON），Rust 侧 `parse_ss` 解得开，
+  一样能补名。
+
+**重名行（早就是旧账）**：那份样本里有 **161 组重名**（`EPODONIOS` ×172、
+`JoinTelegramFarah_VPN` ×22…），但文件 mtime 是 **2026-09-25 18:18**，而
+`dedup_scanned`（name 全局唯一）是 **2026-09-26 10:53**（`69d77a5`）才落的 ——
+本报告第 5 项写的「2 组同源同名行」，是在同一份 **dedup 之前**的产物上数的，
+实际是 161 组。现在 name 全局唯一有单测钉着
+（`dedup_scanned_keeps_names_globally_unique`）。
+
+### 8.2 顺带挖出来的一条：fmt 闸把 `cargo test` 整个挡在后面
+
+`a645107` 起 CI 一直红在 `cargo fmt --check`，而 `ci.yml` 的步骤顺序执行、
+一红就 abort —— **`cargo test` 一次都没执行过**。`bca9c1c` 把 fmt 修好之后测试
+才第一次真跑，立刻 3 条红灯（`73 passed / 3 failed`）。两条同一个根因：手写的
+多行 YAML 靠**源码缩进**拼出来，而 Rust 字符串的 `\`+换行会吃掉下一行的**全部**
+前导空白 → 块状 YAML 塌成非法标量流 → `serde_yaml` 解析失败 → 一条都读不出来。
+第三条是 `log_tail` 测试取错下标（它按时间顺序返回，超长行是 `got[0]`）。
+`eeb2e69` 修掉，并按 Rust 续行语义机械重建两份 fixture 喂 `mihomo -t -f` 验证
+（旧的形状做对照，直接 `proxy 0: missing type` / exit=1）。教训：**fmt 闸绿了
+≠ 测试跑过**。
 
 **需要用户配合**
 
