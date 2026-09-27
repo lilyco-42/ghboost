@@ -37,8 +37,12 @@ jobs:
           components: rustfmt, clippy
       - name: Format check
         run: cargo fmt -- --check
+      # `-D warnings` 必须和 build-all.yml 的 clippy 步**一模一样**：少了它，clippy
+      # 的 warning 只是打印出来，步骤照样绿，于是本该 3 分钟内红的事要等
+      # build-all 才暴露（2026-09-27 实测：ci 全绿，build-all 的 clippy 挂在
+      # `doc list item without indentation`）。两道闸不一致 = 快的这道形同虚设。
       - name: Clippy
-        run: cargo clippy --all-targets --locked
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: Run tests
         run: cargo test --locked
 

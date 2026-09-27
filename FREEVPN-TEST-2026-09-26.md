@@ -314,17 +314,30 @@ scan 产物里 **88 行**没有名字：21 行 `http://ip:port` + 4 行 `socks:/
 实际是 161 组。现在 name 全局唯一有单测钉着
 （`dedup_scanned_keeps_names_globally_unique`）。
 
-### 8.2 顺带挖出来的一条：fmt 闸把 `cargo test` 整个挡在后面
+### 8.2 顺带挖出来的两条：CI 的两道闸都比它们该有的样子松
 
-`a645107` 起 CI 一直红在 `cargo fmt --check`，而 `ci.yml` 的步骤顺序执行、
-一红就 abort —— **`cargo test` 一次都没执行过**。`bca9c1c` 把 fmt 修好之后测试
-才第一次真跑，立刻 3 条红灯（`73 passed / 3 failed`）。两条同一个根因：手写的
-多行 YAML 靠**源码缩进**拼出来，而 Rust 字符串的 `\`+换行会吃掉下一行的**全部**
-前导空白 → 块状 YAML 塌成非法标量流 → `serde_yaml` 解析失败 → 一条都读不出来。
-第三条是 `log_tail` 测试取错下标（它按时间顺序返回，超长行是 `got[0]`）。
-`eeb2e69` 修掉，并按 Rust 续行语义机械重建两份 fixture 喂 `mihomo -t -f` 验证
-（旧的形状做对照，直接 `proxy 0: missing type` / exit=1）。教训：**fmt 闸绿了
-≠ 测试跑过**。
+**(a) fmt 闸把 `cargo test` 整个挡在后面。** `a645107` 起 CI 一直红在
+`cargo fmt --check`，而 `ci.yml` 的步骤顺序执行、一红就 abort —— **`cargo test`
+一次都没执行过**。`bca9c1c` 把 fmt 修好之后测试才第一次真跑，立刻 3 条红灯
+（`73 passed / 3 failed`）。两条同一个根因：手写的多行 YAML 靠**源码缩进**拼出来，
+而 Rust 字符串的 `\`+换行会吃掉下一行的**全部**前导空白 → 块状 YAML 塌成非法标量
+流 → `serde_yaml` 解析失败 → 一条都读不出来。第三条是 `log_tail` 测试取错下标
+（它按时间顺序返回，超长行是 `got[0]`）。`eeb2e69` 修掉，并按 Rust 续行语义机械
+重建两份 fixture 喂 `mihomo -t -f` 验证（旧的形状做对照，直接
+`proxy 0: missing type` / exit=1）。
+
+**(b) clippy 那道闸没有 `-D warnings`，于是 warning 是只打印不拦的。**
+`ci.yml` 写的是 `cargo clippy --all-targets --locked`，而 `build-all.yml` 写的是
+`-- -D warnings` —— 同一条命令，两种严格度。所以 `c038844` 的 CI 报 success，
+`eeb2e69` 的 Build All 却挂在 `Clippy (default features)`：
+`doc list item without indentation` ×2（`src/nodes.rs` 里一段 `- ` 列表后面紧跟的
+段落被 CommonMark 吸成 lazy continuation）。一条注释，红掉整个发版。
+已修（列表后补空 `///`），并把 `ci.yml` 的 clippy 步补上 `-D warnings`，让两道闸
+字面一致 —— 快的闸不拦，红的就只会晚 20 分钟到慢的闸那里才炸。
+
+**仍未覆盖**：`ghboost-tray` / `ghboost-ffi` 两个 crate 任何 workflow 都没跑过
+clippy（只 build）。机械扫过它们的 doc 注释没有同类问题，但「没有 clippy 闸」
+这件事本身还在，想收紧就照 (b) 的方式给 `tray.yml` 补一步。
 
 **需要用户配合**
 

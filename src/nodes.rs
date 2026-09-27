@@ -1177,11 +1177,18 @@ fn load_test_nodes(dir: &Path, top: u64) -> Result<(Vec<InlineNode>, LoadStat), 
 ///
 /// `type: ss` 还要多查两样（2026-09-27 用 mihomo v1.19.30 `mihomo -t -f` 逐个试出来的，
 /// 三种情况都是**整份配置被拒**，不是这一条坏掉）：
+///
 /// - `cipher` 内核不认 → `initialize error: unknown method: …`
-/// - `cipher` 缺失     → `proxy 0: '' has unset fields: cipher, password`
-/// - `password` 缺失    → `proxy 0: '' has unset fields: password`
+/// - `cipher` 缺失 → `proxy 0: '' has unset fields: cipher, password`
+/// - `password` 缺失 → `proxy 0: '' has unset fields: password`
+///
 /// 也就是说 ss 的必填字段漏一个，就和 P1 那条毒行一样把整批节点清零，
 /// 而症状只是「显示已连接、每个请求都失败」。判据见 `corecfg::SS_CIPHERS`。
+///
+/// （列表后面那个空 `///` 不是排版洁癖：少了它，最后一条 list item 会把紧跟的
+/// 段落吸成 lazy continuation，clippy::doc_lazy_continuation 直接报
+/// `doc list item without indentation`，而 `build-all.yml` 的 clippy 带
+/// `-D warnings`，一条注释就能红掉整个发版。）
 fn clash_passthrough(p: &serde_yaml::Value) -> Option<serde_yaml::Mapping> {
     let mut m = p.as_mapping()?.clone();
     if m.get("name")?.as_str()?.trim().is_empty() {
