@@ -130,6 +130,8 @@ pub struct ParsedNode {
     /// vless flow（xtls-rprx-vision 等）。
     pub flow: Option<String>,
     /// 传输层原始串：tcp|ws|grpc|h2|http|httpupgrade|kcp|quic …
+    /// 注意 kcp/quic 的 host 是 v2rayN 的伪装类型字段、path 是 seed/key，不是域名/路径。
+    /// quic 仅解析：xray 26+ 已移除该传输（发射报错），sing-box 需配 TLS。
     pub network: Option<String>,
     pub sni: Option<String>,
     pub alpn: Option<String>,
@@ -598,7 +600,15 @@ fn apply_name_defaults(n: &mut ParsedNode, proto: &str) {
         n.network = Some("ws".to_string());
     }
     // tls/reality 节点没 sni 时回落 host（ws+tls 场景 host 头通常就是域名）。
-    if n.sni.is_none() && matches!(n.security.as_deref(), Some("tls") | Some("reality")) {
+    // kcp/quic 例外：v2rayN 约定 host 是伪装类型（srtp 之类），当 sni 会发出去一个
+    // 假域名，服务端证书校验必挂 —— 不回落。
+    if n.sni.is_none()
+        && matches!(n.security.as_deref(), Some("tls") | Some("reality"))
+        && !matches!(
+            n.network.as_deref(),
+            Some("kcp") | Some("mkcp") | Some("quic")
+        )
+    {
         n.sni = n.host.clone();
     }
 }
@@ -1150,7 +1160,19 @@ fn xray_stream(n: &ParsedNode, security: &str) -> Result<serde_json::Value, Stri
         .sni
         .clone()
         .filter(|s| !s.is_empty())
-        .or_else(|| n.host.clone())
+        .or_else(|| {
+            // kcp/quic 的 host 是 v2rayN 的伪装类型字段（如 srtp），不是域名，
+            // 回落成 sni 会发一个假 serverName 出去 —— 不回落。
+            if matches!(
+                n.network.as_deref(),
+                Some("kcp") | Some("mkcp") | Some("quic")
+            ) {
+                None
+            } else {
+                n.host.clone()
+            }
+        })
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| n.server.clone());
 
     match security {
@@ -1217,12 +1239,37 @@ fn xray_stream(n: &ParsedNode, security: &str) -> Result<serde_json::Value, Stri
             ss["httpupgradeSettings"] = up;
         }
         "kcp" => {
+            // v2rayN 约定：mkcp 的 seed 放 path 字段、header 伪装类型放 host 字段
+            // （URI 侧则落在 extra["seed"] / extra["headertype"]）。seed 不匹配服务端
+            // 直接连不上，必须带上；旧实现只发 header，seed 丢了 = 节点静默死亡。
+            let seed = n
+                .extra
+                .get("seed")
+                .cloned()
+                .or_else(|| n.path.clone())
+                .filter(|s| !s.is_empty());
             let header = n
                 .extra
                 .get("header")
+                .or_else(|| n.extra.get("headertype"))
                 .cloned()
+                .or_else(|| n.host.clone())
+                .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "none".into());
-            ss["kcpSettings"] = json!({"header": {"type": header}});
+            let mut kcp = json!({"header": {"type": header}});
+            if let Some(seed) = seed {
+                kcp["seed"] = json!(seed);
+            }
+            ss["kcpSettings"] = kcp;
+        }
+        "quic" => {
+            // xray 26.x 起 QUIC 传输已整体移除（infra/conf/transport_internet.go:
+            // PrintRemovedFeatureError("QUIC transport …", "XHTTP stream-one H3")），
+            // 写 {"network":"quic"} 只会让 `xray run -test` 拒配置。明着报错，别发残货。
+            return Err(format!(
+                "{}：xray 26+ 已移除 QUIC 传输，请改用 mihomo 或换该节点的 ws/grpc 变体",
+                n.display_name()
+            ));
         }
         _ => {}
     }
@@ -1430,7 +1477,7 @@ fn sb_outbound(n: &ParsedNode, tag: &str) -> Result<serde_json::Value, String> {
         if needs_tls {
             ob["tls"] = sb_tls(n, security == "reality")?;
         }
-        if let Some(t) = sb_transport(n) {
+        if let Some(t) = sb_transport(n)? {
             ob["transport"] = t;
         }
     }
@@ -1442,7 +1489,19 @@ fn sb_tls(n: &ParsedNode, reality: bool) -> Result<serde_json::Value, String> {
         .sni
         .clone()
         .filter(|s| !s.is_empty())
-        .or_else(|| n.host.clone())
+        .or_else(|| {
+            // kcp/quic 的 host 是 v2rayN 的伪装类型字段（如 srtp），不是域名，
+            // 回落成 sni 会发一个假 serverName 出去 —— 不回落。
+            if matches!(
+                n.network.as_deref(),
+                Some("kcp") | Some("mkcp") | Some("quic")
+            ) {
+                None
+            } else {
+                n.host.clone()
+            }
+        })
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| n.server.clone());
     let mut tls = json!({"enabled": true, "server_name": sni, "insecure": n.allow_insecure});
     if let Some(alpn) = n.alpn.clone() {
@@ -1470,12 +1529,14 @@ fn sb_tls(n: &ParsedNode, reality: bool) -> Result<serde_json::Value, String> {
     Ok(tls)
 }
 
-fn sb_transport(n: &ParsedNode) -> Option<serde_json::Value> {
+/// sing-box 的 v2ray 传输层。不支持 = 显式报错，绝不静默按 tcp 发
+/// （静默错配的表现是"节点死活连不上"，用户根本无从排查）。
+fn sb_transport(n: &ParsedNode) -> Result<Option<serde_json::Value>, String> {
     if matches!(
         n.proto.as_str(),
         "hysteria" | "hysteria2" | "tuic" | "socks" | "http" | "ssh"
     ) {
-        return None;
+        return Ok(None);
     }
     let raw = n.network.as_deref().unwrap_or("tcp");
     match raw {
@@ -1485,22 +1546,22 @@ fn sb_transport(n: &ParsedNode) -> Option<serde_json::Value> {
             if let Some(host) = n.host.clone() {
                 ws["headers"] = json!({"Host": host});
             }
-            Some(ws)
+            Ok(Some(ws))
         }
-        "grpc" => Some(json!({
+        "grpc" => Ok(Some(json!({
             "type": "grpc",
             "service_name": n.service_name
                 .clone()
                 .or_else(|| n.path.clone())
                 .unwrap_or_default()
-        })),
+        }))),
         "h2" | "http" => {
             let mut h =
                 json!({"type": "http", "path": n.path.clone().unwrap_or_else(|| "/".into())});
             if let Some(host) = n.host.clone() {
                 h["headers"] = json!({"Host": host});
             }
-            Some(h)
+            Ok(Some(h))
         }
         "httpupgrade" => {
             let mut u = json!({
@@ -1510,9 +1571,24 @@ fn sb_transport(n: &ParsedNode) -> Option<serde_json::Value> {
             if let Some(host) = n.host.clone() {
                 u["headers"] = json!({"Host": host});
             }
-            Some(u)
+            Ok(Some(u))
         }
-        _ => None,
+        "quic" => {
+            // sing-box 支持 quic 传输（1.11+，CI 钉 1.14.2）；QUIC 天然加密，
+            // 不配 TLS sing-box 启动即报 "TLS is required"，这里提前用人话拦。
+            if effective_security(n) == "none" {
+                return Err(format!(
+                    "{}：QUIC 传输必须启用 TLS（sing-box 不支持无加密 QUIC）",
+                    n.display_name()
+                ));
+            }
+            Ok(Some(json!({"type": "quic"})))
+        }
+        "kcp" | "mkcp" => Err(format!(
+            "{}：sing-box 不支持 mKCP 传输，请改用 mihomo 或 xray",
+            n.display_name()
+        )),
+        _ => Ok(None),
     }
 }
 
@@ -1580,6 +1656,75 @@ mod tests {
     fn parse_vmess_dirty_rejected() {
         // 整体不是合法 base64 JSON → 应拒绝而不是吐半个节点。
         assert!(parse_line("vmess://not-valid-json!!!").is_none());
+    }
+
+    /// v2rayN 约定：mkcp 的 host=伪装类型、path=seed。xray 发射必须带上 seed
+    /// （不匹配服务端连不上），且 host 不得污染成 sni。
+    #[test]
+    fn xray_vmess_kcp_seed_and_header() {
+        let json = serde_json::json!({
+            "v": "2", "ps": "KCP节点", "add": "7.7.7.7", "port": 9999,
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "aid": "0",
+            "net": "kcp", "host": "srtp", "path": "my-seed", "type": "none"
+        })
+        .to_string();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(json);
+        let n = parse_line(&format!("vmess://{b64}")).unwrap();
+        assert_eq!(n.network.as_deref(), Some("kcp"));
+        assert_eq!(n.host.as_deref(), Some("srtp"));
+        assert_eq!(n.path.as_deref(), Some("my-seed"));
+
+        let cfg = emit_ok(CoreKind::Xray, &[n]);
+        let kcp = &cfg["outbounds"][0]["streamSettings"]["kcpSettings"];
+        assert_eq!(kcp["header"]["type"], "srtp");
+        assert_eq!(kcp["seed"], "my-seed");
+    }
+
+    /// xray 26.x 移除了 QUIC 传输（infra/conf PrintRemovedFeatureError），
+    /// 必须报错而不是发 {"network":"quic"} 残配置让 run -test 拒。
+    #[test]
+    fn xray_quic_removed_rejected() {
+        let json = serde_json::json!({
+            "v": "2", "ps": "QUIC节点", "add": "8.8.4.4", "port": 443,
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "aid": "0",
+            "net": "quic", "tls": "tls"
+        })
+        .to_string();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(json);
+        let n = parse_line(&format!("vmess://{b64}")).unwrap();
+        let err = emit(CoreKind::Xray, &[n], &EmitOptions::default()).unwrap_err();
+        assert!(err.contains("QUIC"), "报错应说明 QUIC 被移除：{err}");
+    }
+
+    /// sing-box：quic 传输要 TLS（QUIC 天然加密）；mKCP 不支持必须报错，
+    /// 不能静默按 tcp 发出去（那表现为"节点永远连不上"）。
+    #[test]
+    fn singbox_quic_transport_and_kcp_rejected() {
+        let mk = |net: &str, tls: &str| {
+            let json = serde_json::json!({
+                "v": "2", "ps": "T", "add": "8.8.8.8", "port": 443,
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "aid": "0",
+                "net": net, "tls": tls
+            })
+            .to_string();
+            let b64 = base64::engine::general_purpose::STANDARD.encode(json);
+            parse_line(&format!("vmess://{b64}")).unwrap()
+        };
+
+        let quic = mk("quic", "tls");
+        let cfg = emit_ok(CoreKind::SingBox, &[quic]);
+        // outbounds: [0]=selector [1]=urltest [2]=node-0
+        assert_eq!(cfg["outbounds"][2]["transport"]["type"], "quic");
+        // sni 不许被 v2rayN 伪装类型字段污染 —— quic 没给 host，这里用 server 兜底
+        assert_eq!(cfg["outbounds"][2]["tls"]["server_name"], "8.8.8.8");
+
+        let quic_plain = mk("quic", "");
+        let err = emit(CoreKind::SingBox, &[quic_plain], &EmitOptions::default()).unwrap_err();
+        assert!(err.contains("TLS"), "无加密 QUIC 应报 TLS 要求：{err}");
+
+        let kcp = mk("kcp", "tls");
+        let err = emit(CoreKind::SingBox, &[kcp], &EmitOptions::default()).unwrap_err();
+        assert!(err.contains("mKCP"), "mKCP 应显式报错：{err}");
     }
 
     #[test]
