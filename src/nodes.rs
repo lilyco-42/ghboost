@@ -1133,12 +1133,21 @@ fn load_test_nodes(dir: &Path, top: u64) -> Result<(Vec<InlineNode>, LoadStat), 
 ///
 /// 内联配置是「全有或全无」—— 缺 name/type/server 的条目会让 mihomo
 /// 整份拒收；端口写成 `"443"` 这种字符串同样拒收，这里统一纠成整数。
+///
+/// `type: ss` 还要多查两样（2026-09-27 用 mihomo v1.19.30 `mihomo -t -f` 逐个试出来的，
+/// 三种情况都是**整份配置被拒**，不是这一条坏掉）：
+/// - `cipher` 内核不认 → `initialize error: unknown method: …`
+/// - `cipher` 缺失     → `proxy 0: '' has unset fields: cipher, password`
+/// - `password` 缺失    → `proxy 0: '' has unset fields: password`
+/// 也就是说 ss 的必填字段漏一个，就和 P1 那条毒行一样把整批节点清零，
+/// 而症状只是「显示已连接、每个请求都失败」。判据见 `corecfg::SS_CIPHERS`。
 fn clash_passthrough(p: &serde_yaml::Value) -> Option<serde_yaml::Mapping> {
     let mut m = p.as_mapping()?.clone();
     if m.get("name")?.as_str()?.trim().is_empty() {
         return None;
     }
-    if m.get("type")?.as_str()?.trim().is_empty() {
+    let ty = m.get("type")?.as_str()?.trim().to_ascii_lowercase();
+    if ty.is_empty() {
         return None;
     }
     if m.get("server")?.as_str()?.trim().is_empty() {
@@ -1152,6 +1161,21 @@ fn clash_passthrough(p: &serde_yaml::Value) -> Option<serde_yaml::Mapping> {
             m.insert("port".into(), n.into());
         }
         _ => return None,
+    }
+    if ty == "ss" {
+        // cipher 缺失/不认识一律丢这一条。**不要**给它兜个默认加密方式：
+        // 内核缺 cipher 是拒配置（实测），而我们替它填一个值只会得到一条
+        // 必然连不上的僵尸节点，还会掩盖「这条订阅本身写错了」这件事。
+        let cipher = m.get("cipher").and_then(|x| x.as_str()).unwrap_or("");
+        if !crate::corecfg::known_cipher(cipher) {
+            return None;
+        }
+        let canon = crate::corecfg::canon_cipher(cipher);
+        m.insert("cipher".into(), canon.into());
+        let pw = m.get("password").and_then(|x| x.as_str()).unwrap_or("");
+        if pw.is_empty() {
+            return None;
+        }
     }
     Some(m)
 }
@@ -1859,9 +1883,12 @@ mod tests {
         let good = "vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443";
         let good = format!("{good}?security=tls&type=ws&path=/ws#good_vless");
         std::fs::write(dir.join("nodes_uri.txt"), format!("{bad}\n{good}\n")).unwrap();
-        // 一个正常 Clash 块（端口故意写成字符串）+ 一个缺 name 的坏块
+        // 一个正常 Clash 块（端口故意写成字符串）+ 一个缺 name 的坏块。
+        // cipher / password 都要给全：实测 mihomo 缺任一个都是**整份拒收**
+        // （`has unset fields: cipher, password`），所以 clash_passthrough 会丢它。
         let ok = "proxies:\n  - name: clash_ok\n    type: ss\n    server: 5.6.7.8\n";
         let ok = format!("{ok}    port: \"8388\"\n    cipher: aes-256-gcm\n");
+        let ok = format!("{ok}    password: pw\n");
         let broken = "  - type: trojan\n    server: 9.9.9.9\n    port: 443\n    password: x\n";
         std::fs::write(dir.join("nodes_clash.yaml"), format!("{ok}{broken}")).unwrap();
 
@@ -1993,14 +2020,16 @@ mod tests {
         // 实测 v1.19.30：这条行会让**整个** file provider 初始化失败（0 节点），
         // 而同批的其它行都是好的。洗完必须只剩好的那些。
         //
-        // 为什么我们能剔掉它：userinfo `15298f41-…` 不是 `method:password`。
-        // b64_flex 会先试 STANDARD（`-` 不在标准表里 → 失败），再试 URL_SAFE
-        // （能解出 27 字节，但 `F1 FE` 不是合法 UTF-8 → from_utf8 失败），
-        // 两条路都拿不到字符串，就走 `split_once(':')` 分支，而 UUID 里没有
-        // 冒号 → parse_line 返回 None。
-        // **这条依赖是有脆性的**：哪天 b64_flex 改用 from_utf8_lossy，它就会
-        // 解析出一个垃圾 method，内核对不上 cipher 又会整批拒收。这个测试就是
-        // 那根保险丝 —— 有人动 b64_flex 时它会先红。
+        // 为什么我们能剔掉它：现在有**显式**判据，不再靠巧合。
+        // `parse_ss` 里的 cipher 白名单（`corecfg::SS_CIPHERS`，按 mihomo v1.19.30
+        // 实测列出）会拒掉这个 UUID —— 它压根不是加密方式。
+        //
+        // 修之前的判据是巧合：userinfo `15298f41-…` 不是 `method:password`，
+        // b64_flex 先试 STANDARD（`-` 不在标准表里 → 失败）、再试 URL_SAFE
+        // （解出 27 字节但 `F1 FE` 非法 UTF-8 → 失败），于是落到
+        // `split_once(':')` 分支，而 UUID 里没有冒号 → None。哪天 b64_flex
+        // 改用 from_utf8_lossy，垃圾 method 就会混进配置，内核对不上 cipher
+        // 又会整批拒收 —— 白名单就是补上的那根保险丝。
         let good = "ss://YWVzLTI1Ni1nY206cGFzcw==@1.2.3.4:8388#S";
         let txt = format!("{good}\n{POISON}\n");
         let r = sanitize_nodes_text(&txt);
@@ -2017,6 +2046,61 @@ mod tests {
         // mihomo 内联 proxies 重名整份拒收 → 同名只留首条
         let dup = format!("{good}\nss://YWVzLTI1Ni1nY206cGFzcw==@5.6.7.8:8388#S\n");
         assert_eq!(sanitize_nodes_text(&dup).kept, 1, "同名只留首条");
+    }
+
+    /// Clash `proxies:` 那条入口的 ss 必填字段护栏。
+    ///
+    /// 这三种情况实测（mihomo v1.19.30 `mihomo -t -f`）都是**整份配置被拒**，
+    /// 不是这一条坏掉，所以症状和 P1 一模一样：显示已连接、每个请求都失败。
+    /// 也就是说：Clash 订阅里混进一条 `cipher` 写错/漏写的 ss，就会把同批
+    /// 所有节点清零 —— 和毒行那条链接等价。
+    #[test]
+    fn sanitize_clash_丢掉_会让内核整份拒收的_ss_条目() {
+        let good = "  - name: good\n\
+                    type: ss\n\
+                    server: 1.1.1.1\n\
+                    port: 8388\n\
+                    cipher: aes-256-gcm\n\
+                    password: pw";
+        // 大写 cipher：内核大小写敏感（实测 unknown method），我们归一化后应当**留下**
+        let upper = "  - name: upper\n\
+                      type: ss\n\
+                      server: 2.2.2.2\n\
+                      port: 8388\n\
+                      cipher: AES-256-GCM\n\
+                      password: pw";
+        // 内核不认的 cipher
+        let bad_cipher = "  - name: badcipher\n\
+                           type: ss\n\
+                           server: 3.3.3.3\n\
+                           port: 8388\n\
+                           cipher: aes-128-ofb\n\
+                           password: pw";
+        // 缺 cipher
+        let no_cipher = "  - name: nocipher\n\
+                          type: ss\n\
+                          server: 4.4.4.4\n\
+                          port: 8388\n\
+                          password: pw";
+        // 缺 password
+        let no_pw = "  - name: nopw\n\
+                      type: ss\n\
+                      server: 5.5.5.5\n\
+                      port: 8388\n\
+                      cipher: aes-256-gcm";
+        let txt = format!(
+            "proxies:\n{good}\n{upper}\n{bad_cipher}\n{no_cipher}\n{no_pw}\n"
+        );
+
+        let r = sanitize_nodes_text(&txt);
+        assert_eq!(r.total, 5, "五条都要算进 total");
+        assert_eq!(r.kept, 2, "只留两条，其余丢掉: {}", r.yaml);
+        assert_eq!(r.dropped, 3, "内核不认/字段缺的都要丢");
+        assert!(!r.yaml.contains("aes-128-ofb"), "坏 cipher 不能进 YAML");
+        assert!(r.yaml.contains("cipher: aes-256-gcm"), "{}", r.yaml);
+        // 大写那条必须被**归一化**后再落盘，不能原样把 AES-256-GCM 送进内核
+        assert!(!r.yaml.contains("AES-256-GCM"), "{}", r.yaml);
+        assert!(r.yaml.contains("2.2.2.2"), "归一化不等于丢: {}", r.yaml);
     }
 
     #[test]

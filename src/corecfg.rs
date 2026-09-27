@@ -393,6 +393,75 @@ fn b64_flex(s: &str) -> Option<String> {
     None
 }
 
+/// shadowsocks 加密方式白名单（小写规范形）。
+///
+/// 存在的理由：ss 的 method 认不出来的后果**不是这一行坏掉**，而是 mihomo 整份
+/// file provider 初始化失败 → 0 节点（实测 v1.19.30：
+/// `initial proxy provider subscription error: proxy 19 error: ss 162.159.1.33:443
+/// cipher: ... unknown method`）。所以「我们解出来的 method 是不是真加密方式」
+/// 必须是显式契约，不能靠「base64 恰好解不出 / 恰好没有冒号」这种巧合 ——
+/// 那两条路一旦因为任何改动变了（比如 base64 改用 `from_utf8_lossy`），
+/// 就会解出一个垃圾 method 混进配置，重新变成整批 0 节点且毫无线索。
+///
+/// **列表不是照抄文档，是逐个跑出来的**（mihomo v1.19.30 `mihomo -t -f`，
+/// 2026-09-27 逐个 31 个候选跑完，见 FREEVPN-TEST 报告）。实测结果里有三处
+/// 反直觉的，都写在这里以免下次有人「按常识」把它们加回去：
+/// 1. **大小写敏感**：`AES-256-GCM` / `Chacha20-Ietf-Poly1305` 一律
+///    `unknown method`。所以匹配必须大小写不敏感、同时**把 method 归一化成
+///    小写**再进配置（[canon_cipher]）—— 只查不改等于放行致命值。
+/// 2. `plain` / `rc4` / `dummy` / `bf-cfb` / `des-cfb` / `idea-cfb` /
+///    `aes-*-ofb` / `chacha20-poly1305`（少 ietf）/ `camellia-128-cfb`
+///    **都不支持**。`none` 才是「不加密」，没有 `plain` 这个别名。
+/// 3. `xchacha20` 与 `aes-*-ccm` 支持，但 `2022-blake3-chacha8-poly1305`
+///    也支持（2022 规范的 chacha8 那一支，容易漏）。
+///
+/// 代价取舍：白名单漏一个 = 那种节点被我们自己剔掉（而不是交给内核），
+/// 与 [modelled_link] 里 ssr / juicity 的同款取舍。反过来白名单多一个
+/// = 内核整份 provider 炸掉，代价大得多，所以这份名单按「实测通过」逐条列全。
+const SS_CIPHERS: &[&str] = &[
+    // AEAD（gcm / ccm）
+    "aes-128-gcm",
+    "aes-192-gcm",
+    "aes-256-gcm",
+    "aes-128-ccm",
+    "aes-192-ccm",
+    "aes-256-ccm",
+    "chacha20-ietf-poly1305",
+    "xchacha20-ietf-poly1305",
+    // Shadowsocks 2022（密钥必须是定长 base64，长度不对是另一类错误，
+    // 别和「method 不认识」混为一谈）
+    "2022-blake3-aes-128-gcm",
+    "2022-blake3-aes-256-gcm",
+    "2022-blake3-chacha20-poly1305",
+    "2022-blake3-chacha8-poly1305",
+    // 旧式 stream
+    "aes-128-cfb",
+    "aes-192-cfb",
+    "aes-256-cfb",
+    "aes-128-ctr",
+    "aes-192-ctr",
+    "aes-256-ctr",
+    "chacha20",
+    "chacha20-ietf",
+    "xchacha20",
+    "rc4-md5",
+    "none",
+];
+
+/// method / cipher 归一化成内核认的规范形（小写、去首尾空白）。
+///
+/// 必须**归一化后再存进配置**，不能只拿来比对：内核大小写敏感
+/// （实测 `AES-256-GCM` 直接 `unknown method`），只查不改等于放行致命值 ——
+/// 那正是这个白名单要消灭的整批 0 节点。
+pub(crate) fn canon_cipher(m: &str) -> String {
+    m.trim().to_ascii_lowercase()
+}
+
+/// method / cipher 是不是白名单里的加密方式（比的是归一化后的形态）。
+pub(crate) fn known_cipher(m: &str) -> bool {
+    SS_CIPHERS.contains(&canon_cipher(m).as_str())
+}
+
 /// `[2001:db8::1]:443` / `host:443` / 未括号 v6 末段端口。
 fn split_hostport(s: &str) -> Option<(String, u16)> {
     // `host:443/`（订阅里偶见的尾斜杠）在这里吸收 —— authority 本体不能动。
@@ -546,16 +615,25 @@ fn parse_ss(rest: &str) -> Option<ParsedNode> {
         //（2022-blake3 系常见）。':' 不在 base64 字母表 → 明文必然解码失败，天然分流。
         if let Some(dec) = b64_flex(u) {
             let (m, p) = dec.split_once(':')?;
-            (m.to_string(), p.to_string(), hp.to_string())
+            if !known_cipher(m) {
+                return None;
+            }
+            (canon_cipher(m), p.to_string(), hp.to_string())
         } else {
             let (m, p) = u.split_once(':')?;
-            (pd(m), pd(p), hp.to_string())
+            if !known_cipher(m) {
+                return None;
+            }
+            (canon_cipher(m), pd(p), hp.to_string())
         }
     } else {
         let decoded = b64_flex(&parts.authority)?;
         let (cred, hp) = decoded.split_once('@')?;
         let (m, p) = cred.split_once(':')?;
-        (m.to_string(), p.to_string(), hp.to_string())
+        if !known_cipher(m) {
+            return None;
+        }
+        (canon_cipher(m), p.to_string(), hp.to_string())
     };
     let (server, port) = split_hostport(&hostport)?;
 
@@ -568,6 +646,13 @@ fn parse_ss(rest: &str) -> Option<ParsedNode> {
         ..Default::default()
     };
     apply_query(&mut n, &q);
+    // query 里的 `?method=` / `?cipher=` 同样要过白名单：apply_query 会把它写进
+    // extra["method"]，一个内核不认的值足以让它在加载时炸掉整份 provider。
+    // 必须在下面覆盖**之前**查 —— 覆盖后就分不清是谁给的了。
+    let q_cipher = q.get("method").or_else(|| q.get("cipher"));
+    if q_cipher.is_some_and(|c| !known_cipher(c)) {
+        return None;
+    }
     // userinfo 里的 method 权威（覆盖 query 可能给的 method/cipher 兜底）。
     n.extra.insert("method".to_string(), method);
     apply_name_defaults(&mut n, "ss");
@@ -708,7 +793,16 @@ fn clash_to_nodes(arr: &[serde_yaml::Value]) -> (Vec<ParsedNode>, Vec<String>) {
                     .and_then(|x| x.as_str())
                     .unwrap_or("(无名)");
                 let ty = entry.get("type").and_then(|x| x.as_str()).unwrap_or("?");
-                skipped.push(format!("不支持的 Clash 节点类型：{name}（{ty}）"));
+                // ss 节点被丢掉只可能是 cipher 不被内核认（见 clash_one 里的
+                // 白名单），报成「不支持的节点类型 ss」会把排障引到错的方向。
+                let why = match ty {
+                    "ss" => match ystr(entry, "cipher") {
+                        Some(c) => format!("，cipher {c} 内核不认"),
+                        None => String::new(),
+                    },
+                    _ => String::new(),
+                };
+                skipped.push(format!("不支持的 Clash 节点：{name}（{ty}{why}）"));
             }
         }
     }
@@ -734,10 +828,14 @@ fn clash_one(entry: &serde_yaml::Value) -> Option<ParsedNode> {
     match ty.as_str() {
         "ss" => {
             n.password = ystr(entry, "password");
-            n.extra.insert(
-                "method".into(),
-                ystr(entry, "cipher").unwrap_or_else(|| "aes-256-gcm".into()),
-            );
+            // cipher 也要过白名单并归一化：Clash YAML 的 cipher 原样进 mihomo，
+            // 一个内核不认的值（大小写错、ofb、plain…）会让**整份** provider
+            // 初始化失败 —— 和 [parse_ss] 里是同一个坑，理由见 [SS_CIPHERS]。
+            let cipher = ystr(entry, "cipher").unwrap_or_else(|| "aes-256-gcm".into());
+            if !known_cipher(&cipher) {
+                return None;
+            }
+            n.extra.insert("method".into(), canon_cipher(&cipher));
             n.security = ystr(entry, "tls");
             if let Some(pl) = ystr(entry, "plugin") {
                 n.extra.insert("plugin".into(), pl);
@@ -1517,6 +1615,132 @@ mod tests {
         );
         assert_eq!(n.password.as_deref(), Some("p@w"));
         assert_eq!(n.server, "9.9.9.9");
+    }
+
+    /// `ss://` 链接最终落进配置的 method（`None` = 整行被丢掉）。
+    ///
+    /// 走这一层是为了让断言短：测试里真正要钉的是「内核最终看到的那个字符串」，
+    /// 中间经过 `parse_line` → `extra["method"]` 之后才是它。
+    fn ss_method_of(uri: &str) -> Option<String> {
+        parse_line(uri).map(|n| n.extra["method"].clone())
+    }
+
+    /// 回归护栏：ss 的 method 认不出来时必须**整行丢掉**，不能带着垃圾值进配置。
+    ///
+    /// 第 2 条就是 v0.3.15 的 P1 实锤（`162.159.1.33`）。它以前之所以被剔掉
+    /// 是靠两条巧合：base64 恰好解不出合法 UTF-8、UUID 里又恰好没有冒号。
+    /// 任何一处改动都会让它解出一个垃圾 method 混进 provider，然后 mihomo
+    /// 整份初始化失败 → 20 好 + 1 坏 = 0 节点，日志里只有一句
+    /// `cipher: ... unknown method`。白名单把这个巧合换成显式契约。
+    #[test]
+    fn ss_的_method_认不出来必须整行丢掉() {
+        // 1. userinfo 是 base64，但解出来不是加密方式
+        let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode("not-a-cipher:pw");
+        let u = format!("ss://{b64}@1.2.3.4:8388#假方法");
+        assert!(ss_method_of(&u).is_none(), "解出非加密方式要丢掉整行");
+
+        // 2. 真实毒行（P1 那条）：UUID 当 userinfo，里面根本没有冒号
+        let poison = concat!(
+            "ss://15298f41-e80b-463a-b85b-0c903258a1c8@162.159.1.33:443",
+            "?security=tls&encryption=none"
+        );
+        assert!(ss_method_of(poison).is_none(), "P1 毒行必须被丢掉");
+
+        // 3. 明文 userinfo，method 不认识
+        assert!(ss_method_of("ss://whatever:pw@1.2.3.4:8388#x").is_none());
+
+        // 4. 旧式整段 base64（`ss://BASE64(method:pw@host:port)`），method 不认识
+        let enc = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let legacy = enc("nope:pw@1.2.3.4:8388");
+        assert!(ss_method_of(&format!("ss://{legacy}#x")).is_none());
+
+        // 5. query 里的 ?cipher= 也要过白名单（它会被写进 extra["method"]）
+        let q = "ss://aes-256-gcm:pw@1.2.3.4:8388?cipher=bogus#x";
+        assert!(ss_method_of(q).is_none(), "query 里的 cipher 也要过白名单");
+    }
+
+    /// 白名单不能反过来误伤真节点：白名单里的每一个都得能解析、且原样落盘。
+    ///
+    /// 直接遍历 `SS_CIPHERS` 而不是抄一份到测试里：以后往白名单加一个值，
+    /// 这条测试自动就把它验一遍（少写一份名单就不会忘了同步）。
+    #[test]
+    fn ss_白名单里的加密方式都要能解析() {
+        for c in SS_CIPHERS {
+            let uri = format!("ss://{c}:pw@1.2.3.4:8388#{c}");
+            assert_eq!(ss_method_of(&uri).as_deref(), Some(*c), "{c} 解析失败");
+        }
+    }
+
+    /// 大小写 / 首尾空白必须**归一化**后再进配置，不能只查不改。
+    ///
+    /// 实测 mihomo v1.19.30 对 `AES-256-GCM` 回 `unknown method`：内核大小写敏感。
+    /// 只查不改的话，这种节点会被"认出来"然后原样落盘，把整份 provider 炸掉 ——
+    /// 正是这个白名单要消灭的故障换个入口再犯一次。
+    #[test]
+    fn ss_大写加密方式要归一化成内核认的小写() {
+        for raw in ["AES-256-GCM", "Chacha20-Ietf-Poly1305", " aes-128-gcm "] {
+            let got = ss_method_of(&format!("ss://{raw}:pw@1.2.3.4:8388#x"));
+            let m = got.unwrap_or_default();
+            assert!(SS_CIPHERS.contains(&m.as_str()), "{raw} 没被认下来");
+            assert_eq!(m, m.to_ascii_lowercase(), "{raw} 没归一化：{m}");
+        }
+    }
+
+    /// 白名单里**不能**有的：逐个 `mihomo -t -f` 跑出来的失败项。
+    /// 这条测试的列表就是白名单的判据来源，别把它改松。
+    #[test]
+    fn ss_白名单不收_mihomo_实测不认的值() {
+        let bad = [
+            "plain",
+            "rc4",
+            "dummy",
+            "aes-128-ofb",
+            "bf-cfb",
+            "des-cfb",
+            "idea-cfb",
+            "chacha20-poly1305",
+            "camellia-128-cfb",
+        ];
+        for c in bad {
+            assert!(!known_cipher(c), "{c} 内核不认，不能进白名单");
+            let uri = format!("ss://{c}:pw@1.2.3.4:8388#x");
+            assert!(ss_method_of(&uri).is_none(), "{c} 该被丢掉整行");
+        }
+        // 反面：`none` 是真加密方式（不加密），别跟 `plain` 混为一谈
+        assert!(known_cipher("none"));
+        assert!(!known_cipher("plain"), "plain 不是 none 的别名");
+    }
+
+    /// Clash YAML 那条入口也要过白名单 —— 它和 share URI 落到**同一份**
+    /// file provider，只守 share URI 等于留了半个门。
+    ///
+    /// 顺带钉住两件事：跳过的 ss 节点要报出 cipher（报成「不支持的节点类型 ss」
+    /// 会把排障引到错方向），以及大写 cipher 归一化成小写再存。
+    #[test]
+    fn clash_yaml_的_ss_cipher_同样过白名单并归一化() {
+        let yaml = "proxies:\n\
+                    - name: 好节点\n\
+                      type: ss\n\
+                      server: 1.2.3.4\n\
+                      port: 8388\n\
+                      cipher: AES-256-GCM\n\
+                      password: pw\n\
+                    - name: 坏节点\n\
+                      type: ss\n\
+                      server: 5.6.7.8\n\
+                      port: 8388\n\
+                      cipher: aes-128-ofb\n\
+                      password: pw\n";
+        let (nodes, skipped) = parse_subscription_text(yaml);
+        assert_eq!(nodes.len(), 1, "只该留一个节点，实际 {}", nodes.len());
+        let m = nodes[0].extra["method"].clone();
+        assert_eq!(m, "aes-256-gcm", "大写 cipher 必须归一化后再存");
+        assert_eq!(skipped.len(), 1, "实际跳过：{skipped:?}");
+        assert!(
+            skipped[0].contains("aes-128-ofb"),
+            "跳过原因要带出 cipher，实际：{}",
+            skipped[0]
+        );
     }
 
     #[test]

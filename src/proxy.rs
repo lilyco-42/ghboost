@@ -898,16 +898,12 @@ mod tests {
             "",
             "   ",
             "socks=127.0.0.1:1080",       // 只有 socks：核对不了
-            "proxy.company.local",          // 没有端口
-            "127.0.0.1:",                  // 端口为空
-            "127.0.0.1:abc",               // 端口不是数字
-            "http=;https=127.0.0.1:7897",  // http 段是空的
+            "proxy.company.local",        // 没有端口
+            "127.0.0.1:",                 // 端口为空
+            "127.0.0.1:abc",              // 端口不是数字
+            "http=;https=127.0.0.1:7897", // http 段是空的
         ] {
-            assert_eq!(
-                parse_proxy_server(raw),
-                None,
-                "不该被认出来: {raw:?}"
-            );
+            assert_eq!(parse_proxy_server(raw), None, "不该被认出来: {raw:?}");
         }
     }
 
