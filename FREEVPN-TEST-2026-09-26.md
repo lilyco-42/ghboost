@@ -616,6 +616,38 @@ APK 里放的就是 GPL 本体，所以**这条论证对发布件不再成立**�
 是走「下一版顺手补 UI」还是单独做一版。**在这两条决定之前，不建议再发新版** ——
 每发一版就多一批需要同样补救的渠道。
 
+**这一轮修的过程中，CI 又抓出一条**（不在我预判里）：第一版把许可证来源换成
+`gnu.org` 规范全文，`tray` run **36415822727 当场红了** ——
+`www.gnu.org` 从 GitHub runner 直接超时（`connected host has failed to respond`），
+本机 curl 同样失败（curl exit 35），**不是偶发**。于是最终方案是每个文件给
+多个来源、GitHub raw 优先（走自家 CDN）、gnu.org 只兜底，且**用大小当判据**
+而不是「HTTP 200 就算」：
+
+| 文件 | 首选来源（实测命中） | 大小 |
+|---|---|---|
+| `mihomo-LICENSE.txt` | `MetaCubeX/mihomo` 的 `Alpha/LICENSE` | 35,149 B |
+| `xray-LICENSE.txt` | `XTLS/Xray-core` 的 `LICENSE` | 16,725 B |
+| `sing-box-LICENSE.txt` | SPDX `license-list-data` 的 `GPL-3.0-only.txt` | 34,674 B |
+
+第一条尤其合适：取到的就是 **mihomo 自己仓库的** LICENSE，且与 gnu.org 那份
+**逐字节相同**（SHA256 `3972DC97…`，本地实测比对过）——既是 GitHub CDN 上的稳源，
+语义上也最贴。
+
+顺带一条通用教训，已写进预防清单：**普通依赖取不到可以重试或换源，许可证正文取不到
+只有一个正确结果：炸。** 合规来源的失败不允许降级成 `WARN` —— 这正是当初
+`try/catch` + `WARN` 让 sing-box 那份连续两版静默缺失的根因。
+
+**收口证据（全部为 CI 实跑，非纸面推断）：**
+
+- `tray` run **36416541453**（`3ad51f3`）`success`：新 step 从三个 GitHub 源取到
+  35,149 / 16,725 / 34,674 B；`Package` 的 notices 派生断言通过（**sing-box 那份
+  第一次真的在包里**）；`install.ps1` 把三份按大小装进安装目录，装完这一层的
+  断言通过。
+- `Build All` run **36416541475**（`3ad51f3`）`success`：APK 侧三份 + notices 全部
+  staging 落位；「Verify license texts are actually inside the APK」对 **4 个 APK
+  各 4 个文件**共 16 条 `ok` —— 许可证是真的在 APK 里，不只是暂存目录里有。
+- 本地也真跑过：新 step 与 Android 那段 bash 都用真网络执行过，退出码 0。
+
 顺带修一个既有缺陷：`install.bat` 调的是 **powershell（5.1）**，而 `install.ps1`
 是**无 BOM** 的 UTF-8 且含 105 个中文字符 —— 5.1 按 ANSI 读，整个文件中文全是乱码
 （实跑可见「已請求退出」变乱码）。`install.bat` 自己的注释已经意识到
