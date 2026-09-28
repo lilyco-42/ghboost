@@ -1,4 +1,4 @@
-# ghboost-tray installer (ASCII only - PowerShell 5.1 reads BOM-less UTF-8 as ANSI)
+﻿# ghboost-tray installer (ASCII only - PowerShell 5.1 reads BOM-less UTF-8 as ANSI)
 # Creates a Desktop shortcut and an optional logon autostart entry.
 param(
     [string]$InstallDir = "$env:LOCALAPPDATA\ghboost",
@@ -79,6 +79,25 @@ if ($NoKernel) {
     New-Item -ItemType Directory -Force -Path $CfgDir | Out-Null
     Copy-Item (Join-Path $Bundled "bin\*") $BinDir -Force -Recurse
     Copy-Item (Join-Path $Bundled "mihomo\*") $CfgDir -Force -Recurse
+    # 许可证文本也必须落到安装目录。THIRD-PARTY-NOTICES.md 里对 mihomo / xray /
+    # sing-box 三处都写着「安装目录提供」，但下面两条 Copy-Item 只搬 bin\* 和
+    # mihomo\*，**没有搬 kernel\*-LICENSE.txt** —— 于是 zip 里有、装完没有，
+    # 文档承诺与用户实际拿到的东西对不上。分发 GPL-3.0 内核却不把它要求的许可证
+    # 放到用户手上，属实打脸。显式搬一次，并且搬完逐个确认（空文件不算）。
+    $Lics = @(Get-ChildItem -Path $Bundled -Filter "*-LICENSE.txt" -File -ErrorAction SilentlyContinue)
+    foreach ($L in $Lics) {
+        Copy-Item $L.FullName $InstallDir -Force
+    }
+    if ($Lics.Count -eq 0) {
+        Write-Warning "No *-LICENSE.txt found in $Bundled - the kernel licenses will not be present in $InstallDir."
+    } else {
+        foreach ($L in $Lics) {
+            $Dest = Join-Path $InstallDir $L.Name
+            $sz = (Get-Item $Dest).Length
+            if ($sz -lt 10240) { Write-Warning "$($L.Name) installed but only $sz bytes - looks like a pointer notice, not the license text." }
+            Write-Host ("  license -> {0} ({1} bytes)" -f $Dest, $sz)
+        }
+    }
     Write-Host "Kernel (bundled) -> $BinDir\mihomo.exe"
 } elseif ($WithKernel) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12

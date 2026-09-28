@@ -129,11 +129,12 @@ jobs:
           foreach ($f in @("geoip.dat", "geosite.dat")) {
             Invoke-WebRequest -Uri "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/$f" -OutFile "$K/bin/$f" -UseBasicParsing
           }
-          try {
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/XTLS/Xray-core/main/LICENSE" -OutFile "$K/xray-LICENSE.txt" -UseBasicParsing
-          } catch {
-            Write-Host "WARN: could not fetch the Xray MPL text (non-fatal)"
-          }
+          # Xray-core 是 MPL-2.0 全文，只存在于上游仓库（gnu.org 没有这份），所以仍
+          # 从仓库取，但**取不到就炸**：我们在分发 xray.exe，许可证文本是分发义务的
+          # 一部分，不是可选项。曾经这里是 try/catch + WARN，于是上游一抖动就会静默
+          # 产出一个「有 xray.exe、没 xray-LICENSE.txt」的包，而 THIRD-PARTY-NOTICES.md
+          # 仍然白纸黑字写着该文件在安装目录里 —— 承诺与产物对不上，没人会发现。
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/XTLS/Xray-core/main/LICENSE" -OutFile "$K/xray-LICENSE.txt" -UseBasicParsing
 
           # ── sing-box（GPL-3.0）── 资产名带版本号，靠钉死的版本拼 URL ──
           # zip 内是顶层目录（sing-box-<ver>-windows-amd64/），必须 -Recurse 找；
@@ -154,11 +155,16 @@ jobs:
             Write-Host "WARN: libcronet.dll absent in sing-box zip (upstream may have dropped it)"
           }
           Remove-Item $SDir -Recurse -Force
-          try {
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/SagerNet/sing-box/main/LICENSE" -OutFile "$K/sing-box-LICENSE.txt" -UseBasicParsing
-          } catch {
-            Write-Host "WARN: could not fetch the sing-box GPL text (non-fatal)"
-          }
+          # sing-box 的 LICENSE 曾经指向 `.../sing-box/main/LICENSE`，那个 URL **已经
+          # 404**（上游挪了文件），而当时包在 try/catch 里只打 WARN —— 于是每一次构建
+          # 都静默地少一份 GPL-3.0 文本，v0.3.16 / v0.3.17 的 zip 里就都没有
+          # kernel/sing-box-LICENSE.txt，尽管 THIRD-PARTY-NOTICES.md 承诺它在那儿。
+          #
+          # 而且不能简单改成钉版本 tag：v1.14.2 的 LICENSE 只有 791 字节，是一句
+          # 「本程序按 GPL-3.0 授权，详见 …」的**版权声明**，不含许可证正文，而
+          # notices 承诺的是「GPL-3.0 全文」。所以取 gnu.org 的规范全文，和 mihomo
+          # 那步同一个来源（已验证能取到 ~35 KB 正文）。
+          Invoke-WebRequest -Uri "https://www.gnu.org/licenses/gpl-3.0.txt" -OutFile "$K/sing-box-LICENSE.txt" -UseBasicParsing
 
           # 钉死的版本若被上游撤档/改名，这里当场炸 —— 不带着残缺包往下走。
           foreach ($f in @("xray.exe", "sing-box.exe", "geoip.dat", "geosite.dat")) {
@@ -182,6 +188,25 @@ jobs:
           Copy-Item ghboost-tray/tools/uninstall.bat dist/
           Copy-Item ghboost-tray/README.md dist/
           Copy-Item ghboost-tray/THIRD-PARTY-NOTICES.md dist/
+          # THIRD-PARTY-NOTICES.md 承诺了哪些 LICENSE 文件，一个都不许缺 ——
+          # 承诺必须和产物对得上。v0.3.16 / v0.3.17 的 zip 就少了一份
+          # sing-box-LICENSE.txt，而 notices 里明明写着它在安装目录中，没人发现。
+          # 从 notices 里正则抓文件名而不是写死列表：以后往包里加内核，只要 notices
+          # 写了，它的许可证文本就被自动要求，不用记得同步改这里。
+          $Notices = Get-Content "dist/THIRD-PARTY-NOTICES.md" -Raw
+          $Promised = [regex]::Matches($Notices, 'kernel[/\\]([A-Za-z0-9._-]*-LICENSE\.txt)') |
+                       ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+          if (-not $Promised) { throw "no kernel license filenames parsed from THIRD-PARTY-NOTICES.md (regex too brittle?)" }
+          foreach ($f in $Promised) {
+            $p = "dist/kernel/$f"
+            if (-not (Test-Path $p)) { throw "THIRD-PARTY-NOTICES.md promises $f but the package does not contain it" }
+            $sz = (Get-Item $p).Length
+            # 10 KB 下限：足以把「只有一句『详见 GPL-3.0』的版权声明」（sing-box 那个
+            # 791 字节的 LICENSE）挡在外面，同时放行 GPL-3.0 全文（~35 KB）和
+            # MPL-2.0 全文（~16.7 KB）。
+            if ($sz -lt 10240) { throw "$f is only $sz bytes - that is a pointer notice, not the license text" }
+            Write-Host "ok $f ($sz bytes)"
+          }
           # 校验和覆盖包内所有文件（含内核），方便用户验签
           $Root = (Resolve-Path dist).Path
           (Get-ChildItem dist -Recurse -File | ForEach-Object {
@@ -299,6 +324,28 @@ jobs:
             if (-not (Test-Path $f)) { throw "missing after install: $f" }
             Write-Host ("  ok  {0,-24} {1}" -f $rel, (Get-Item $f).Length)
           }
+          # 许可证文本同样要断言**装完**在位。上面第 317-318 行写过为什么内核必须
+          # 断到装完这一层（当年 mihomo 档名 bug 就是漏在这半段）—— 同样的道理对
+          # 许可证成立，而且这里本来就有洞：THIRD-PARTY-NOTICES.md 对三个内核都写着
+          # 「安装目录提供」，而 install.ps1 原本只搬 bin\* 和 mihomo\*，许可证压根
+          # 没进安装目录。装完这一层不断言，就永远没人会发现。
+          $LicOk = $true
+          foreach ($lic in @("mihomo-LICENSE.txt", "xray-LICENSE.txt", "sing-box-LICENSE.txt")) {
+            $f = Join-Path $InstallDir $lic
+            if (-not (Test-Path $f)) {
+              Write-Host "  MISSING after install: $lic"
+              $LicOk = $false
+              continue
+            }
+            $sz = (Get-Item $f).Length
+            if ($sz -lt 10240) {
+              Write-Host ("  TOO SMALL {0}: {1} bytes (pointer notice, not license text)" -f $lic, $sz)
+              $LicOk = $false
+              continue
+            }
+            Write-Host ("  ok  {0,-24} {1}" -f $lic, $sz)
+          }
+          if (-not $LicOk) { throw "kernel license texts missing or truncated in the installed layout" }
           Write-Host "Install smoke test passed."
 
       # 打 tag 时挂到 Release 上，作为对外下载地址。
