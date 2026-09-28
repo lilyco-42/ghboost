@@ -409,9 +409,19 @@ scan 产物里 **88 行**没有名字：21 行 `http://ip:port` + 4 行 `socks:/
 已修（列表后补空 `///`），并把 `ci.yml` 的 clippy 步补上 `-D warnings`，让两道闸
 字面一致 —— 快的闸不拦，红的就只会晚 20 分钟到慢的闸那里才炸。
 
-**仍未覆盖**：`ghboost-tray` / `ghboost-ffi` 两个 crate 任何 workflow 都没跑过
-clippy（只 build）。机械扫过它们的 doc 注释没有同类问题，但「没有 clippy 闸」
-这件事本身还在，想收紧就照 (b) 的方式给 `tray.yml` 补一步。
+**`ghboost-tray` 已补**（`533d46b`）：`tray.yml` 以前只有 build，等于「改这个 crate
+只有编译器兜底」，而它恰恰是唯一要发给用户双击运行、还要走 SignPath 签名的二进制。
+现在有 `cargo fmt -- --check` + `cargo clippy --all-targets --locked -- -D warnings`
+两道闸，命令与根 crate 逐字一致；顺手把 toolchain 钉成 `1.98.1`（`fmt --check` 在
+stable 升版时会毫无征兆飘红，`build-all.yml:32` 有前例）。首次即绿 ——
+tray run 36411407842 的 step 5 / step 6 都是 `success`（不是 skipped）。
+
+**`ghboost-ffi` 仍然没有，而这不是漏了，是照抄一行会更糟**：它的 `jni` 挂在
+`default = ["android"]` 后面，`meow-*` 全部 `cfg(target_os = "android")`，所以跑
+host clippy 会把 `nativeScan` / `nativeSetHomeDir` / `nativeTest` / `nativeListCores`
+**一个都不编** —— 正好是这轮改的那批。这样的闸比没有闸更坏：绿灯是假的。
+真要闸只能 `cargo clippy --target aarch64-linux-android`（要 NDK + 该 target 的
+rust-std，且 `cargo-ndk` 本身不跑 clippy），是独立工作量，不夹在发版里做。
 
 **需要用户配合**（沿用原清单的 7 / 8 编号 —— 上面 6 条已收口，剩的就是这两条，
 都卡在「得有人操作设备」上，不是代码问题）：

@@ -151,9 +151,10 @@
   靠源码拼的块状 YAML 会塌成非法标量流，`serde_yaml` 解析失败 → 一条都读不出来。
   rustfmt 完全不重排 `\`-续行的字符串字面量，所以 CI 不会帮你发现。拿 `mihomo -t -f`
   当 YAML oracle 验（含故意写坏的对照）。
-- **`ghboost-tray` 的 fmt/clippy 闸已补**（`tray.yml`，命令与根 crate 逐字一致，
-  toolchain 一并钉 `1.98.1`）。这个 crate 以前只有 build，等于改它只有编译器兜底，
-  而它是**要发给用户双击运行、还要走 SignPath 签名**的那份二进制。
+- **`ghboost-tray` 的 fmt/clippy 闸已补**（`533d46b` / tray.yml，命令与根 crate 逐字
+  一致，toolchain 一并钉 `1.98.1`）。这个 crate 以前只有 build，等于改它只有编译器
+  兜底，而它是**要发给用户双击运行、还要走 SignPath 签名**的那份二进制。
+  首次即绿（run 36411407842 step 5/6 均 success）。
 - **`ghboost-ffi` 的 clippy 闸仍然没有，而且不能照抄一行就了事** —— 加之前先算了
   覆盖率：它的 `jni` 在 `default = ["android"]` 后面，`meow-*` 全部
   `cfg(target_os = "android")`，所以**跑 host clippy 会把 `nativeScan` /
