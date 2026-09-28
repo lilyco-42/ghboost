@@ -271,12 +271,81 @@ jobs:
           done
           exit $fail
 
+      # 分发 GPL-3.0 / MPL-2.0 内核，就得把许可证正文一起打进包。上一步刚往 jniLibs
+      # 里放了**真**的 libmihomo.so（GPL-3.0）、libxray.so（MPL-2.0）、
+      # libsingbox.so（GPL-3.0），而在此之前 ghboost-android 整棵树**没有任何**
+      # LICENSE/NOTICE 文件、assets 目录都不存在 —— 桌面侧是靠 kernel\*-LICENSE.txt
+      # 处理的（tray.yml），Android 侧完全没跟上，于是 79 MB 的 APK 裸发 GPL 内核。
+      #
+      # 顺手记一个同源坑：sing-box 上游仓库里的 LICENSE 只有 791 字节，是一句
+      # 「详见 GPL-3.0」的版权声明、**不含正文**。所以 GPL-3.0 一律取 gnu.org 的规范
+      # 全文（桌面侧已因此返工过一次），MPL-2.0 全文只存在于 Xray-core 仓库。
+      - name: Stage kernel license texts into assets
+        run: |
+          set -e
+          A="ghboost-android/app/src/main/assets/licenses"
+          mkdir -p "$A"
+          curl -fsSL --retry 3 --max-time 120 -o "$A/mihomo-LICENSE.txt" \
+            "https://www.gnu.org/licenses/gpl-3.0.txt"
+          curl -fsSL --retry 3 --max-time 120 -o "$A/sing-box-LICENSE.txt" \
+            "https://www.gnu.org/licenses/gpl-3.0.txt"
+          curl -fsSL --retry 3 --max-time 120 -o "$A/xray-LICENSE.txt" \
+            "https://raw.githubusercontent.com/XTLS/Xray-core/main/LICENSE"
+          cp THIRD-PARTY-NOTICES.md "$A/THIRD-PARTY-NOTICES.md"
+          # 断言两件事：文件在，以及**是正文而不是指针声明**。10 KB 下限专门挡
+          # 「只有一句『详见 GPL-3.0』」那种（sing-box 的 791 字节），同时放行
+          # GPL-3.0 全文（~35 KB）与 MPL-2.0 全文（~16.7 KB）。
+          fail=0
+          for f in mihomo-LICENSE.txt xray-LICENSE.txt sing-box-LICENSE.txt; do
+            p="$A/$f"
+            if [ ! -f "$p" ]; then echo "::error::missing $p"; fail=1; continue; fi
+            sz=$(stat -c%s "$p")
+            if [ "$sz" -lt 10000 ]; then
+              echo "::error::$p is only $sz bytes - pointer notice, not license text"
+              fail=1; continue
+            fi
+            echo "ok $p ($sz bytes)"
+          done
+          p="$A/THIRD-PARTY-NOTICES.md"
+          if [ ! -f "$p" ]; then
+            echo "::error::missing $p (source/licence statements must ship with the APK)"
+            fail=1
+          else
+            echo "ok $p ($(stat -c%s "$p") bytes)"
+          fi
+          exit $fail
+
       - name: Build APK (Gradle)
         working-directory: ghboost-android
         run: |
           chmod +x gradlew 2>/dev/null || true
           # --stacktrace：packageRelease 这类失败默认不带根因，红了直接拿堆栈
           ./gradlew assembleRelease --no-daemon --stacktrace
+      # 「staging 目录里有」和「用户拿到的 APK 里有」是两件事：Gradle 的源集 /
+      # packagingOptions 一改就可能把 assets 悄悄丢掉，而上一步的断言照样绿。
+      # 所以直接开包看。这和 tray.yml 里那个安装冒烟测试是同一个道理 ——
+      # 断言必须落在**产物**上，不是落在暂存目录上。
+      - name: Verify license texts are actually inside the APK
+        run: |
+          set -e
+          shopt -s nullglob
+          DIR=ghboost-android/app/build/outputs/apk/release
+          files=("$DIR"/*.apk)
+          if [ ${#files[@]} -eq 0 ]; then echo "::error::no APK to inspect"; exit 1; fi
+          fail=0
+          for apk in "${files[@]}"; do
+            base=$(basename "$apk")
+            echo "=== $base ==="
+            for f in mihomo-LICENSE.txt xray-LICENSE.txt sing-box-LICENSE.txt THIRD-PARTY-NOTICES.md; do
+              if unzip -l "$apk" | grep -q "assets/licenses/$f"; then
+                echo "  ok   assets/licenses/$f"
+              else
+                echo "::error::assets/licenses/$f is NOT inside $base"
+                fail=1
+              fi
+            done
+          done
+          exit $fail
       # 閘門：未簽名的 APK 裝不起來（使用者只看到「應用程式未安裝」），
       # 而這種錯誤在 CI 上完全看不出來 —— 建置會成功、檔案會上傳、
       # Release 會出現 4 個 .apk，只是沒人裝得起來。所以在這裡就擋掉。

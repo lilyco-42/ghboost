@@ -188,9 +188,11 @@
   rust-std，cargo-ndk 本身不跑 clippy），属于独立工作量，本轮记为待办不做。
 - **闸验的 Rust ≠ 出包的 Rust**：`ci.yml:36` / `build-all.yml:37` 的 fmt+clippy+test
   钉死 `toolchain: 1.98.1`，但 `ci.yml` 的 zigbuild 矩阵、`build-all.yml` 的全部出包
-  job、整个 `tray.yml:35` 都只写 `@stable`（= 当时最新 stable）。stable 一升，闸还绿着
+  job 都只写 `@stable`（= 当时最新 stable）。stable 一升，闸还绿着
   而出包 job 先炸，或闸红在与出包无关的新 lint 上。同一病根：闸与被闸的东西不是同一份配置。
-  要收就四处统一钉 `1.98.1`；本轮没动（会让下次出包换编译器，是发版决策不是补丁）。
+  要收就统一钉 `1.98.1`；本轮没动（会让下次出包换编译器，是发版决策不是补丁）。
+  > `tray.yml` 原先也在这份名单里，但 `533d46b` 之后它只有一个 toolchain action 且
+  > 钉了 `1.98.1`，闸与出包已经统一，**不再属于此列**。
 - **Windows 上 `-no-window` 起模拟器时，进程名是 `qemu-system-x86_64-headless.exe`**，
   不是 `emulator` / `qemu-system-x86_64`。按名字 kill 会漏掉它，残留进程会一直占着
   AVD 的 `multiinstance.lock`，之后每次启动都直接
@@ -222,6 +224,23 @@
   （`kernel/mihomo-LICENSE.txt` + `THIRD-PARTY-NOTICES.md` 的专门小节），Android 侧
   没跟上。连带 `ghboost-ffi/Cargo.toml:21-24` 选 meow-rs 的那条「避免 GPL 传染 MIT
   客户端」论证**对发布件已不成立**（对 crate 仍成立）。详见测试报告 8.3。
+- **同一个坑在桌面侧也踩了，而且已经发出去两版**：`tray.yml` 取 sing-box 许可证的
+  URL（`.../sing-box/main/LICENSE`）**已 404**，而包在 `try/catch` 里只打 WARN，于是
+  v0.3.16 / v0.3.17 的 zip 都没有 `kernel/sing-box-LICENSE.txt`，尽管 notices 承诺它
+  在安装目录里。三层叠加：URL 失效 + 失败被吞 + 没有任何断言。更深一层：**光修 URL
+  也不够** —— `v1.14.2` 的 `LICENSE` 只有 791 字节，是「详见 GPL-3.0」的版权声明、
+  不含正文，必须取 gnu.org 规范全文。教训两条：
+  (a) **分发义务类的外部依赖不许 soft-fail**，`try/catch` + WARN 在合规问题上等于
+      「静默发一个不合规的包」；
+  (b) **断言要落在产物上，不是落在暂存目录/源码目录上**。桌面的「装完这一层」和
+      Android 的「开 APK 看」都是这个道理 —— 暂存目录里有，产物里未必有。
+  791 字节这个数字也顺手成了断言阈值下限（10 KB）：既挡指针声明，又放行
+  GPL 全文（~35 KB）与 MPL 全文（~16.7 KB）。
+- **`install.ps1` 是无 BOM 的 UTF-8 且含中文，`install.bat` 调的却是 powershell 5.1**：
+  5.1 按 ANSI 读，整个文件的中文全是乱码。`.bat` 自己的注释已经意识到
+  「cmd.exe 用 OEM 代码页，非 ASCII 会乱码」，却只防了自己、没防它调用的那个文件。
+  加 UTF-8 BOM 即可（PS 5.1 认 BOM）。注意 `uninstall.ps1` 是纯 ASCII，不受影响 ——
+  这种不一致说明「.ps1 纯 ASCII」的约定没被一致执行。
 - **`uiautomator dump` 的输出不能经控制台读**：本机控制台代码页是 GBK，
   `adb exec-out` 的 UTF-8 CJK 会被解成替换字符，而替换字符可能**吞掉一个引号**，
   于是 `[xml]` 报「根元素不匹配」——看起来像 App 的 UI 坏了，实际是自己的读取方式坏了。

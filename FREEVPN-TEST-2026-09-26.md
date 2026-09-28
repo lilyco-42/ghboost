@@ -546,35 +546,81 @@ host clippy 会把 `nativeScan` / `nativeSetHomeDir` / `nativeTest` / `nativeLis
 真要闸只能 `cargo clippy --target aarch64-linux-android`（要 NDK + 该 target 的
 rust-std，且 `cargo-ndk` 本身不跑 clippy），是独立工作量，不夹在发版里做。
 
-### 8.3 Android APK 里带着 GPL-3.0 内核，却一份许可证文本都没有（本轮新发现）
+### 8.3 内核许可证：桌面侧漏了一份（已在发出去的两版里），Android 侧一份都没有
 
-AVD 复测时顺手对了一下「APK 里到底装了什么」，发现一处**发布合规缺口**：
+AVD 复测时顺手对了一下「产物里到底装了什么」，结果挖出**三层**问题，一层套一层。
+先说最要命的：**已经发布出去的 v0.3.16 / v0.3.17 里，桌面 zip 缺 sing-box 的
+GPL-3.0 正文**，而 81 MB 的 GPL 内核 `kernel/bin/sing-box.exe` 就在同一个包里。
 
-| | 桌面（tray） | Android APK |
+**第一层：URL 永久失效 + 失败被吞。** `tray.yml` 取 sing-box 许可证打的是
+`raw.githubusercontent.com/SagerNet/sing-box/main/LICENSE`，该 URL **现在 404**
+（上游挪了文件），而当时包在 `try/catch` 里只打 `WARN`「non-fatal」——
+于是**每一次**构建都静默少一份文本。从 v0.3.16 到 v0.3.17 一直如此。
+实测已发布的 v0.3.17 zip：`kernel/` 下有 `mihomo-LICENSE.txt`（35,149 B）和
+`xray-LICENSE.txt`（16,725 B），**没有** `sing-box-LICENSE.txt`，
+而 `THIRD-PARTY-NOTICES.md` 里明明白白写着它在安装目录中。
+
+**第二层：不能简单改成钉版本 tag。** `v1.14.2` 的 `LICENSE` 只有 **791 字节** ——
+是 `Copyright (C) 2022 by nekohasekai` + 一句「详见 GPL-3.0」的**版权声明**，
+不含正文。而 notices 承诺的是「GPL-3.0 全文」。所以「修好 URL」还不够，
+必须换成 gnu.org 的规范全文（和 mihomo 那步同一个来源）。791 字节这个数字也顺手
+定下了断言的阈值下限（见第三层）。
+
+**第三层：没有任何断言，所以以上都无人察觉。** 承诺与产物对不上，没有任何东西
+会发现。已修（`521c244`）：
+
+- sing-box 许可证改取 `gnu.org/licenses/gpl-3.0.txt`，**取不到就炸**；
+- xray 那处同样的 `try/catch` + WARN 一并去掉（它的 URL 现在还活着，但同样
+  不该让「分发义务」变成可选项）；
+- `Package` 步新增断言：从 `THIRD-PARTY-NOTICES.md` 里**正则抓**出承诺的
+  `kernel/*-LICENSE.txt`，逐个要求存在且 `>= 10 KB`。文件名从 notices 抓而不写死
+  列表 —— 以后往包里加内核，只要 notices 写了，文本就被自动要求。10 KB 下限专门
+  挡第二层那种「只有一句『详见 GPL』」的指针声明，同时放行 GPL 全文（~35 KB）
+  与 MPL 全文（~16.7 KB）。**这条断言我拿已发布的 v0.3.17 zip 验过：如实报 FAIL。**
+- `install.ps1` 原本只搬 `kernel\bin\*` 和 `kernel\mihomo\*`，
+  **`kernel\*-LICENSE.txt` 从来没被复制过** —— 所以 notices 那句「安装目录提供」
+  对 mihomo / xray 同样不成立。现在显式搬并逐个报大小。
+- 安装冒烟测试同步加上「**装完**这一层」的断言。该测试第 317-318 行本来就写着
+  「只断言 zip 里有、不断言装完有，正是当年 mihomo 档名 bug 漏掉的那半段」——
+  同样的道理对许可证成立，而且这里本来就有洞。
+
+**Android 侧同一类缺口，零许可证文本：**
+
+| | 桌面（tray） | Android APK（修复前） |
 |---|---|---|
 | 客户端自身许可证 | MIT（根 `LICENSE`，1087 B） | 同 |
-| 是否分发 GPL-3.0 的 mihomo | 是 | **是** |
-| GPL 正文 | 有：`kernel\mihomo-LICENSE.txt` + `THIRD-PARTY-NOTICES.md` 的「mihomo 本体 GPL-3.0」小节 | **完全没有** |
-| 上游源码指引 | 有（release URL + 声明未修改） | 无 |
-| `ghboost-android/` 树内 LICENSE/NOTICE/THIRD-PARTY 文件 | — | **0 个**，`assets/` 目录也不存在 |
+| 分发 GPL-3.0 内核 | 是 | **是**（`jniLibs` 里是真 `libmihomo.so`） |
+| GPL 正文 | 有（修后三份齐全） | **完全没有** |
+| 树内 LICENSE/NOTICE 文件 | 有 | **0 个**，`assets/` 目录都不存在 |
 
-证据：`build-all.yml:184-206` 把真内核塞进 `jniLibs/{arm64-v8a,armeabi-v7a,x86_64}/`
-（`libmihomo.so` / `libxray.so` / `libsingbox.so`，`:253` 还断言必须是真 ELF），
-而对 `ghboost-android` 整棵树做穷举文件名搜索，`LICENSE|NOTICE|COPYING|THIRD`
-**一个都搜不到**，`app/src/main/assets` 目录不存在。设备侧交叉印证：
-4.3 的 logcat 里确实有独立进程 `libmihomo.so` 在跑。
+证据：对 `ghboost-android` 整棵树穷举搜 `LICENSE|NOTICE|COPYING|THIRD` **零命中**；
+`build-all.yml:184-206` 把真内核塞进 `jniLibs/{arm64-v8a,armeabi-v7a,x86_64}/`
+（`:253` 还断言必须是真 ELF）；设备侧交叉印证 —— 4.3 的 logcat 里确实有独立进程
+`libmihomo.so` 在跑。已修（同 `521c244` 之后的提交）：新增
+「Stage kernel license texts into assets」把三份正文 + `THIRD-PARTY-NOTICES.md`
+打进 `assets/licenses/`，带同样的 `>= 10 KB` 断言；再加一步
+「Verify license texts are actually inside the APK」**直接开 APK 看** ——
+「staging 目录里有」和「用户拿到的 APK 里有」是两件事，Gradle 的
+`packagingOptions` 一改就可能把 assets 悄悄丢掉，而前一步的断言照样绿。
+断言必须落在**产物**上，不是落在暂存目录上（和 tray 的安装冒烟测试同理）。
 
-连带一处**文档已经过期**：`ghboost-ffi/Cargo.toml:21-24` 选 meow-rs 的理由写的是
+**连带一处文档过期**：`ghboost-ffi/Cargo.toml:21-24` 选 meow-rs 的理由写的是
 「客户端是 MIT，把 GPL 以『库』的形式链进来会让整个客户端被传染」。W8 之后
 APK 里放的就是 GPL 本体，所以**这条论证对发布件不再成立**（对 crate 本身仍成立，
-两者现在不是一回事）。桌面侧早就处理了这个问题（随二进制附带许可证文本），
-Android 侧没跟上。
+两者现在不是一回事）。桌面侧早就处理了这个问题，Android 侧此前没跟上。
 
-**这不是我能替项目做的决定**，但缺口本身是客观的、证据齐的。最小修法照抄桌面：
-把 `THIRD-PARTY-NOTICES.md` + `kernel/mihomo-LICENSE.txt`（及 xray / sing-box 的
-对应文本）放进 `app/src/main/assets/`，并在 App 里「关于」处可查。
-**建议在下一版发版前处理** —— 已经发布出去的 APK 是改不了内容的，
-越往后拖，需要补的发行渠道越多。
+**剩下没闭环的**：已发布出去的 v0.3.16 / v0.3.17 **改不了内容** —— 桌面 zip 里那份
+缺失的 sing-box 许可证只能靠下一版补齐（往 Release 挂一份 `sing-box-LICENSE.txt`
+可以立刻止血，但正式修法是发新版）。另外 App 里**没有入口让用户看到**
+`assets/licenses/`（许可证打进包了，但用户点不到）。这两条需要项目方拍板：
+是走「下一版顺手补 UI」还是单独做一版。**在这两条决定之前，不建议再发新版** ——
+每发一版就多一批需要同样补救的渠道。
+
+顺带修一个既有缺陷：`install.bat` 调的是 **powershell（5.1）**，而 `install.ps1`
+是**无 BOM** 的 UTF-8 且含 105 个中文字符 —— 5.1 按 ANSI 读，整个文件中文全是乱码
+（实跑可见「已請求退出」变乱码）。`install.bat` 自己的注释已经意识到
+「cmd.exe 用 OEM 代码页，非 ASCII 会乱码」，却只防了自己、没防它调用的那个文件。
+加 UTF-8 BOM 后实跑确认中文正常。`uninstall.ps1` 本身是纯 ASCII，不受影响。
 
 **需要用户配合**（沿用原清单的 7 / 8 编号 —— 上面 6 条已收口，剩的就是这两条，
 都卡在「得有人操作设备」上，不是代码问题）：
