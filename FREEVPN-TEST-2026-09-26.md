@@ -39,10 +39,21 @@ free-VPN README → `scan` → `test` → `add` → 托盘订阅 → 出口 IP�
 | mihomo（Android） | v1.19.31 |
 | xray | v26.3.27 |
 | sing-box | v1.14.2 |
-| Rust | 1.98.1（toolchain 在 workflow 里钉死，不用 `@stable`） |
+| Rust（fmt/clippy/test 闸） | 1.98.1（`ci.yml:36`、`build-all.yml:37` 显式 `toolchain: 1.98.1`） |
+| Rust（**出包**用的） | `@stable`，**没钉版本** —— 见下方注 |
 | 测试用 AVD | `mc_test`，API 36 / x86_64 / 1080×2400 |
 
 所有构建与校验都走 GitHub Actions（仓库无本地 cargo），本机只下载产物运行。
+
+> **顺带记一个跟 8.2 同类的闸缺口**（写这行时才发现，尚未修）：**出包用的 Rust
+> 和校验用的 Rust 不是同一个**。fmt/clippy/test 钉死 `1.98.1`，但 `ci.yml` 的
+> zigbuild 矩阵、`build-all.yml` 的全部出包 job、以及整个 `tray.yml`（`:35`）
+> 都只写 `dtolnay/rust-toolchain@stable` —— 跑的是「当时最新的 stable」。
+> 也就是说**闸验的编译器不是产物的编译器**：stable 一升，闸可能还绿着，
+> 而出包 job 先炸（或者更糟：闸红在 1.98.1 的新 lint 上，与出包成败无关）。
+> 这和 8.2(b) 是同一个病根 —— **闸与被闸的东西不是同一份配置**。
+> 要收就四处统一钉 `1.98.1`；本轮没动，因为它会让下一次出包换编译器，
+> 属于发版决策而不是补丁。
 
 ---
 
@@ -402,7 +413,8 @@ scan 产物里 **88 行**没有名字：21 行 `http://ip:port` + 4 行 `socks:/
 clippy（只 build）。机械扫过它们的 doc 注释没有同类问题，但「没有 clippy 闸」
 这件事本身还在，想收紧就照 (b) 的方式给 `tray.yml` 补一步。
 
-**需要用户配合**
+**需要用户配合**（沿用原清单的 7 / 8 编号 —— 上面 6 条已收口，剩的就是这两条，
+都卡在「得有人操作设备」上，不是代码问题）：
 
 7. 真机 USB 调试（Android 运行时复测目前只有 AVD 路径）。
 8. simul 麦克风实测（`设置 → 隐私 → 麦克风` 权限）。

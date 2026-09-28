@@ -151,5 +151,24 @@
   靠源码拼的块状 YAML 会塌成非法标量流，`serde_yaml` 解析失败 → 一条都读不出来。
   rustfmt 完全不重排 `\`-续行的字符串字面量，所以 CI 不会帮你发现。拿 `mihomo -t -f`
   当 YAML oracle 验（含故意写坏的对照）。
-- `ghboost-tray` / `ghboost-ffi` 两个 crate 目前任何 workflow 都只 build 不跑 clippy
-  —— 已知的闸覆盖缺口（`ghboost-ffi/src/lib.rs` 改动只有编译兜底）。
+- **`ghboost-tray` 的 fmt/clippy 闸已补**（`tray.yml`，命令与根 crate 逐字一致，
+  toolchain 一并钉 `1.98.1`）。这个 crate 以前只有 build，等于改它只有编译器兜底，
+  而它是**要发给用户双击运行、还要走 SignPath 签名**的那份二进制。
+- **`ghboost-ffi` 的 clippy 闸仍然没有，而且不能照抄一行就了事** —— 加之前先算了
+  覆盖率：它的 `jni` 在 `default = ["android"]` 后面，`meow-*` 全部
+  `cfg(target_os = "android")`，所以**跑 host clippy 会把 `nativeScan` /
+  `nativeSetHomeDir` / `nativeTest` / `nativeListCores` 一个都不编** ——
+  正好是我这轮改的那批函数。这样的闸比没有闸更坏：绿灯是假的。
+  真要闸只能 `cargo clippy --target aarch64-linux-android`（要 NDK + 该 target 的
+  rust-std，cargo-ndk 本身不跑 clippy），属于独立工作量，本轮记为待办不做。
+- **闸验的 Rust ≠ 出包的 Rust**：`ci.yml:36` / `build-all.yml:37` 的 fmt+clippy+test
+  钉死 `toolchain: 1.98.1`，但 `ci.yml` 的 zigbuild 矩阵、`build-all.yml` 的全部出包
+  job、整个 `tray.yml:35` 都只写 `@stable`（= 当时最新 stable）。stable 一升，闸还绿着
+  而出包 job 先炸，或闸红在与出包无关的新 lint 上。同一病根：闸与被闸的东西不是同一份配置。
+  要收就四处统一钉 `1.98.1`；本轮没动（会让下次出包换编译器，是发版决策不是补丁）。
+- **Windows 上 `-no-window` 起模拟器时，进程名是 `qemu-system-x86_64-headless.exe`**，
+  不是 `emulator` / `qemu-system-x86_64`。按名字 kill 会漏掉它，残留进程会一直占着
+  AVD 的 `multiinstance.lock`，之后每次启动都直接
+  `FATAL | Running multiple emulators with the same AVD`；而它又在 adb 里注册成
+  `emulator-5554 offline`，看起来像「启动很慢」，实际是启动**已经失败**了。
+  判断依据要看 emulator 自己的 stdout 有没有 `FATAL`，不要只看 `adb get-state`。

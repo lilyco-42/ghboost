@@ -32,11 +32,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # rustfmt + clippy 的 components 和 toolchain 都钉死，理由与 build-all.yml:32
+      # 完全一致：某天 GitHub 一升级 toolchain，`cargo fmt -- --check` 就会毫无征兆地
+      # 飘红（v0.2.1 时踩过一次）。这里顺带把「闸验的编译器」和「出包的编译器」
+      # 统一成同一个 —— 两者不一致时，闸绿着而产物炸（或反过来）都很难归因。
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          toolchain: 1.98.1
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ghboost-tray
+
+      - name: Format check (ghboost-tray)
+        working-directory: ghboost-tray
+        run: cargo fmt -- --check
+
+      # 以前这个 crate 只有 build、没有 fmt 也没有 clippy，等于「改 ghboost-tray
+      # 只有编译器兜底」。它是要发给用户双击运行、还要走 SignPath 签名的那份二进制，
+      # 闸不能比别处松。两条命令与根 crate 的闸逐字一致。
+      - name: Clippy (ghboost-tray)
+        working-directory: ghboost-tray
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Build
         working-directory: ghboost-tray
