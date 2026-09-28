@@ -236,6 +236,16 @@
       Android 的「开 APK 看」都是这个道理 —— 暂存目录里有，产物里未必有。
   791 字节这个数字也顺手成了断言阈值下限（10 KB）：既挡指针声明，又放行
   GPL 全文（~35 KB）与 MPL 全文（~16.7 KB）。
+- **别把 gnu.org 当构建依赖**：`tray` run 36415822727 就红在这儿 ——
+  `www.gnu.org` 从 GitHub runner 直接超时（"connected host has failed to respond"），
+  本机 curl 同样失败（exit 35，SSL connect error），不是偶发。取许可证正文改成
+  **多来源轮询、GitHub raw 优先（自家 CDN）、gnu.org 只兜底**，且**用大小当判据**
+  而不是「HTTP 200 就算」。实测可用源：GPL-3.0 全文见
+  `MetaCubeX/mihomo` 的 `Alpha/LICENSE`（35,149 B，与 gnu.org 那份**逐字节相同**，
+  SHA256 `3972DC97…`）或 SPDX 的 `license-list-data`（34,674 B）；
+  MPL-2.0 见 `XTLS/Xray-core`（16,725 B）或 SPDX（16,727 B）。
+  附带一条通用教训：**合规来源要比普通依赖更严** —— 普通依赖取不到可以重试或换源，
+  许可证正文取不到只有一个正确结果：炸。
 - **`install.ps1` 是无 BOM 的 UTF-8 且含中文，`install.bat` 调的却是 powershell 5.1**：
   5.1 按 ANSI 读，整个文件的中文全是乱码。`.bat` 自己的注释已经意识到
   「cmd.exe 用 OEM 代码页，非 ASCII 会乱码」，却只防了自己、没防它调用的那个文件。
