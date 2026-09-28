@@ -277,34 +277,58 @@ jobs:
       # LICENSE/NOTICE 文件、assets 目录都不存在 —— 桌面侧是靠 kernel\*-LICENSE.txt
       # 处理的（tray.yml），Android 侧完全没跟上，于是 79 MB 的 APK 裸发 GPL 内核。
       #
-      # 顺手记一个同源坑：sing-box 上游仓库里的 LICENSE 只有 791 字节，是一句
-      # 「详见 GPL-3.0」的版权声明、**不含正文**。所以 GPL-3.0 一律取 gnu.org 的规范
-      # 全文（桌面侧已因此返工过一次），MPL-2.0 全文只存在于 Xray-core 仓库。
+      # 顺手记两个同源的坑：
+      # (a) sing-box 上游仓库里的 LICENSE 只有 791 字节，是一句「详见 GPL-3.0」的
+      #     版权声明、**不含正文**。所以 GPL-3.0 一律取规范全文。
+      # (b) www.gnu.org 不可靠 —— 2026-09-28 实测 GitHub runner 连它直接超时
+      #     （"connected host has failed to respond"），把 tray.yml 的构建当场炸了。
+      #     所以每个文件给多个来源，GitHub raw 优先（自家 CDN 稳），gnu.org 兜底；
+      #     大小才是判据，「HTTP 200 就算」会收进指针声明。
+      #     （MPL-2.0 全文只存在于 Xray-core 仓库，SPDX 的镜像作兜底。）
       - name: Stage kernel license texts into assets
         run: |
           set -e
           A="ghboost-android/app/src/main/assets/licenses"
           mkdir -p "$A"
-          curl -fsSL --retry 3 --max-time 120 -o "$A/mihomo-LICENSE.txt" \
-            "https://www.gnu.org/licenses/gpl-3.0.txt"
-          curl -fsSL --retry 3 --max-time 120 -o "$A/sing-box-LICENSE.txt" \
-            "https://www.gnu.org/licenses/gpl-3.0.txt"
-          curl -fsSL --retry 3 --max-time 120 -o "$A/xray-LICENSE.txt" \
-            "https://raw.githubusercontent.com/XTLS/Xray-core/main/LICENSE"
-          cp THIRD-PARTY-NOTICES.md "$A/THIRD-PARTY-NOTICES.md"
-          # 断言两件事：文件在，以及**是正文而不是指针声明**。10 KB 下限专门挡
-          # 「只有一句『详见 GPL-3.0』」那种（sing-box 的 791 字节），同时放行
-          # GPL-3.0 全文（~35 KB）与 MPL-2.0 全文（~16.7 KB）。
+
+          fetch_license() {
+            out="$1"; shift
+            for u in "$@"; do
+              if curl -fsSL --retry 2 --max-time 90 -o "$out" "$u" 2>/dev/null; then
+                sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
+                if [ "$sz" -ge 10000 ]; then
+                  echo "  ok $out ($sz bytes) <- $u"
+                  return 0
+                fi
+                echo "  $u -> only $sz bytes (pointer notice?), trying next"
+              else
+                echo "  fetch failed: $u"
+              fi
+            done
+            echo "::error::no source yielded real license text for $out"
+            return 1
+          }
+
           fail=0
+          fetch_license "$A/mihomo-LICENSE.txt" \
+            "https://raw.githubusercontent.com/MetaCubeX/mihomo/Alpha/LICENSE" \
+            "https://raw.githubusercontent.com/spdx/license-list-data/main/text/GPL-3.0-only.txt" \
+            "https://www.gnu.org/licenses/gpl-3.0.txt" || fail=1
+          fetch_license "$A/xray-LICENSE.txt" \
+            "https://raw.githubusercontent.com/XTLS/Xray-core/main/LICENSE" \
+            "https://raw.githubusercontent.com/spdx/license-list-data/main/text/MPL-2.0.txt" || fail=1
+          fetch_license "$A/sing-box-LICENSE.txt" \
+            "https://raw.githubusercontent.com/spdx/license-list-data/main/text/GPL-3.0-only.txt" \
+            "https://www.gnu.org/licenses/gpl-3.0.txt" \
+            "https://raw.githubusercontent.com/MetaCubeX/mihomo/Alpha/LICENSE" || fail=1
+          cp THIRD-PARTY-NOTICES.md "$A/THIRD-PARTY-NOTICES.md"
+          # fetch_license 内部已经卡过「>= 10 KB 正文」这一关（专门挡 sing-box 那种
+          # 「只有一句『详见 GPL-3.0』」的指针声明，同时放行 GPL 全文 ~35 KB 与
+          # MPL 全文 ~16.7 KB）。这里再断言一遍文件确实在，作为双保险。
           for f in mihomo-LICENSE.txt xray-LICENSE.txt sing-box-LICENSE.txt; do
             p="$A/$f"
             if [ ! -f "$p" ]; then echo "::error::missing $p"; fail=1; continue; fi
-            sz=$(stat -c%s "$p")
-            if [ "$sz" -lt 10000 ]; then
-              echo "::error::$p is only $sz bytes - pointer notice, not license text"
-              fail=1; continue
-            fi
-            echo "ok $p ($sz bytes)"
+            echo "ok $p ($(stat -c%s "$p") bytes)"
           done
           p="$A/THIRD-PARTY-NOTICES.md"
           if [ ! -f "$p" ]; then

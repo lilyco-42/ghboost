@@ -88,11 +88,9 @@ jobs:
           foreach ($f in @("country.mmdb", "geosite.dat")) {
             Invoke-WebRequest -Uri "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/$f" -OutFile "$K/mihomo/$f" -UseBasicParsing
           }
-          try {
-            Invoke-WebRequest -Uri "https://www.gnu.org/licenses/gpl-3.0.txt" -OutFile "$K/mihomo-LICENSE.txt" -UseBasicParsing
-          } catch {
-            Write-Host "WARN: could not fetch the GPL text (non-fatal)"
-          }
+          # mihomo 的 GPL-3.0 正文在下面「Stage kernel license texts」那一步统一取，
+          # 和另外两个内核放一起 —— 否则这个 helper 会被定义在别的 step 里，而每个
+          # `run:` 是独立进程，跨 step 根本调不到。
           Get-ChildItem $K -Recurse -File | Select-Object FullName, Length | Format-Table
 
       # W7：xray + sing-box 随包，与 mihomo 同址 kernel/bin ——
@@ -129,12 +127,7 @@ jobs:
           foreach ($f in @("geoip.dat", "geosite.dat")) {
             Invoke-WebRequest -Uri "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/$f" -OutFile "$K/bin/$f" -UseBasicParsing
           }
-          # Xray-core 是 MPL-2.0 全文，只存在于上游仓库（gnu.org 没有这份），所以仍
-          # 从仓库取，但**取不到就炸**：我们在分发 xray.exe，许可证文本是分发义务的
-          # 一部分，不是可选项。曾经这里是 try/catch + WARN，于是上游一抖动就会静默
-          # 产出一个「有 xray.exe、没 xray-LICENSE.txt」的包，而 THIRD-PARTY-NOTICES.md
-          # 仍然白纸黑字写着该文件在安装目录里 —— 承诺与产物对不上，没人会发现。
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/XTLS/Xray-core/main/LICENSE" -OutFile "$K/xray-LICENSE.txt" -UseBasicParsing
+          # Xray-core 的 MPL-2.0 正文同样在下面那一步统一取。
 
           # ── sing-box（GPL-3.0）── 资产名带版本号，靠钉死的版本拼 URL ──
           # zip 内是顶层目录（sing-box-<ver>-windows-amd64/），必须 -Recurse 找；
@@ -155,16 +148,7 @@ jobs:
             Write-Host "WARN: libcronet.dll absent in sing-box zip (upstream may have dropped it)"
           }
           Remove-Item $SDir -Recurse -Force
-          # sing-box 的 LICENSE 曾经指向 `.../sing-box/main/LICENSE`，那个 URL **已经
-          # 404**（上游挪了文件），而当时包在 try/catch 里只打 WARN —— 于是每一次构建
-          # 都静默地少一份 GPL-3.0 文本，v0.3.16 / v0.3.17 的 zip 里就都没有
-          # kernel/sing-box-LICENSE.txt，尽管 THIRD-PARTY-NOTICES.md 承诺它在那儿。
-          #
-          # 而且不能简单改成钉版本 tag：v1.14.2 的 LICENSE 只有 791 字节，是一句
-          # 「本程序按 GPL-3.0 授权，详见 …」的**版权声明**，不含许可证正文，而
-          # notices 承诺的是「GPL-3.0 全文」。所以取 gnu.org 的规范全文，和 mihomo
-          # 那步同一个来源（已验证能取到 ~35 KB 正文）。
-          Invoke-WebRequest -Uri "https://www.gnu.org/licenses/gpl-3.0.txt" -OutFile "$K/sing-box-LICENSE.txt" -UseBasicParsing
+          # sing-box 的 GPL-3.0 正文同样在下面那一步统一取。
 
           # 钉死的版本若被上游撤档/改名，这里当场炸 —— 不带着残缺包往下走。
           foreach ($f in @("xray.exe", "sing-box.exe", "geoip.dat", "geosite.dat")) {
@@ -173,6 +157,65 @@ jobs:
             if ((Get-Item $p).Length -lt 100KB) { throw "$p implausibly small" }
           }
           Get-ChildItem $K -Recurse -File | Select-Object FullName, Length | Format-Table
+
+      # 三个内核的许可证正文统一在这一步取，不散在各内核的 staging 步里 ——
+      # 每个 `run:` 是独立进程，跨 step 调不到函数；而把三份放一起也顺带让
+      # 「取不到就炸」这条规则只写一遍。
+      #
+      # 这三处以前全是 try/catch + "WARN (non-fatal)"。sing-box 那处的 URL
+      # （`.../sing-box/main/LICENSE`）**已经 404**（上游挪了文件），于是**每一次**
+      # 构建都静默少一份 GPL-3.0 文本：v0.3.16 / v0.3.17 的 zip 里都没有
+      # kernel/sing-box-LICENSE.txt，而 THIRD-PARTY-NOTICES.md 承诺它在安装目录里，
+      # 81 MB 的 GPL 内核就这么裸发出去。承诺与产物对不上，没有任何东西会发现。
+      #
+      # 三个来源轮着试，任一拿到**足够大的**正文就算过（大小是硬判据，不是
+      # 「HTTP 200 就算」），全挂了才炸。不能只留 gnu.org：2026-09-28 实测
+      # GitHub runner 连 www.gnu.org 直接超时，当场把构建炸了。GitHub raw 走自家
+      # CDN 稳得多；对 mihomo 而言取到的又正好是**它自己仓库的** LICENSE ——
+      # 与 gnu.org 那份逐字节相同（SHA256 3972DC97…），语义最贴。
+      #
+      # 注意 sing-box 那一行**不能**改成钉版本 tag：v1.14.2 的 LICENSE 只有 791
+      # 字节，是「本程序按 GPL-3.0 授权，详见…」的**版权声明**，不含正文，而
+      # notices 承诺的是「全文」。SPDX 镜像优先（比「拿 mihomo 的仓库当 sing-box
+      # 的许可证来源」语义干净），后两者内容一致。
+      - name: Stage kernel license texts (GPL-3.0 x2, MPL-2.0)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $ProgressPreference = "SilentlyContinue"
+          $K = "dist/kernel"
+          # 自建目录，不依赖前面哪个 step 顺手建过 —— 那个隐式耦合实测会炸成
+          # "Could not find a part of the path ...\dist\kernel\mihomo-LICENSE.txt"，
+          # 报错完全指不到真正的原因（目录缺失根本不是这一步的责任）。
+          New-Item -ItemType Directory -Force -Path $K | Out-Null
+
+          function Get-LicenseText {
+            param([string]$OutFile, [string[]]$Urls)
+            foreach ($u in $Urls) {
+              try {
+                Invoke-WebRequest -Uri $u -OutFile $OutFile -UseBasicParsing -TimeoutSec 60
+                $sz = (Get-Item $OutFile).Length
+                if ($sz -ge 10240) { Write-Host "  ok $OutFile ($sz bytes) <- $u"; return }
+                Write-Host "  $u -> only $sz bytes (pointer notice?), trying next"
+              } catch {
+                Write-Host "  fetch failed: $u -- $($_.Exception.Message)"
+              }
+            }
+            throw "no source yielded real license text for $OutFile"
+          }
+
+          Get-LicenseText "$K/mihomo-LICENSE.txt" @(
+            "https://raw.githubusercontent.com/MetaCubeX/mihomo/Alpha/LICENSE",
+            "https://raw.githubusercontent.com/spdx/license-list-data/main/text/GPL-3.0-only.txt",
+            "https://www.gnu.org/licenses/gpl-3.0.txt")
+          Get-LicenseText "$K/xray-LICENSE.txt" @(
+            "https://raw.githubusercontent.com/XTLS/Xray-core/main/LICENSE",
+            "https://raw.githubusercontent.com/spdx/license-list-data/main/text/MPL-2.0.txt")
+          Get-LicenseText "$K/sing-box-LICENSE.txt" @(
+            "https://raw.githubusercontent.com/spdx/license-list-data/main/text/GPL-3.0-only.txt",
+            "https://www.gnu.org/licenses/gpl-3.0.txt",
+            "https://raw.githubusercontent.com/MetaCubeX/mihomo/Alpha/LICENSE")
 
       - name: Package
         shell: pwsh
