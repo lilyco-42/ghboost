@@ -99,9 +99,39 @@
   同时 `69d77a5` 的 scan 去重让重名行 708 → 86，`add` 导出从「22 行 20 个名
   （`US-VPNine1`×3）」变成 20 行 20 个名。完整报告见
   [`FREEVPN-TEST-2026-09-26.md`](FREEVPN-TEST-2026-09-26.md)。
-  遗留（已记录未修）：`mihomo.rs` 排空 stdout/stderr（顺带解 64KB 死锁风险）、
-  `do_stop` 只关自己开的系统代理、Android 补 `nativeTest` 入口、cipher 白名单、
-  给 CI/Build All 也加 `--locked`。
+  遗留 6 条已在 W14 全部收口。
+- [x] W13 Release `v0.3.16`：tag `5ea1bcf`，30 资产 / 649.3 MB
+  （`706db64` 发版 → `365973c` 补 lock 修红灯 → `5ea1bcf` 报告入仓；
+  run CI 36237323026 / tray 36237323002 / Build All 36237323009 / pages 36237322594 全绿）
+- [x] W14 报告遗留 6 条 + `v0.3.17`（2026-09-27 收口，四闸全绿，run 36296725819 /
+  36296725850 / 36296725806 / 36296725982，79 passed / 0 failed）：
+  1. **内核日志不落盘**（`63b8d1f`）—— 以前 `Stdio::piped()` 接了管道却没人读：诊断全丢，
+     且输出超 64 KB 会把内核写死在 write 上。改成两个流直接 `Stdio::from(File)` 落
+     `kernel.log`（不建管道），另加 `log_tail`（单行超 200 字符截断，内核会把整份配置的
+     错误堆进一行）与 `/api/kernel-log`。
+  2. **`do_stop` 误关别人的系统代理**（`6b1b329`）—— `set_proxy` 成功时记账
+     （`ProxyEnable`/`ProxyServer`/`ProxyOverride` 原值），停前交叉核对端点，
+     对不上就明说「不是 ghboost 开的，没有动它」；`unset_proxy` 成功路径销账。
+  3. **ss cipher 白名单**（`a645107`）—— `SS_CIPHERS` 23 项由 mihomo v1.19.30 逐个试出，
+     三个入口都守（share URI / Clash YAML / 外来节点清洗），`method` 归一化成小写再落盘
+     （内核大小写敏感）；缺 cipher 或缺 password 的 ss 整条丢，否则就是「整份 provider
+     被拒 = 20 好 + 1 坏 = 0 节点」。
+  4. **Android 补测速入口**（`bca9c1c`）—— `nativeTest` 之前是有导出没 UI 调用的死函数。
+     顺带修两处「失败显示成成功」：`scanNodes()` 无条件写 "Scan complete" 而不看有没有
+     `error` 字段；`nativeSetHomeDir` 是**空实现**，所有相对路径都对着进程 cwd `/` 解析
+     —— Android 扫描其实一直必然失败。后者比「缺个按钮」严重得多。
+  5. **无名节点补名**（`6757c2b`）—— 没有 `#` 片段的行在清单里看得见但永远选不中、导不出去。
+     在唯一产出处 `clean_uri_name` / `synth_name` 合成 `协议_主机_端口` 写进片段，
+     名字被 `clean_label` 清空（emoji / 纯中文名）的那类一并救回。
+  6. **CI / Build All 加 `--locked`**（`194a86d`）—— lock 一致性从「CI 顺便维护」变成硬闸；
+     0.3.17 的 6 处版本号就是手改 lock 过去的，能过 `--locked` 正说明这道闸在起作用。
+  外加两条「闸本身是松的」：`ci.yml` 的 clippy 补 `-D warnings`（此前 warning 只打印不拦，
+  快的闸形同虚设），以及 3 条**从来没跑过**的测试（`a645107` 起 CI 卡在 fmt 闸，
+  而 `ci.yml` 步骤顺序执行、一红就 abort，`cargo test` 一次没执行过）—— 根因是手写的
+  多行 YAML 靠源码缩进拼，而 Rust 字符串的 `\`+换行会吃掉下一行**全部**前导空白，
+  块状 YAML 塌成非法标量流（`eeb2e69`）。
+  Release：tag `v0.3.17` → `945ea75`，30 资产 / 649.9 MB，资产名与 `v0.3.16` 逐一对应，
+  只有 MSI 变 `0.3.17`。
 
 ## 风险与坑（预防清单）
 
@@ -111,4 +141,15 @@
 - exec 内核首次启动要等 1080 监听（同 meow 空窗问题）→ 复用 LISTENING 等待逻辑再放 tun2socks。
 - 加 DisallowedApplication 后 meow 的 protect 仍在（不冲突）；如自排除在部分 ROM 失效，
   表现为开 VPN 全网断 → logcat 打印 establish 参数便于排障。
-- `cargo fmt/clippy` 是 CI 硬闸（-D warnings build-all 版）→ 本地无法编译，写码必须贴 clippy 口味。
+- `cargo fmt/clippy` 是 CI 硬闸 → 本地无法编译，写码必须贴 clippy 口味。
+- **`ci.yml` 与 `build-all.yml` 的闸必须字面一致**：`ci.yml` 的 clippy 原本没带
+  `-D warnings`，warning 只打印、步骤照样绿，快的闸形同虚设（红灯要等 20 分钟后的
+  build-all 才炸）。反过来 `ci.yml` 的步骤是顺序执行、一红就 abort —— fmt 闸红了
+  同 job 的 `cargo test` 一次都不跑。**两道闸不一致 = 快的闸形同虚设**。
+- **多行 YAML 写进 Rust 字符串字面量时，缩进必须写在字面量内部**（接在 `\n` 之后、
+  行尾 `\` 之前），不能靠源码缩进：`\`+换行会吃掉下一行的**全部**前导空白，
+  靠源码拼的块状 YAML 会塌成非法标量流，`serde_yaml` 解析失败 → 一条都读不出来。
+  rustfmt 完全不重排 `\`-续行的字符串字面量，所以 CI 不会帮你发现。拿 `mihomo -t -f`
+  当 YAML oracle 验（含故意写坏的对照）。
+- `ghboost-tray` / `ghboost-ffi` 两个 crate 目前任何 workflow 都只 build 不跑 clippy
+  —— 已知的闸覆盖缺口（`ghboost-ffi/src/lib.rs` 改动只有编译兜底）。
