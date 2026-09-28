@@ -32,6 +32,15 @@ futures = "0.3"
 # `minimal` = ss + trojan + dns-server + listener-mixed。注意 meow-proxy
 # 无条件启用 meow-transport 的 `tls` feature，所以 BoringSSL（boring-sys，
 # 需要 cmake + C++ 编译器）是**硬依赖**，Android 侧由 NDK 工具链提供。
+#
+# ── 范围提醒：上面那段理由只管**本 crate 的依赖图**，别拿它推断发布件 ──
+# 「本 crate 不把 GPL 链进来」与「APK 里没有 GPL 代码」是两件不同的事。
+# 自 W8 起 `build-all.yml` 会把**真**的 `libmihomo.so` / `libxray.so` /
+# `libsingbox.so` 注入 `jniLibs/`（分别 GPL-3.0 / MPL-2.0 / GPL-3.0），所以
+# 已发布的 APK 确实带着 GPL 内核。两者不冲突：crate 侧不链接、发行侧作为独立
+# 二进制分发，并各自履行分发义务 —— 桌面侧走 `kernel\*-LICENSE.txt`，
+# Android 侧走 `assets/licenses/`（均由 build-all.yml staging，并断言其真的在
+# 产物里）。动这条依赖前先想清楚改的是哪一侧。
 [target.'cfg(target_os = "android")'.dependencies]
 meow-app = { version = "0.21", default-features = false, features = ["minimal"] }
 meow-api = "0.21"
