@@ -45,6 +45,16 @@ free-VPN README → `scan` → `test` → `add` → 托盘订阅 → 出口 IP�
 
 所有构建与校验都走 GitHub Actions（仓库无本地 cargo），本机只下载产物运行。
 
+**AVD 上装的是 `v0.3.17` 发布资产本体，不是本地重编的产物**（AVD 复测只对发布件
+有意义，重编件证明不了发布件）：
+
+```
+本地暂存 ghboost-android-x86_64.apk  SHA256 c4775d4526c665340b2674313b6f4e5dc84a8a4703c4b9d7d5d2bb26c56d98fc  79,114,073 B
+v0.3.17  release asset digest        sha256:c4775d4526c665340b2674313b6f4e5dc84a8a4703c4b9d7d5d2bb26c56d98fc
+                                      79,114,073 B
+```
+
+
 > **顺带记一个跟 8.2 同类的闸缺口**（写这行时才发现，尚未修）：**出包用的 Rust
 > 和校验用的 Rust 不是同一个**。fmt/clippy/test 钉死 `1.98.1`，但 `ci.yml` 的
 > zigbuild 矩阵、`build-all.yml` 的全部出包 job、以及整个 `tray.yml`（`:35`）
@@ -210,8 +220,121 @@ provider 侧 `GET /providers/proxies`：`vehicleType: File`，`proxies` 数组 2
 > `nativeSetHomeDir` 收到目录后**直接扔掉**（空实现），于是所有相对路径都对着
 > 进程 cwd `/` 解析 —— Android 上扫描其实一直必然失败，UI 却报成功。
 > 这两条比「缺一个测速入口」严重得多：前者让用户拿到空清单，后者让扫描根本不可用。
-> 剩下没闭环的：tun2socks 尚未接通（START 仍被 `startVpn()` 挡回，所以
-> `alive > 0` 仍需先解决这个）+ AVD 是 production build 取不到私有目录做产物校验。
+> 剩下没闭环的：tun2socks 尚未接通（START 仍被 `startVpn()` 挡回）+ AVD 是
+> production build 取不到私有目录做产物校验。
+
+> **2026-09-28 更正（AVD 复测 `v0.3.17`）**：上面最后那句「`alive > 0` 仍需先解决
+> tun2socks」是**错的**，而且是把两个不同的问题混成了一个。
+> `nativeTest` → `ghboost_test()`，与桌面同一个函数：它起一个内核实例逐个去 dial
+> 节点，量的是**节点可达性**，整条路径不碰 TUN。所以 `alive` 从来不依赖 tun2socks ——
+> 只要有 Test 入口就能拿到。tun2socks 决定的是「能不能真的用这条隧道跑流量」，
+> 那是 START 那条路的事，跟 `alive` 无关。实测 `alive: 8`（见 4.3）。
+> 仍然没闭环的只剩两条：tun2socks 未接通（START 仍被挡回）、AVD 取不到私有目录
+> 做产物校验（`adb root` / `run-as` 对 production build 都不可用）。
+
+### 4.3 `v0.3.17` 在 AVD 上的复测（发布件本体）
+
+装的是**发布资产本体**（SHA256 与 release asset digest 逐位一致，见第 1 节），
+不是本地重编件 —— 重编件证明不了发布件。`mc_test` / API 36 / x86_64 / SDK 36。
+
+| 检查项 | 结果 |
+|---|---|
+| APK 安装 | `Success`（79,114,073 B） |
+| `libghboost_ffi.so` 加载 | `Load …/lib/x86_64/libghboost_ffi.so …: ok` |
+| `nativeVersion()` | UI 显示 **`ghboost v0.3.17`** |
+| Test 按钮存在 | `btnTest` 文案 `TEST 測速`，`enabled="true"` —— §4.2 第一条确实已闭环 |
+| `nativeScan("{}")` | `Scan complete: 18846 nodes` |
+| scan 返回体 | `{"clash_nodes":14799,"data_dir":"nodes_data","sources_ok":54,"sources_total":60,"uri_nodes":4047}` |
+| `nativeTest` | `{"alive":8,"best_ms":825,"data_dir":"nodes_data","tested":60}` |
+| Test 提示行 | `8/60 可用 · 最快 825ms` |
+| 崩溃 | 无（无 `FATAL EXCEPTION` / `UnsatisfiedLinkError` / `SIGSEGV`） |
+
+两条关键证据：
+
+1. **`data_dir` 是相对路径 `"nodes_data"`**。它能落地**只可能**因为
+   `nativeSetHomeDir` 现在真的把进程 cwd 切到了 `filesDir` —— 修之前这里对着 `/`
+   解析，`/nodes_data` 建不出来。同一份 logcat 里所有落盘路径都是
+   `/data/user/0/com.ghboost.app/files/...`（如
+   `mihomo/configs/providers/ghboost.yaml`），没有一条跑到 `/` 根下。
+2. **`alive = 8 > 0`**，`best_ms = 825`。这是本节此前判定「拿不到」的指标。
+
+顺带记两条复测时的实测细节：
+
+- 引擎选择器显示「內建 (meow)」，但 `nativeTest` 实际起的是**真 mihomo** ——
+  logcat 里有独立进程 `libmihomo.so`（pid 7230，与 App 进程 6702 不同）。
+  因为 APK 的 `jniLibs` 里放的是真内核（`build-all.yml:184-206`：
+  `libmihomo.so` / `libxray.so` / `libsingbox.so`），而 `filesDir/mihomo/configs/`
+  这个目录名是历史遗留，指的是**配置格式**是 mihomo 风格，不代表跑的是 meow。
+  `ghboost-ffi/src/lib.rs:197-198` 的注释写明了这一点（「启动内嵌代理内核（meow-rs）」
+  但「`config_path` 是 mihomo 风格 YAML，由 Kotlin 侧写在 `filesDir/mihomo/configs/`」），
+  两件事，别混。
+- 该进程有若干 SELinux `avc: denied`（`tests` 目录 `search`、`somaxconn` 的 `read`、
+  `netlink_route_socket` 的 `bind`，bug=`b/155595000`）。不影响测速结果
+  （`alive` 照样算出来），但记一笔：真机上如果内核起不来，这里是第一条线索。
+
+### 4.4 外部导入路径 + BOM 修复的设备端验证
+
+4.3 走的是 SCAN（网络抓取）。这一轮改推**文件导入**那条路，因为它才是
+`nativeSetHomeDir` 修复的真正靶心：`LocalProxySetup.kt:290` 打印
+`imported nodes: <src> -> <dst>`，**两个路径都是绝对路径**，所以 `dst` 本身就是证据。
+
+推到 UI 提示的那个位置（`adb push` 逐字节，已核对设备端首 3 字节仍是 `ef bb bf`）：
+
+```
+/sdcard/Android/data/com.ghboost.app/files/ghboost-providers.yaml   2018 B
+```
+
+推的文件是 `w10/p1test/nodes.txt` —— 就是 5.1 那个带 BOM 的复现件（20 行有效 ss，
+2018 字节）。冷启动后 logcat（tag `GhBoostProxy`，这条路不需要 root、不需要点 UI）：
+
+```
+config up to date (v9): /data/user/0/com.ghboost.app/files/mihomo/configs/config.yaml
+provider exists, left untouched: /data/user/0/com.ghboost.app/files/mihomo/configs/providers/ghboost.yaml
+import: try /storage/emulated/0/.../ghboost-providers.yaml exists=true
+import: try /storage/emulated/0/.../ghboost/providers.yaml exists=false
+import: read 2016 chars from /storage/emulated/0/.../ghboost-providers.yaml
+sanitize: kept 20, all clean
+imported nodes: /storage/emulated/0/.../ghboost-providers.yaml
+             -> /data/user/0/com.ghboost.app/files/mihomo/configs/providers/ghboost.yaml
+```
+
+**`nativeSetHomeDir` 这条证据是硬的**：`dst` 落在
+`/data/user/0/com.ghboost.app/files/…` 下。修之前 `nativeSetHomeDir` 是空实现，
+进程 cwd 停在 `/`，这里会是 `/providers/ghboost.yaml` —— 那是建不出来的路径
+（`/providers` 属主是 root，App 无权创建）。现在这条 import 是**真的写成功了**，
+和 4.3 里 `data_dir: "nodes_data"` 这个相对路径能落地互相印证。
+
+**BOM 修复**：`sanitize: kept 20, all clean`。20 = 20 行全部留下，包括**首行**。
+首行就是那个带 `ef bb bf` 的行 —— 修之前它的 scheme 变成 `\u{feff}ss`，
+`modelled_link` 查表落空被判「不是链接」，**连 `total` 都不加**，
+所以修之前同一份文件只能 kept 19。差的这 1 行正是 5.1 说的「既不算保留也不算丢弃、
+用户完全看不见地少一个节点」。
+
+> 口径差异说明：4.1 记的是 `kept 20, dropped 1 of 21`，这里是 `kept 20, all clean`。
+> `dropped` 从 1 变 0 不是修复倒退 —— 是两份文件不同。4.1 那份含一行 cipher/password
+> 缺失的 ss，被 3（`a645107` cipher 白名单）判掉；这份 20 行全是合法 ss，没有该丢的。
+> 与 BOM 相关的量是 **`kept` 20 而非 19**。
+
+导入后 UI 的变化（对照 4.3 启动时的 dump，这是一次**行为**改变，不只是文案）：
+
+| | 导入前 | 导入后 |
+|---|---|---|
+| `tvStatus` | `還差節點：填好節點清單才能開始加速` | `Ready` |
+| `tvNodes` | 「把節點檔案放到：…再重開 App 就會自動匯入」 | `已從外部檔案匯入節點。按 Start 開始加速。` |
+| `btnStart` | **`enabled="false"`** | **`enabled="true"`** |
+
+`btnStart` 解锁是 `hasRealNodes()`（`LocalProxySetup.kt:362`）在起作用：它判
+provider 文件里**不含占位标记**。出厂时 provider 里是
+`DIRECT-PLACEHOLDER`（指向没人监听的 `127.0.0.1:1081`），所以 Start 锁死 —— 这正是
+那段注释说的「比直接锁住按钮更难排查」那个坑。导入了真节点，占位标记消失，按钮解锁。
+**注意这只是 UI 门禁解开**，`btnStart` 点下去仍会被 `startVpn()` 挡回（tun2socks 未接），
+与 4.2 的结论一致，两者不是一回事。
+
+`run-as com.ghboost.app ls -l files` → `package not debuggable: com.ghboost.app`，
+印证 4.2 里「AVD 是 production build，取不到私有目录做产物校验」那条仍然成立。
+不过本轮**换了个办法绕开**：不读文件内容，改读 logcat 里应用自己打印的绝对路径 ——
+证据强度不降反升，因为它来自实际发生的一次写入，而不是外部窥探。
+
 
 ---
 
@@ -423,8 +546,41 @@ host clippy 会把 `nativeScan` / `nativeSetHomeDir` / `nativeTest` / `nativeLis
 真要闸只能 `cargo clippy --target aarch64-linux-android`（要 NDK + 该 target 的
 rust-std，且 `cargo-ndk` 本身不跑 clippy），是独立工作量，不夹在发版里做。
 
+### 8.3 Android APK 里带着 GPL-3.0 内核，却一份许可证文本都没有（本轮新发现）
+
+AVD 复测时顺手对了一下「APK 里到底装了什么」，发现一处**发布合规缺口**：
+
+| | 桌面（tray） | Android APK |
+|---|---|---|
+| 客户端自身许可证 | MIT（根 `LICENSE`，1087 B） | 同 |
+| 是否分发 GPL-3.0 的 mihomo | 是 | **是** |
+| GPL 正文 | 有：`kernel\mihomo-LICENSE.txt` + `THIRD-PARTY-NOTICES.md` 的「mihomo 本体 GPL-3.0」小节 | **完全没有** |
+| 上游源码指引 | 有（release URL + 声明未修改） | 无 |
+| `ghboost-android/` 树内 LICENSE/NOTICE/THIRD-PARTY 文件 | — | **0 个**，`assets/` 目录也不存在 |
+
+证据：`build-all.yml:184-206` 把真内核塞进 `jniLibs/{arm64-v8a,armeabi-v7a,x86_64}/`
+（`libmihomo.so` / `libxray.so` / `libsingbox.so`，`:253` 还断言必须是真 ELF），
+而对 `ghboost-android` 整棵树做穷举文件名搜索，`LICENSE|NOTICE|COPYING|THIRD`
+**一个都搜不到**，`app/src/main/assets` 目录不存在。设备侧交叉印证：
+4.3 的 logcat 里确实有独立进程 `libmihomo.so` 在跑。
+
+连带一处**文档已经过期**：`ghboost-ffi/Cargo.toml:21-24` 选 meow-rs 的理由写的是
+「客户端是 MIT，把 GPL 以『库』的形式链进来会让整个客户端被传染」。W8 之后
+APK 里放的就是 GPL 本体，所以**这条论证对发布件不再成立**（对 crate 本身仍成立，
+两者现在不是一回事）。桌面侧早就处理了这个问题（随二进制附带许可证文本），
+Android 侧没跟上。
+
+**这不是我能替项目做的决定**，但缺口本身是客观的、证据齐的。最小修法照抄桌面：
+把 `THIRD-PARTY-NOTICES.md` + `kernel/mihomo-LICENSE.txt`（及 xray / sing-box 的
+对应文本）放进 `app/src/main/assets/`，并在 App 里「关于」处可查。
+**建议在下一版发版前处理** —— 已经发布出去的 APK 是改不了内容的，
+越往后拖，需要补的发行渠道越多。
+
 **需要用户配合**（沿用原清单的 7 / 8 编号 —— 上面 6 条已收口，剩的就是这两条，
 都卡在「得有人操作设备」上，不是代码问题）：
 
-7. 真机 USB 调试（Android 运行时复测目前只有 AVD 路径）。
+7. 真机 USB 调试。**AVD 这条路本轮已经跑通了**（4.3 / 4.4：装机、扫描 18846 节点、
+   `alive: 8`、外部导入全部实测通过），所以不再是「只有 AVD 路径」；真机是为了补
+   AVD 补不了的两件事 —— tun2socks 真跑流量（START 在 AVD 上被 `startVpn()` 挡回）、
+   以及 `avc: denied` 那些 SELinux 拒绝在真机 ROM 上是否更严。
 8. simul 麦克风实测（`设置 → 隐私 → 麦克风` 权限）。

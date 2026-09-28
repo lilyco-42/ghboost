@@ -133,6 +133,30 @@
   Release：tag `v0.3.17` → `945ea75`，30 资产 / 649.9 MB，资产名与 `v0.3.16` 逐一对应，
   只有 MSI 变 `0.3.17`。
 
+### W15 —— AVD 上对 `v0.3.17` 发布件本体复测（纯验证，无代码改动）
+
+装的是**发布资产本体**（SHA256 与 release asset digest 逐位一致，不是本地重编件），
+跑通了 4.3 扫描/测速与 4.4 外部导入两条路：
+
+- `nativeScan("{}")` → `Scan complete: 18846 nodes`（`uri 4047 + clash 14799`，
+  `sources_ok 54/60`），返回体里 `data_dir` 是**相对路径** `nodes_data`；
+- `nativeTest` → `{"alive":8,"best_ms":825,"tested":60}`，即 **`alive > 0`**；
+- 外部导入：`imported nodes: /storage/… -> /data/user/0/com.ghboost.app/files/
+  mihomo/configs/providers/ghboost.yaml`，`sanitize: kept 20, all clean`；
+- 无崩溃。导入后 `btnStart` 由 `enabled=false` 变 `true`（`hasRealNodes()` 占位标记消失）。
+
+**两条被这轮实测推翻/坐实的既有结论：**
+
+1. 「`alive > 0` 仍需先解决 tun2socks」**是错的** —— `nativeTest` 起一个内核实例去
+   dial 节点，整条路径不碰 TUN，量的是**节点可达性**；tun2socks 决定的是「能不能
+   真的用这条隧道跑流量」，是 START 那条路的事。两个问题被混成了一个。
+2. `nativeSetHomeDir` 与 BOM 两处修复拿到**设备端硬证据**（导入 `dst` 落在
+   `/data/user/0/…/files/` 下而非 `/providers/`；`kept 20` 而非 19）。
+
+**新挖出一条发布合规缺口**：APK 分发 GPL-3.0 的 `libmihomo.so` 却零许可证文本
+（桌面侧是有的），详见测试报告 8.3；`ghboost-ffi` 关于「避免 GPL 传染」的论证
+对发布件已不成立。
+
 ## 风险与坑（预防清单）
 
 - xray 无 domain 可用时（SOCKS 只给 IP）路由只能 geoip 级 → geoip.dat 随包，
@@ -173,3 +197,35 @@
   `FATAL | Running multiple emulators with the same AVD`；而它又在 adb 里注册成
   `emulator-5554 offline`，看起来像「启动很慢」，实际是启动**已经失败**了。
   判断依据要看 emulator 自己的 stdout 有没有 `FATAL`，不要只看 `adb get-state`。
+- **强 kill 模拟器会把 AVD 的 userdata 搞脏，然后进入崩溃重启循环**，而症状极具
+  误导性：adb 传输层反复 `offline` ↔ `device`，`sys.boot_completed` 永远空，
+  但 guest 其实**每次只活了 ~10 秒就重启**（`/proc/uptime` 是唯一能揭穿它的读数，
+  正常冷启后应单调涨到几十分钟）。看起来像「启动慢 / 传输抖」，实际是无限重启。
+  解法是 `emulator -avd <name> -wipe-data` 冷启一次，本轮实测 `-wipe-data` 后
+  `pm` 立刻可用（poll 1 就 serving），装机扫描全流程一次通。
+- **在模拟器上跑自动化时只能有一个 adb 客户端**：并发两个（比如一个在轮询、一个在
+  跑测试）会互相把传输层搞flap，症状同样是「device offline」，但真因是竞争。
+  另外 PowerShell 里包一层 adb 重试**不能用 `ValueFromRemainingArguments`**：
+  写成 `Adb -s emulator-5554 shell ...` 时 `-s` 会被当成**参数名**去绑定，
+  于是每次调用死在参数绑定阶段、循环只会刷「not ready」而一条命令都没发出去。
+  要用 `[string[]]$Arguments` + splatting（`Invoke-Adb -Arguments @("-s",$dev,"shell",...)`），
+  并在脚本开头加一条 `echo` 自检，自检不过就退出而不是继续报「未就绪」。
+- **`filesDir/mihomo/configs/` 这个目录名会骗人**：它指的是**配置格式**是 mihomo 风格
+  YAML，**不代表跑的是 mihomo**。`ghboost-ffi/src/lib.rs:197-198` 的注释把这两件事
+  写在一段里（「启动内嵌代理内核（meow-rs）」+「`config_path` 是 mihomo 风格 YAML，
+  由 Kotlin 侧写在 `filesDir/mihomo/configs/`」），但实测 `nativeTest` 起的是
+  **真 mihomo**（logcat 里独立进程 `libmihomo.so`，pid 与 App 不同）。因为 W8 之后
+  `jniLibs` 里放的就是真内核。看目录名判断内核种类会得出相反结论。
+- **APK 分发 GPL-3.0 内核但不带许可证文本**：`build-all.yml:184-206` 把
+  `libmihomo.so`（GPL-3.0）塞进 jniLibs，而 `ghboost-android` 整棵树没有任何
+  LICENSE/NOTICE/THIRD-PARTY 文件、`assets/` 目录都不存在。桌面侧是处理过的
+  （`kernel/mihomo-LICENSE.txt` + `THIRD-PARTY-NOTICES.md` 的专门小节），Android 侧
+  没跟上。连带 `ghboost-ffi/Cargo.toml:21-24` 选 meow-rs 的那条「避免 GPL 传染 MIT
+  客户端」论证**对发布件已不成立**（对 crate 仍成立）。详见测试报告 8.3。
+- **`uiautomator dump` 的输出不能经控制台读**：本机控制台代码页是 GBK，
+  `adb exec-out` 的 UTF-8 CJK 会被解成替换字符，而替换字符可能**吞掉一个引号**，
+  于是 `[xml]` 报「根元素不匹配」——看起来像 App 的 UI 坏了，实际是自己的读取方式坏了。
+  用 `adb pull` 把字节直接落盘、再 `[System.IO.File]::ReadAllText(..., UTF8)` 读。
+  同理，PowerShell 函数里任何 `Write-Output` 都会**混进返回值**：
+  `$x = DumpUi` 拿到的是打印出来的字符串数组而不是 XML，症状是「节点找不到」。
+  诊断输出一律走 `Write-Host`。
