@@ -1,6 +1,8 @@
 # free-VPN 接入测试报告
 
-**日期**：2026-09-26　**结论**：接入链打通并有真实出口证明；过程中修掉两个用户可见缺陷，已发布 [`v0.3.16`](https://github.com/lilyco-42/ghboost/releases/tag/v0.3.16)。
+**日期**：2026-09-26（报告）/ 2026-09-27（收口）　**结论**：接入链打通并有真实出口证明；
+过程中修掉一批用户可见缺陷，已发布 [`v0.3.16`](https://github.com/lilyco-42/ghboost/releases/tag/v0.3.16)
+与 [`v0.3.17`](https://github.com/lilyco-42/ghboost/releases/tag/v0.3.17)（第 8 节那 6 条遗留全部落地）。
 
 测试数据源：[`lilyco-42/free-VPN`](https://github.com/lilyco-42/free-VPN) 的 README
 （`src/nodes.rs:38` 把它当订阅源索引）。
@@ -22,18 +24,22 @@ free-VPN README → `scan` → `test` → `add` → 托盘订阅 → 出口 IP�
 | 行首 UTF-8 BOM 静默吃掉第一个节点 | P1 | ✅ 已修 | `a3395cd` `55a40d2` |
 | 测速改内联 `proxies:`（provider 成员不进扁平表，`/proxies/{name}/delay` 恒 404） | P0 | ✅ 已发布 `v0.3.15` | `7fc8ab2` `9315463` |
 
+这 4 条是**测试当天**发现的。测试之后又补了 6 条（`v0.3.17`，见
+[第 8 节](#8-遗留--待办)），其中两条是那轮报告里记为「未修」的：ss cipher 白名单
+（`a645107`）和 `nativeTest` 死导出（`bca9c1c`）。
+
 ---
 
 ## 1. 版本钉死
 
 | 组件 | 版本 |
 |---|---|
-| 桌面 CLI / 托盘 | `main@3c47b1a`（BOM 修复合于 `55a40d2`，发版 `706db64`+`365973c`） |
+| 桌面 CLI / 托盘 | `main@945ea75`（`v0.3.17` 发版提交；`v0.3.16` 为 `365973c`） |
 | mihomo（桌面自带） | v1.19.30 |
 | mihomo（Android） | v1.19.31 |
 | xray | v26.3.27 |
 | sing-box | v1.14.2 |
-| Rust | 1.98.1 |
+| Rust | 1.98.1（toolchain 在 workflow 里钉死，不用 `@stable`） |
 | 测试用 AVD | `mc_test`，API 36 / x86_64 / 1080×2400 |
 
 所有构建与校验都走 GitHub Actions（仓库无本地 cargo），本机只下载产物运行。
@@ -70,7 +76,12 @@ initial proxy provider subscription error: proxy 19 error: ss 162.159.1.33:443 c
 
 **这条依赖有脆性**：哪天 `b64_flex` 改用 `from_utf8_lossy`，它会解出一个垃圾 method，
 内核对不上 cipher 又会整批拒收。单测 `sanitize_links_drops_the_kernel_poison_line`
-（`src/nodes.rs`）就是那根保险丝。补 cipher 白名单列为 follow-up。
+（`src/nodes.rs`）就是那根保险丝。
+
+> 补 cipher 白名单这条 follow-up 已做（`a645107`，发版 `v0.3.17`）：`SS_CIPHERS` 23 项
+> 由 mihomo v1.19.30 逐个试出来，三个入口都守，`method` 归一化成小写再落盘。
+> 这样即使 `b64_flex` 哪天真改成 lossy，解出来的垃圾 method 也会被白名单挡下来 ——
+> 保险丝从「一条单测」变成「一张契约表」。详见 [5.6](#56-parse_line-对坏行的拒绝依赖-from_utf8-严格性已修-a645107见-22)。
 
 ### 2.3 判据的一处纠错（重要）
 
@@ -182,6 +193,15 @@ provider 侧 `GET /providers/proxies`：`vehicleType: File`，`proxies` 数组 2
 结论：Android 侧本轮能证明的是**修复本身生效**（新符号在设备上跑出正确判定并落盘）；
 `alive` 需要 App 侧先补一个测试入口、或先接上 tun2socks。列为 follow-up。
 
+> **2026-09-27 更新（`bca9c1c`）**：第一条已修 —— 加了 Test 按钮走
+> `nativeTest`。查的时候还挖出两个「失败显示成成功」：
+> `scanNodes()` 无条件写 "Scan complete" 而不看返回里有没有 `error` 字段；
+> `nativeSetHomeDir` 收到目录后**直接扔掉**（空实现），于是所有相对路径都对着
+> 进程 cwd `/` 解析 —— Android 上扫描其实一直必然失败，UI 却报成功。
+> 这两条比「缺一个测速入口」严重得多：前者让用户拿到空清单，后者让扫描根本不可用。
+> 剩下没闭环的：tun2socks 尚未接通（START 仍被 `startVpn()` 挡回，所以
+> `alive > 0` 仍需先解决这个）+ AVD 是 production build 取不到私有目录做产物校验。
+
 ---
 
 ## 5. 本轮新发现
@@ -207,7 +227,7 @@ PowerShell 的 `>` 重定向存出来的文本默认都带 BOM，触发条件非
 `proxy-providers:` 这类非链接行**不会**因为去 BOM 而被误认成节点（保住
 `kept == 0 → 保留用户原文` 那条语义）。
 
-### 5.2 mihomo 的 stdout/stderr 接管了但从不读（`src/mihomo.rs:259-260`，未修）
+### 5.2 mihomo 的 stdout/stderr 接管了但从不读（**已修** `63b8d1f`）
 
 `Stdio::piped()` 之后没有任何读取线程。后果两条：
 
@@ -215,13 +235,23 @@ PowerShell 的 `>` 重定向存出来的文本默认都带 BOM，触发条件非
    原子性结论只能靠手工搭 mihomo 复现才拿到；
 2. **输出超 64 KB 会永久阻塞**：内核往管道写、没人读 → 管道满 → 内核卡在 write 上。
 
-优先级最高 —— 它是后续所有内核侧问题的盲区。
+修法不是「加个线程排空」，而是**根本不建管道**：两个流直接 `Stdio::from(File)` 落到
+`kernel.log`。64 KB 写死风险与诊断丢失一起消失，代价是零（本来就打算落文件）。
+另加 `MihomoManager::log_tail`（尾部 N 行 + 单行超 200 字符截断——内核会把整份配置的
+错误堆进一行，实测 400+ 字符，不截的话「最近 20 行」就是一堵墙）和 `/api/kernel-log`，
+0 节点时 UI 直接带出内核原话。
 
-### 5.3 `do_stop` 无条件 `unset_proxy()`，会关掉不属于 ghboost 的系统代理（未修）
+### 5.3 `do_stop` 无条件 `unset_proxy()`，会关掉不属于 ghboost 的系统代理（**已修** `6b1b329`）
 
 本机 Clash Verge 监听 7897，ghboost 停止时把系统代理一并清了（已按快照恢复：
 `ProxyEnable=1` / `127.0.0.1:7897` / `ProxyOverride=localhost;127.*;…;<local>`）。
 应当只关「自己开的那次」。
+
+修法是记账而不是猜：`set_proxy` 成功时 `remember_owned()` 记下
+（`ProxyEnable` 原值 + 原 `ProxyServer` + 原 `ProxyOverride`），停之前把
+`ProxyServer` 与自己开的端点交叉核对；`unset_proxy` 成功路径 `forget_owned()`，
+所以反复 start/stop 不会漏记也不会误关。核对不上就返回 `Ok(None)`，
+UI 明说「系统代理不是 ghboost 开的，没有动它」。
 
 ### 5.4 只有 `tray.yml` 带 `--locked`，lock 文件一致性没被真正守住（已在 `365973c` 修）
 
@@ -232,9 +262,16 @@ PowerShell 的 `>` 重定向存出来的文本默认都带 BOM，触发条件非
 的同一套做法补齐三个 lock 文件 + `ghboost-tray/Cargo.toml`。
 （`ghboost-ffi/Cargo.lock` 里另一处 `0.3.15` 是第三方包 `lwip`，与本次无关。）
 
-### 5.5 `nativeTest` 是死导出（见 4.2）
+补齐之后仍然只是「四个 workflow 都带 `--locked`」这一层；真正把 lock 变成硬闸的是
+`194a86d`（4 个 workflow 全量 `--locked`），本轮 `0.3.17` 的 6 处版本号就是手改 lock
+过去的——手改能过 `--locked`，正说明这道闸在起作用（不一致会被直接顶回来）。
 
-### 5.6 `parse_line` 对坏行的拒绝依赖 `from_utf8` 严格性（见 2.2，未加 cipher 白名单）
+### 5.5 `nativeTest` 是死导出（**已修** `bca9c1c`，见 4.2）
+
+### 5.6 `parse_line` 对坏行的拒绝依赖 `from_utf8` 严格性（**已修** `a645107`，见 2.2）
+
+补了 `SS_CIPHERS` 白名单（23 项，mihomo v1.19.30 逐个试出来的），把「碰巧能剔掉」
+变成显式契约；三个入口都守，`method` 归一化成小写再落盘。
 
 ---
 
@@ -251,8 +288,17 @@ PowerShell 的 `>` 重定向存出来的文本默认都带 BOM，触发条件非
 | `706db64` 发版 0.3.16 | CI 36236421634 ✅、Build All 36236421612 ✅、pages 36236421376 ✅、tray 36236421522 ❌ `--locked` | 部分 |
 | `365973c` 补 lock 文件 | CI 36237266673 ✅、tray 36237266699 ✅、Build All 36237266660 ✅、pages 36237266406 ✅ | ✅ |
 | `5ea1bcf` 报告入仓 | CI 36237323026 ✅、Build All 36237323009 ✅、tray 36237323002 ✅、pages 36237322594 ✅ | ✅ |
+| `63b8d1f` kernel.log + `/api/kernel-log` | 四闸全绿 | ✅ |
+| `6b1b329` proxy 归属记账 | 四闸全绿 | ✅ |
+| `a645107` cipher 白名单 | CI ❌ 卡 fmt（**`cargo test` 因此一次没跑**，见 8.2a） | ❌ |
+| `bca9c1c` Android Test 入口 + cwd 根因 | CI 36295416578 ❌ 3 测试红、Build All 36295696071 ❌ 同 3 测试、tray 36295696060 ✅、pages 36295695550 ✅ | ❌ |
+| `6757c2b` 无名节点补名 | CI 36295696080 ❌ 同 3 测试（76 passed → 我新加的 3 条是绿的）、tray 36295696060 ✅ | ❌ |
+| `eeb2e69` 修 3 条测试 | CI 36296246039 ✅ **79 passed / 0 failed** | ✅ |
+| `c038844` 发版 0.3.17 | CI ✅、tray ✅、pages ✅、Build All ❌ clippy `doc_lazy_continuation`（见 8.2b） | ❌ |
+| `945ea75` 修注释 + clippy 闸对齐 | CI 36296725819 ✅（clippy 带 `-D warnings`）、Build All 36296725806 ✅（17/17，含 Android APK）、tray 36296725850 ✅、pages 36296725982 ✅ | ✅ |
 
-`v0.3.16` 的 30 个产物取自 Build All 36237323009 + CI 36237323026 + tray 36237323002
+`v0.3.16` 的 30 个产物取自 Build All 36237323009 + CI 36237323026 + tray 36237323002；
+`v0.3.17` 同构，取自 Build All 36296725806 + CI 36296725819 + tray 36296725850
 （`ghboost-x86_64-pc-windows-gnu.exe` / `libghboost-aarch64-linux-android.so` /
 两个 `libghboost-*.dll` 只有 CI 那份 zigbuild 产物有，Build All 不产）。
 
@@ -262,13 +308,30 @@ PowerShell 的 `>` 重定向存出来的文本默认都带 BOM，触发条件非
 
 ---
 
-## 7. 发布 `v0.3.16`
+## 7. 发布
+
+### 7.1 `v0.3.16`
 
 - tag `v0.3.16` → `5ea1bcfe5a4e8927e8ea07dbce28dfe428b95d6f`（轻量 tag，与 `v0.3.15` 同形）
 - https://github.com/lilyco-42/ghboost/releases/tag/v0.3.16
 - 30 个资产 / 649.3 MB：4 个 APK（含 universal）、tray zip（含 mihomo+xray+sing-box 三内核）、
   MSI、wasm、7 个平台 CLI、8 个 `libghboost` 动态库、3 个 `libghboost_ffi`。
   资产名与 `v0.3.15` 逐一对应，只有 MSI 从 `0.3.15` 变 `0.3.16`。
+
+### 7.2 `v0.3.17`
+
+- tag `v0.3.17` → `945ea75b7672c225b5195168bf8f4a2f5be8705f`
+  （**先建 release 再推 tag**：`gh release create --target <短 SHA>` 会被 API 以
+  `target_commitish is invalid` 拒掉，必须给完整 40 位）
+- https://github.com/lilyco-42/ghboost/releases/tag/v0.3.17
+- 30 个资产 / 649.9 MB。逐个名字与 `v0.3.16` 对过，**只有 MSI 从
+  `lilyco-ghboost-0.3.16-x86_64.msi` 变成 `lilyco-ghboost-0.3.17-x86_64.msi`**
+  （脚本做的集合差，确认无遗漏无多余）；每个资产大小都与本地暂存文件逐字节对得上，
+  排除大文件上传被截断。
+- 649.9 MB 一次 `gh release create` 传不上去（universal APK 单个就 197 MB），
+  分 6 批 `gh release upload`；先传大的。
+- iOS 模拟器那份 `libghboost.dylib` 依旧**跳过**：它和真机那份重名，只能上一份
+  （与 `v0.3.15`/`v0.3.16` 一致，不是这版新引入的取舍）。
 
 ---
 
