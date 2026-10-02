@@ -609,12 +609,87 @@ GPL-3.0 正文**，而 81 MB 的 GPL 内核 `kernel/bin/sing-box.exe` 就在同�
 APK 里放的就是 GPL 本体，所以**这条论证对发布件不再成立**（对 crate 本身仍成立，
 两者现在不是一回事）。桌面侧早就处理了这个问题，Android 侧此前没跟上。
 
-**剩下没闭环的**：已发布出去的 v0.3.16 / v0.3.17 **改不了内容** —— 桌面 zip 里那份
-缺失的 sing-box 许可证只能靠下一版补齐（往 Release 挂一份 `sing-box-LICENSE.txt`
-可以立刻止血，但正式修法是发新版）。另外 App 里**没有入口让用户看到**
-`assets/licenses/`（许可证打进包了，但用户点不到）。这两条需要项目方拍板：
-是走「下一版顺手补 UI」还是单独做一版。**在这两条决定之前，不建议再发新版** ——
-每发一版就多一批需要同样补救的渠道。
+**剩下没闭环的**（当时列了两条，现已全部处理）：
+
+**止血：往已发布的两版补挂许可证。** 已上传的产物改不了内容，桌面 zip 里那份
+缺失的 sing-box GPL 正文没法追写进去，但分发义务得履行。所以直接给
+**v0.3.16 与 v0.3.17 两个 Release 各补挂四份**：
+
+| 文件 | 内容 | 大小 |
+|---|---|---|
+| `mihomo-LICENSE.txt` | GPL-3.0 全文 | 35,149 B |
+| `sing-box-LICENSE.txt` | GPL-3.0 全文 | 34,674 B |
+| `xray-LICENSE.txt` | MPL-2.0 全文 | 16,725 B |
+| `THIRD-PARTY-NOTICES.md` | 第三方组件与源码出处 | 2,740 B |
+
+两份 Release 原本**一份许可证文件都没有**（不是少一份，是零）。补挂的
+`THIRD-PARTY-NOTICES.md` 与仓库里那份 SHA256 逐字节相同，避免出现两个说法。
+Release 正文也追加了追补说明（起因、影响范围、正式修法在哪），否则挂上去的
+文件对用户是凭空出现的。
+
+**闭环：App 里补上入口（`f3de8d4`）。** 「许可证打进包里」只做完一半 ——
+`assets/licenses/` 是**构建时**才生成的目录（源码树里根本没有 `assets/`），
+用户在 App 里没有任何入口能看到它。**断言绿 ≠ 用户读得到**，所以：
+
+- `activity_main.xml` 版本号下方加一个 12sp 小按钮 `授權聲明 Licenses`。
+  放顶部而非页面最底：许可证这类东西要能被找到，藏在最底等于没有。
+- `showLicenses()` 先探有哪些档案，**全部缺失时明讲**「这个 APK 是非官方构建、
+  没有 `assets/licenses/`」并指向 Release 上的 notices —— 不开空窗口装成成功
+  （「失败显示成成功」正是这半年一直在修的那类问题）。单档缺失则指名道姓，
+  并说明这意味着 APK 本身有问题。
+- 读档走 `Dispatchers.IO`：四份合计约 86 KB，主线程读会掉帧。
+- 大小报 **bytes** 而不是 `String.length` —— 中文 UTF-8 是 3 bytes，用字元数
+  会得到一个骗人的小数字。
+- 判「有没有」看的是 `open()` 抛不抛 `FileNotFoundException`，**不是**
+  `available()` 的数值。实测 APK 里这四个 asset 全是 **deflate（method=8）
+  压缩**的，`available()` 会少报甚至回 0，拿它当判据会把「存在」误判成「缺失」。
+
+**连带把闸重写了（`56e7645`）。** 上一版那步只断「`assets/licenses/*` 在不在
+APK 里」，而文件名是**写死在闸里的列表**，`MainActivity.kt` 的 `LICENSE_FILES`
+是另一份独立的事实。两边各改各的，闸照样绿，用户点按钮看到的是「無法讀取」。
+**写死的列表本身就是 bug 源** —— 它让「包里有没有」和「用户能不能读到」变成
+两个互不校验的东西。所以路径反过来从 Kotlin 源码里抽，再拿它核对三处：staging
+名单、每个 APK 里实际有没有（且与暂存区**逐字节相同** —— 只断 entry 存在的话，
+一份被截断的许可证照样过得去）、以及入口接线（layout 的 `@+id/btnLicenses`、
+`findViewById`、那个 `setOnClickListener` 到底调不调 `showLicenses()`）。
+「包里有一份没人读得到的许可证」和「包里没有许可证」在合规上是同一件事。
+
+这版闸**实测输出**（run `37013382254`，`Build All` green）：
+
+```
+ok   LICENSE_FILES lists 4 asset path(s): licenses/mihomo-LICENSE.txt, ...
+ok   layout declares @+id/btnLicenses
+ok   MainActivity does findViewById(R.id.btnLicenses)
+ok   btnLicenses has a setOnClickListener
+ok   that listener calls showLicenses()
+ok   staging list == UI list (THIRD-PARTY-NOTICES.md, mihomo-..., sing-box-..., xray-...)
+ok   found 4 APK(s) to inspect
+=== app-arm64-v8a-release.apk ===
+ok   assets/licenses/mihomo-LICENSE.txt           35149 B  byte-for-byte == staged
+ok   assets/licenses/sing-box-LICENSE.txt         34674 B  byte-for-byte == staged
+ok   assets/licenses/xray-LICENSE.txt             16725 B  byte-for-byte == staged
+ok   assets/licenses/THIRD-PARTY-NOTICES.md        2681 B  byte-for-byte == staged
+  ...（4 个 APK × 4 份 = 16 条 ok）...
+0 problem(s)
+```
+
+**这次留给自己的两条教训：**
+
+1. **闸里写死的列表 = 第二份事实来源。** 只要「代码要什么」和「闸查什么」是
+   两处各自维护的清单，漂移就只是时间问题。正确的方向是让闸**从代码推导**
+   出期望值，而不是再抄一份。
+2. **断言要能抓住它声称能抓的东西。** 我对新闸做了变异测试（逐个模拟漂移、
+   看闸会不会红），第一版直接被测出一个洞：`'@+id/btnLicenses' in lay` 是
+   **子串**比对，而 `@+id/btnLicenses2` 里也含有 `@+id/btnLicenses` —— 按钮
+   其实已经改名失效，闸却照样绿。改成卡 token 边界后 8 个变异全部转红。
+   **没被变异测试打过的断言，只是看起来像断言。**
+
+**一处没有用「附录」混过去的说明**：上面全部是静态检查 + 产物层证据。闸能证明
+「接线在、路径对、包里有、字节没被截」，**证明不了「人真的看得到」** ——
+那需要装起来点一下。本轮不做本机运行与编译，所以这一步仍待真机，
+或一次跑在 CI 上的模拟器复测。这是本报告里唯一一处「闸全绿但仍需人工确认」
+的缺口，性质与之前的「包内没有 → 包内有」不同：后者是**缺文件**，
+后者是**缺一次点击验证**。
 
 **这一轮修的过程中，CI 又抓出一条**（不在我预判里）：第一版把许可证来源换成
 `gnu.org` 规范全文，`tray` run **36415822727 当场红了** ——
@@ -647,6 +722,16 @@ APK 里放的就是 GPL 本体，所以**这条论证对发布件不再成立**�
   staging 落位；「Verify license texts are actually inside the APK」对 **4 个 APK
   各 4 个文件**共 16 条 `ok` —— 许可证是真的在 APK 里，不只是暂存目录里有。
 - 本地也真跑过：新 step 与 Android 那段 bash 都用真网络执行过，退出码 0。
+
+**再加一轮（授权入口 + 重写后的闸），四个 workflow 全绿于 `56e7645`：**
+
+- `Build All` run **37013382254** `success`：Kotlin 编过了；新闸
+  「Verify the in-app license entry reaches real text in every APK」输出
+  `0 problem(s)`，5 条接线/名单检查 + 4 个 APK × 4 份 **逐字节相同**。
+- `tray` **37013382189** / `CI` **37013382428** / `pages` **37013384513** 均 `success`。
+- 前一轮的失败也如实记着：`Build All` run **37006846279**（`f3de8d4`）曾因我写的
+  Kotlin 编不过而红 —— `Pair` 解构拿错格、`Result.fold` 当成 `List.fold` 用。
+  本机不编译，这类类型错误只能靠 CI 抓，所以**上面那三个修复是一次红换来的**。
 
 顺带修一个既有缺陷：`install.bat` 调的是 **powershell（5.1）**，而 `install.ps1`
 是**无 BOM** 的 UTF-8 且含 105 个中文字符 —— 5.1 按 ANSI 读，整个文件中文全是乱码
