@@ -345,31 +345,97 @@ jobs:
           chmod +x gradlew 2>/dev/null || true
           # --stacktrace：packageRelease 这类失败默认不带根因，红了直接拿堆栈
           ./gradlew assembleRelease --no-daemon --stacktrace
-      # 「staging 目录里有」和「用户拿到的 APK 里有」是两件事：Gradle 的源集 /
-      # packagingOptions 一改就可能把 assets 悄悄丢掉，而上一步的断言照样绿。
-      # 所以直接开包看。这和 tray.yml 里那个安装冒烟测试是同一个道理 ——
+      # 这一闸断的是「用户点得开，而且点开真的有字」这件事。
+      #
+      # 「staging 目录里有」和「用户拿到的 APK 里有」本来就是两件事：Gradle 的
+      # 源集 / packagingOptions 一改就可能把 assets 悄悄丢掉，而上一步的断言照样绿。
+      # 所以直接开包看 —— 这和 tray.yml 里那个安装冒烟测试是同一个道理，
       # 断言必须落在**产物**上，不是落在暂存目录上。
-      - name: Verify license texts are actually inside the APK
+      #
+      # 但更要紧的是：文件名列表原来写死在这一步，而 MainActivity.kt 的
+      # LICENSE_FILES 是另一份独立的事实。改了一处忘了另一处，闸照样绿，
+      # 用户点「授權聲明」看到的是「無法讀取」。所以这里的路径反过来从 Kotlin
+      # 源码里抽出来，再拿它去核对 staging 名单和 APK 内容 —— 三边对不上就红。
+      #
+      # 顺带断入口接线：layout 里的 @+id/btnLicenses、findViewById、以及那个
+      # setOnClickListener 到底调不调 showLicenses()。「包里有一份没人读得到的
+      # 许可证」和「包里没有许可证」在合规上是同一件事。
+      - name: Verify the in-app license entry reaches real text in every APK
         run: |
           set -e
-          shopt -s nullglob
-          DIR=ghboost-android/app/build/outputs/apk/release
-          files=("$DIR"/*.apk)
-          if [ ${#files[@]} -eq 0 ]; then echo "::error::no APK to inspect"; exit 1; fi
-          fail=0
-          for apk in "${files[@]}"; do
-            base=$(basename "$apk")
-            echo "=== $base ==="
-            for f in mihomo-LICENSE.txt xray-LICENSE.txt sing-box-LICENSE.txt THIRD-PARTY-NOTICES.md; do
-              if unzip -l "$apk" | grep -q "assets/licenses/$f"; then
-                echo "  ok   assets/licenses/$f"
-              else
-                echo "::error::assets/licenses/$f is NOT inside $base"
-                fail=1
-              fi
-            done
-          done
-          exit $fail
+          python3 - <<'PY'
+          import glob, os, re, sys, zipfile
+
+          KT  = 'ghboost-android/app/src/main/java/com/ghboost/app/MainActivity.kt'
+          XML = 'ghboost-android/app/src/main/res/layout/activity_main.xml'
+          WFL = '.github/workflows/build-all.yml'
+          STAGE = 'ghboost-android/app/src/main/assets/licenses'
+          problems = []
+
+          def check(ok, msg):
+              print(('  ok   ' if ok else '  FAIL ') + msg)
+              if not ok:
+                  problems.append(msg)
+
+          src = open(KT, encoding='utf-8').read()
+          lay = open(XML, encoding='utf-8').read()
+
+          # (1) UI 真的会打开哪些路径。
+          #     只能匹配 "licenses/..." 这种前面紧跟引号的形式，否则对话框里
+          #     那句 assets/licenses/ 会混进来。
+          ui = re.findall(r'"(licenses/[^"]+)"', src)
+          check(len(ui) > 0, 'LICENSE_FILES lists %d asset path(s): %s'
+                % (len(ui), ', '.join(ui)))
+
+          # (2) 入口接线：没有接线 = 包里有也没人读得到。
+          # 必须卡 token 边界：'@+id/btnLicenses' in lay 是子串比对，
+          # 而 '@+id/btnLicenses2' 里也含有 '@+id/btnLicenses' ——
+          # 改名之后按钮其实已经死了，这个检查却照样绿。变异测试抓过这个洞。
+          check(re.search(r'@\+id/btnLicenses(?=["\'\s])', lay) is not None,
+                'layout declares @+id/btnLicenses')
+          check('findViewById(R.id.btnLicenses)' in src,
+                'MainActivity does findViewById(R.id.btnLicenses)')
+          check(re.search(r'btnLicenses\.setOnClickListener', src) is not None,
+                'btnLicenses has a setOnClickListener')
+          check(re.search(r'setOnClickListener\s*\{\s*showLicenses\(\)\s*\}', src) is not None,
+                'that listener calls showLicenses()')
+
+          # (3) staging 名单 vs UI 名单：改名只改一边就红。
+          staged = set(re.findall(r'\$A/([A-Za-z0-9._-]+)', open(WFL, encoding='utf-8').read()))
+          ui_base = set(os.path.basename(p) for p in ui)
+          check(staged == ui_base,
+                'staging list == UI list (%s)' % ', '.join(sorted(staged or ui_base)))
+          if staged != ui_base:
+              print('     staged: %s' % sorted(staged))
+              print('     UI    : %s' % sorted(ui_base))
+
+          # (4) 落到产物上：每个 APK 都要有，且和暂存区那份逐字节相同 ——
+          #     只断「entry 存在」的话，一份被截断的许可证照样过得去。
+          apks = sorted(glob.glob('ghboost-android/app/build/outputs/apk/release/*.apk'))
+          check(len(apks) > 0, 'found %d APK(s) to inspect' % len(apks))
+          for apk in apks:
+              base = os.path.basename(apk)
+              z = zipfile.ZipFile(apk)
+              names = set(z.namelist())
+              print('=== %s ===' % base)
+              for p in ui:
+                  entry = 'assets/' + p
+                  if entry not in names:
+                      check(False, '%s is NOT inside %s' % (entry, base))
+                      continue
+                  staged_path = os.path.join(STAGE, os.path.basename(p))
+                  if not os.path.exists(staged_path):
+                      check(False, 'staged copy %s is gone' % staged_path)
+                      continue
+                  want = open(staged_path, 'rb').read()
+                  got = z.read(entry)
+                  check(want == got,
+                        '%-42s %7d B  byte-for-byte == staged' % (entry, len(got)))
+
+          print()
+          print('%d problem(s)' % len(problems))
+          sys.exit(1 if problems else 0)
+          PY
       # 閘門：未簽名的 APK 裝不起來（使用者只看到「應用程式未安裝」），
       # 而這種錯誤在 CI 上完全看不出來 —— 建置會成功、檔案會上傳、
       # Release 會出現 4 個 .apk，只是沒人裝得起來。所以在這裡就擋掉。
