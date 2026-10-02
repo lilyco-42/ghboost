@@ -27,7 +27,30 @@
             android:text="loading..."
             android:textColor="#888888"
             android:textSize="12sp"
-            android:layout_marginBottom="24dp" />
+            android:layout_marginBottom="8dp" />
+
+        <!--
+          授權聲明入口。APK 里带着 GPL-3.0 的 libmihomo.so / libsingbox.so 与
+          MPL-2.0 的 libxray.so（build-all.yml 注入 jniLibs），分发义务要求把
+          许可证正文交给用户 —— 但 assets/licenses/ 是 build-all.yml 在**构建时**
+          塞进去的，源码树里根本没有 assets/ 目录，也就是说「打进包里」不等于
+          「用户看得到」。这个按钮就是补上后半截。
+
+          放在版本号底下而不是页面最底：许可证这类东西要能被找到，藏在最底
+          等于没有。做成小字按钮，避免和 Scan/Start/Stop 抢注意力。
+        -->
+        <Button
+            android:id="@+id/btnLicenses"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="授權聲明 Licenses"
+            android:textSize="12sp"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:layout_marginBottom="16dp"
+            android:backgroundTint="#0f3460" />
 
         <!-- Status -->
         <TextView

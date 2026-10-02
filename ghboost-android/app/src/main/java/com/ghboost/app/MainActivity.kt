@@ -12,8 +12,10 @@ import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import java.io.File
@@ -34,6 +36,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvTestHint: TextView
     private lateinit var spinnerEngine: Spinner
     private lateinit var tvEngineInfo: TextView
+    private lateinit var btnLicenses: Button
+
+    /**
+     * 授权声明清单：(显示名, assets 内路径)。
+     *
+     * 这四份由 `.github/workflows/build-all.yml` 在**构建时**塞进
+     * `app/src/main/assets/licenses/` —— 源码树里本来没有 `assets/` 目录。
+     * 少任何一份都会被 build-all.yml 的断言当场拦下，所以这里只管把它们
+     * 读出来给人看。
+     */
+    private val LICENSE_FILES = listOf(
+        "mihomo 内核 — GPL-3.0" to "licenses/mihomo-LICENSE.txt",
+        "sing-box 内核 — GPL-3.0" to "licenses/sing-box-LICENSE.txt",
+        "Xray-core 内核 — MPL-2.0" to "licenses/xray-LICENSE.txt",
+        "第三方组件声明" to "licenses/THIRD-PARTY-NOTICES.md",
+    )
 
     /** 三内核可用性（id → available），`nativeListCores` 载入后填充。 */
     private val coreAvail = mutableMapOf<String, Boolean>()
@@ -126,6 +144,8 @@ class MainActivity : AppCompatActivity() {
         tvTestHint = findViewById(R.id.tvTestHint)
         spinnerEngine = findViewById(R.id.spinnerEngine)
         tvEngineInfo = findViewById(R.id.tvEngineInfo)
+        btnLicenses = findViewById(R.id.btnLicenses)
+        btnLicenses.setOnClickListener { showLicenses() }
         setupEngineSelector()
 
         // Initialize native core
@@ -229,6 +249,105 @@ class MainActivity : AppCompatActivity() {
         requestNotificationPermissionIfNeeded()
         updateButtons()
         startEngineStatusLoop()
+    }
+
+    /**
+     * 授權聲明入口。
+     *
+     * 為什麼需要這個：APK 裡帶著 GPL-3.0 的 libmihomo.so / libsingbox.so 與
+     * MPL-2.0 的 libxray.so（build-all.yml 注入 jniLibs），分發義務要求把
+     * 授權正文交到使用者手上 —— 但 `assets/licenses/` 是**建置時**才塞進去的，
+     * 原始碼樹裡沒有 assets/ 目錄。「打進包裡」不等於「使用者看得到」，
+     * 這個按鈕補的就是後半截。
+     *
+     * 先探一次有哪些檔案：非官方建置（IDE 直接 run）出來的 APK 沒有
+     * assets/licenses/，那種情況要明講，不能開一個空視窗裝成成功 ——
+     * 「失敗顯示成成功」正是這幾輪一直在修的那類問題。
+     */
+    private fun showLicenses() {
+        lifecycleScope.launch {
+            // 讀檔放 IO：四份合計約 86 KB（GPL 全文 ×2 + MPL 全文），
+            // 主線程讀會掉幀。
+            val present = withContext(Dispatchers.IO) {
+                LICENSE_FILES.map { (label, path) ->
+                    // 判斷依據是 open() 有沒有丟 FileNotFoundException，不是
+                    // available() 的數值 —— APK 裡的 asset 可能是壓縮的，
+                    // 那時 available() 會少報甚至回 0，拿它當判準會誤判成缺失。
+                    label to runCatching { assets.open(path).use { it.available() } }
+                }
+            }
+            val available = present.filter { it.second.isSuccess }
+            if (available.isEmpty()) {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("授權聲明")
+                    .setMessage(
+                        "這個 APK 裡沒有 assets/licenses/。\n\n" +
+                        "授權聲明檔是由 .github/workflows/build-all.yml 在**建置時**" +
+                        "塞進 assets/ 的（ghboost-android 原始碼樹裡沒有 assets/ 目錄），" +
+                        "所以只有官方建置產出的 APK 才會有。\n\n" +
+                        "各核心的授權與上游原始碼出處，可見 GitHub Release 上附的 " +
+                        "THIRD-PARTY-NOTICES.md。"
+                    )
+                    .setPositiveButton("關閉", null)
+                    .show()
+                return@launch
+            }
+
+            val labels = Array(present.size) { present[it].first }
+            val onPick: (Int) -> Unit = { which ->
+                val (label, path) = present[which]
+                if (present[which].second.isSuccess) {
+                    showLicenseText(label, path)
+                } else {
+                    // 單檔缺失要指名道姓，而不是靜默跳過。
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle(label)
+                        .setMessage(
+                            "這個 APK 裡沒有 $path。\n\n" +
+                            "build-all.yml 應該在打包前把它塞進 assets/licenses/，" +
+                            "並且會斷言檔案確實在 APK 內 —— 看到這則就是" +
+                            "APK 本身有問題，請回報。"
+                        )
+                        .setPositiveButton("關閉", null)
+                        .show()
+                }
+            }
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("授權聲明")
+                .setItems(labels) { _, which -> onPick(which) }
+                .setNegativeButton("關閉", null)
+                .show()
+        }
+    }
+
+    /**
+     * 顯示單一份授權全文。GPL-3.0 全文約 35 KB，一個 TextView 捲動著看就好，
+     * 沒必要做成多頁的閱讀器。
+     */
+    private fun showLicenseText(label: String, path: String) {
+        lifecycleScope.launch {
+            val loaded = withContext(Dispatchers.IO) {
+                // 一次讀完：大小要報 bytes，不是「字元數」—— 中文 UTF-8 是
+                // 3 bytes，用 String.length 報出來會是個騙人的小數字。
+                runCatching { assets.open(path).use { it.readBytes() } }
+                    .map { it.size to it.toString(Charsets.UTF_8) }
+            }
+            val view = ScrollView(this@MainActivity)
+            val tv = TextView(this@MainActivity)
+            tv.textSize = 10f
+            val pad = (8 * resources.displayMetrics.density).toInt()
+            tv.setPadding(pad, pad, pad, pad)
+            tv.text = loaded.fold(
+                "無法讀取 $path\n\n${loaded.exceptionOrNull()?.message}"
+            ) { (size, body) -> "$path · $size bytes\n\n$body" }
+            tv.setTextIsSelectable(true)
+            view.addView(tv)
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle(label)
+                .setView(view)
+                .setPositiveButton("關閉", null)
+                .show()
+        }
     }
 
     /**
