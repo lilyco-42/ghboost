@@ -273,10 +273,10 @@ class MainActivity : AppCompatActivity() {
                     // 判斷依據是 open() 有沒有丟 FileNotFoundException，不是
                     // available() 的數值 —— APK 裡的 asset 可能是壓縮的，
                     // 那時 available() 會少報甚至回 0，拿它當判準會誤判成缺失。
-                    label to runCatching { assets.open(path).use { it.available() } }
+                    Triple(label, path, runCatching { assets.open(path).use { it.available() } })
                 }
             }
-            val available = present.filter { it.second.isSuccess }
+            val available = present.filter { it.third.isSuccess }
             if (available.isEmpty()) {
                 AlertDialog.Builder(this@MainActivity)
                     .setTitle("授權聲明")
@@ -295,8 +295,8 @@ class MainActivity : AppCompatActivity() {
 
             val labels = Array(present.size) { present[it].first }
             val onPick: (Int) -> Unit = { which ->
-                val (label, path) = present[which]
-                if (present[which].second.isSuccess) {
+                val (label, path, probe) = present[which]
+                if (probe.isSuccess) {
                     showLicenseText(label, path)
                 } else {
                     // 單檔缺失要指名道姓，而不是靜默跳過。
@@ -327,19 +327,21 @@ class MainActivity : AppCompatActivity() {
     private fun showLicenseText(label: String, path: String) {
         lifecycleScope.launch {
             val loaded = withContext(Dispatchers.IO) {
-                // 一次讀完：大小要報 bytes，不是「字元數」—— 中文 UTF-8 是
-                // 3 bytes，用 String.length 報出來會是個騙人的小數字。
                 runCatching { assets.open(path).use { it.readBytes() } }
-                    .map { it.size to it.toString(Charsets.UTF_8) }
             }
+            val bytes = loaded.getOrNull()
             val view = ScrollView(this@MainActivity)
             val tv = TextView(this@MainActivity)
             tv.textSize = 10f
             val pad = (8 * resources.displayMetrics.density).toInt()
             tv.setPadding(pad, pad, pad, pad)
-            tv.text = loaded.fold(
+            tv.text = if (bytes == null) {
                 "無法讀取 $path\n\n${loaded.exceptionOrNull()?.message}"
-            ) { (size, body) -> "$path · $size bytes\n\n$body" }
+            } else {
+                // 大小報 bytes，不報「字元數」：中文 UTF-8 是 3 bytes，
+                // 用 String.length 會得到一個騙人的小數字。
+                "$path · ${bytes.size} bytes\n\n${bytes.toString(Charsets.UTF_8)}"
+            }
             tv.setTextIsSelectable(true)
             view.addView(tv)
             AlertDialog.Builder(this@MainActivity)
