@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "lilyco-ghboost"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "async-stream",
  "axum",

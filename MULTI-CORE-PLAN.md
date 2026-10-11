@@ -230,6 +230,22 @@ PASS: 授權聲明按钮可点、清单可开、正文是真 GPL 全文（35149 
 （三内核在 x86_64 上都真的可用）、`TUN 轉發已就緒`（印证 `FORWARDING_IMPLEMENTED = true`
 确实进了产物）。
 
+### W19 —— Release `v0.3.18`（把还没进任何发布版的合规 + 协议修真正落到产物）
+
+`v0.3.17`（`945ea75`）之后 main 有一批**用户看不见**的修复。App 内「授權聲明」入口
+（`f3de8d4`+`a2243e1`）、托盘/APK 的许可证文本修复（`521c244`/`f373f0b`/`3ad51f3`）、
+以及 `45919b8` 的协议对齐（xray 26.x 移除 QUIC 传输；补 mKCP seed 与 sing-box quic）——
+「分发义务要求用户拿得到」，而它们都不在任何发布件里。所以发 `v0.3.18`：
+
+- 版本号 5 处一起改（根 `Cargo.toml` + 根/ffi/tray 三个 `Cargo.lock` 的
+  `lilyco-ghboost` 条目 + `ghboost-tray` 的 `Cargo.toml`/`Cargo.lock` +
+  `build.gradle.kts` 的 `versionCode 17→18` 与 `versionName`）。`mime 0.3.17`
+  是 crates.io 依赖，**不碰** —— 这是上一版提醒过的「版本号 6 处手改」的准确化。
+- 发版前先推 main 让四 workflow 在 0.3.18 上全绿（含新的 `android-license-ui`），
+  再打 tag —— `Build All` 的 `release` job 现在 `needs:` 里含该 job：它红了就不发。
+- 待办（其余都是用户侧）：真机端到端流量 + 真机 SELinux 严格度；simul 麦克风权限的
+  实测；`ghboost-ffi` 的 Android-target clippy 闸（独立工作量）。
+
 ## 风险与坑（预防清单）
 
 - **闸里写死的清单 = 第二份事实来源**：许可证闸原来把文件名列表写死在 workflow 里，

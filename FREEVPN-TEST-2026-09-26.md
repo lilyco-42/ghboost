@@ -493,6 +493,18 @@ UI 明说「系统代理不是 ghboost 开的，没有动它」。
 - iOS 模拟器那份 `libghboost.dylib` 依旧**跳过**：它和真机那份重名，只能上一份
   （与 `v0.3.15`/`v0.3.16` 一致，不是这版新引入的取舍）。
 
+### 7.3 `v0.3.18`
+
+反正道闸都已全绿之后才发（含新加的 `android-license-ui` 模拟器点击验闸，
+它已进 `Build All` 的 `release` `needs:`）。发布的直接理由：`v0.3.17` 之后 main 上
+有**用户看不到的修复** —— App 内「授權聲明」入口（`f3de8d4`+`a2243e1`）、托盘/APK
+许可证文本（`521c244`/`f373f0b`/`3ad51f3`）、xray 26.x QUIC 移除的协议对齐
+（`45919b8`）。本节的 tag SHA / run ID / 资产清单在发布完成后回填。
+
+- tag `v0.3.18` → <待回填>
+- https://github.com/lilyco-42/ghboost/releases/tag/v0.3.18
+- <待回填：资产数 / 总大小 / 与 v0.3.17 的差异 / run ID>
+
 ---
 
 ## 8. 遗留 / 待办
