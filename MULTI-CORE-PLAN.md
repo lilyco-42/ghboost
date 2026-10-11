@@ -171,9 +171,10 @@
    并加断入口接线（layout id / `findViewById` / listener 是否调 `showLicenses()`）；
    APK 内容与暂存区**逐字节**比对。`Build All` run **37013382254** `0 problem(s)`。
 
-**尚未闭环（性质不同，不是缺文件，是缺一次点击验证）**：闸能证明接线在、
-路径对、包里有、字节没被截，**证明不了人真的看得到** —— 需装起来点一下。
-本轮不做本机运行与编译，留待真机或一次跑在 CI 上的模拟器复测。
+**已闭环（`34a0ca3`，`Build All` run 38118056623）**：闸能证明接线在、路径对、
+包里有、字节没被截，**证明不了人真的看得到** —— 这一步原来只能靠真机点一下。
+现改为跑在 **CI 的模拟器**上，见 W18。仍未做的是**真机**上的端到端真跑流量与
+真机 ROM 的 SELinux 严格度 —— 模拟器证明不了那两件，见文末待办。
 
 ### W17 —— 收口两处「闸与被闸的东西不一致」
 
@@ -190,6 +191,44 @@
 
 两处的共同病根都是**同一个**：绿的东西验的不是要发/在用的东西。W15 的 tun2socks
 误判、W16 的写死许可证名单、W17 这两条，是同一种错。
+
+### W18 —— 把「缺一次点击验证」补成 CI 上的模拟器点击（`34a0ca3`）
+
+W16 留的那条缺口（不是缺文件，是缺一次「人真的看得到」）本轮闭环。做法是把
+「装起来点一下」这件事**也变成闸**，跑在 GitHub Actions 上（用户只允许在 CI 上跑）：
+
+- `build-all.yml` 新增 job **`android-license-ui`**（`needs: [android-apk]`），
+  下载 `android-apk` 上传的**产物本体**（不是重编件）—— 也就是 Release 会挂出去的
+  那一个 —— 用 `reactivecircus/android-emulator-runner@v2` 起 API 34 / x86_64 模拟器。
+- `ghboost-android/tools/android-license-ui-test.py`：`adb install` → 启动 App →
+  `uiautomator dump` 读视图树 → 找 `com.ghboost.app:id/btnLicenses` 点开 →
+  断言清单里有 `GPL-3.0` 项 → 点进去 → 断言正文含 `GNU GENERAL PUBLIC LICENSE`
+  且大小行 `>= 10000 bytes`（**用大小当判据**，以免把上游那种几百字节的
+  「详见 GPL-3.0」指针声明当成全文）。
+- 该 job 已进 `release` 的 `needs`：静态闸证明不了的东西，它红了就不发版。
+
+实测（run **38118056623**）：
+
+```
+ok  button present (id='com.ghboost.app:id/btnLicenses' text='授權聲明 LICENSES')
+ok  list item present (text='mihomo 内核 — GPL-3.0')
+ok  body has 'GNU GENERAL PUBLIC LICENSE' and reports 35149 bytes
+PASS: 授權聲明按钮可点、清单可开、正文是真 GPL 全文（35149 bytes）
+```
+
+`35149 bytes` 与 W16 来源表里 mihomo GPL 全文的数字一致 —— 是「点开的就是那份
+真全文」。首次运行红过一次，两处原因都值得记：
+
+1. **`Button` 默认 `textAllCaps`**：布局里写 `Licenses`，渲染出来是 `LICENSES`，
+   我按 `"Licenses"` 大小写敏感地找 → 找不到。**要断的东西和写下的字面可能不是
+   同一个**（同 W17 病根的另一副面孔）。
+2. **只 dump 一次就定生死**：App 刚起时视图树可能还没长全，第一次 dump 读到了
+   界面文字却读不到按钮的 `resource-id`。改成 `wait_for` 轮询后一次通过 ——
+   这类「读一次」的断言在慢启动的模拟器上是**靠运气**的。
+
+顺带得到两条此前只能靠推理的观察：界面显示 `三內核：✓ Mihomo · ✓ Xray · ✓ sing-box`
+（三内核在 x86_64 上都真的可用）、`TUN 轉發已就緒`（印证 `FORWARDING_IMPLEMENTED = true`
+确实进了产物）。
 
 ## 风险与坑（预防清单）
 
@@ -219,6 +258,18 @@
   到底是什么。**带过来的旧结论要当成会腐坏的东西**，改到相关代码时顺手对一眼，
   别拿上一轮的结论当这一轮的事实。反面教材就是这条：我据「上一轮结论」写 §4.2，
   而没去 tag 里查一眼。
+- **要断的东西 ≠ 你写下的那些字**（`34a0ca3`）：模拟器上找许可证按钮，我按布局里的
+  `Licenses` 去找，但 `Button` 默认 `textAllCaps`，屏幕上渲染的是 `LICENSES`，
+  于是断言在本该通过的地方红了。**任何「按字面找 UI／按名字找产物」的断言，都要先
+  确认渲染/落盘之后还会不会是那个字面**（大小写、全角、CJK 变体、转义）。这也解释了
+  为什么按 `resource-id` 找比按文字稳。
+- **模拟器上的「读一次」是靠运气**：App 刚 `am start` 完，视图树可能还没长全 ——
+  第一次 dump 拿到了界面文字、却拿不到按钮的 `resource-id`。改成 `wait_for` 轮询
+  （最多 12 次 × 1.5s）后一次通过。**对慢启动的东西（模拟器、内核监听、网络），
+  断言要轮询到条件成立，而不是 dump 一次就定生死。**
+- **UI 闸要断「内容是不是真的」而不只是「点得开」**：正文断言用了
+  `>= 10000 bytes` 而不是「非空」——非空会放行上游那种几百字节的「详见 GPL-3.0」
+  指针声明。**用大小/结构当判据，别用「有东西」当判据。**
 
 - xray 无 domain 可用时（SOCKS 只给 IP）路由只能 geoip 级 → geoip.dat 随包，
   `XRAY_LOCATION_ASSET` env 指向 kernel 目录；geosite 规则在 xray 模式降级（记录）。

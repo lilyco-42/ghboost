@@ -717,6 +717,32 @@ ok   assets/licenses/THIRD-PARTY-NOTICES.md        2681 B  byte-for-byte == stag
 的缺口，性质与之前的「包内没有 → 包内有」不同：后者是**缺文件**，
 后者是**缺一次点击验证**。
 
+> **2026-10-11 更新（已闭环，不再需要真机）**：上面的缺口已用 **CI 上的模拟器**
+> 补掉。`build-all.yml` 新增 job `android-license-ui`（`needs: [android-apk]`），
+> 下载**产物本体**（不是重编件）装进 API 34 / x86_64 模拟器，用
+> `ghboost-android/tools/android-license-ui-test.py` 走 uiautomator 视图树真点一次：
+> 找 `com.ghboost.app:id/btnLicenses` → 点开 → 断言清单里有 `GPL-3.0` 项 →
+> 点进去 → 断言正文含 `GNU GENERAL PUBLIC LICENSE` 且大小行 `>= 10000 bytes`。
+>
+> 实测（`Build All` run **38118056623**，`android-license-ui` success）：
+>
+> ```
+> ok  button present (id='com.ghboost.app:id/btnLicenses' text='授權聲明 LICENSES')
+> ok  list item present (text='mihomo 内核 — GPL-3.0')
+> ok  body has 'GNU GENERAL PUBLIC LICENSE' and reports 35149 bytes
+> PASS: 授權聲明按钮可点、清单可开、正文是真 GPL 全文（35149 bytes）
+> ```
+>
+> `35149 bytes` 正是 mihomo GPL-3.0 全文的字节数 —— 与本节上面那张来源表的数字
+> 对得上。所以这不止是「点得开」，是「点开的就是那份真全文」。该 job 已进
+> `release` 的 `needs`：它红了就不发版。
+>
+> 顺带得到两条此前只能靠推理的观察：界面显示
+> `三內核：✓ Mihomo · ✓ Xray · ✓ sing-box`（三内核在 x86_64 上都真的可用），
+> 以及 `TUN 轉發已就緒`（印证 `FORWARDING_IMPLEMENTED = true` 确实进了产物）。
+> **仍未做的是真机**：端到端真跑流量、真机 ROM 的 SELinux 严格度 ——
+> 模拟器证明不了那两件。
+
 **这一轮修的过程中，CI 又抓出一条**（不在我预判里）：第一版把许可证来源换成
 `gnu.org` 规范全文，`tray` run **36415822727 当场红了** ——
 `www.gnu.org` 从 GitHub runner 直接超时（`connected host has failed to respond`），
