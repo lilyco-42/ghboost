@@ -225,7 +225,15 @@ def find_text_exact(root, s):
 def wait_text(s, tries=40, delay=1.5, what=""):
     node, root, raw = L.wait_for(lambda r: find_text_exact(r, s), tries=tries, delay=delay)
     if node is None:
-        L.fail_with("等不到文本 %r%s" % (s, ("（" + what + "）") if what else ""), root, raw)
+        tail = ""
+        p = L.adb("logcat", "-d", "-t", "300", check=False, timeout=120)
+        txt = (p.stdout or b"").decode("utf-8", "replace")
+        gh = [ln for ln in txt.splitlines()
+              if re.search(r"GhBoost|mihomo|sing-box|xray|ffi|tun2socks|VpnService", ln, re.I)]
+        if gh:
+            tail = "\n  应用日志尾（最后 40 行）：\n" + "\n".join(gh[-40:])
+        L.fail_with("等不到文本 %r%s%s"
+                    % (s, ("（" + what + "）") if what else "", tail), root, raw)
     return node
 
 
