@@ -175,6 +175,22 @@
 路径对、包里有、字节没被截，**证明不了人真的看得到** —— 需装起来点一下。
 本轮不做本机运行与编译，留待真机或一次跑在 CI 上的模拟器复测。
 
+### W17 —— 收口两处「闸与被闸的东西不一致」
+
+1. **注释腐坏**（`dace48d`）：tun2socks 自 `bc3fb25`（2026-09-11）就已接通、
+   `FORWARDING_IMPLEMENTED = true`，且该 commit 是 `v0.3.17` 的祖先（隔 82 个
+   commit）。但三处 Kotlin 注释（`GhBoostCore` / `GhBoostVpnService` /
+   `LocalProxySetup`）与测试报告 §4.2 一直写着「= false／UDP 尚未转发／Start 仍锁着」
+   —— release notes 反而是对的。根因：拿「上一轮的结论」往下写，没去 tag 里查。
+   已全部改为现状，报告按惯例追加「2026-09-28 再更正」块（不重写历史）。
+2. **出包 toolchain 与闸不统一**（`bcd06c6`）：12 个出包 job 由 `@stable` 改为
+   `toolchain: 1.98.1`，与 fmt/clippy/test 闸对齐；两个 workflow 文件头写清不变量。
+   `Build All` run **38113736422** 全 17 job success，日志逐 job 可见
+   `rustc 1.98.1 (48a229cea 2026-09-01)`。
+
+两处的共同病根都是**同一个**：绿的东西验的不是要发/在用的东西。W15 的 tun2socks
+误判、W16 的写死许可证名单、W17 这两条，是同一种错。
+
 ## 风险与坑（预防清单）
 
 - **闸里写死的清单 = 第二份事实来源**：许可证闸原来把文件名列表写死在 workflow 里，
@@ -231,13 +247,16 @@
   正好是我这轮改的那批函数。这样的闸比没有闸更坏：绿灯是假的。
   真要闸只能 `cargo clippy --target aarch64-linux-android`（要 NDK + 该 target 的
   rust-std，cargo-ndk 本身不跑 clippy），属于独立工作量，本轮记为待办不做。
-- **闸验的 Rust ≠ 出包的 Rust**：`ci.yml:36` / `build-all.yml:37` 的 fmt+clippy+test
-  钉死 `toolchain: 1.98.1`，但 `ci.yml` 的 zigbuild 矩阵、`build-all.yml` 的全部出包
-  job 都只写 `@stable`（= 当时最新 stable）。stable 一升，闸还绿着
-  而出包 job 先炸，或闸红在与出包无关的新 lint 上。同一病根：闸与被闸的东西不是同一份配置。
-  要收就统一钉 `1.98.1`；本轮没动（会让下次出包换编译器，是发版决策不是补丁）。
-  > `tray.yml` 原先也在这份名单里，但 `533d46b` 之后它只有一个 toolchain action 且
-  > 钉了 `1.98.1`，闸与出包已经统一，**不再属于此列**。
+- **闸验的 Rust ≠ 出包的 Rust**（**已收口**，`bcd06c6`）：`ci.yml` / `build-all.yml`
+  的 fmt+clippy+test 钉死 `toolchain: 1.98.1`，但 `ci.yml` 的 zigbuild 矩阵与
+  `build-all.yml` 的**全部出包 job**（共 12 个）当时只写 `@stable`（= 当时最新
+  stable）—— 闸与被闸的东西不是同一份配置。stable 一升，闸还绿着而出包 job 先炸，
+  或闸红在与出包无关的新 lint 上。已把 12 个 job 全部补 `toolchain: 1.98.1`，
+  两个文件头写清不变量（要升就一起升）。证据落在产物用的编译器上：`Build All`
+  run **38113736422** 全 17 job success，日志逐 job 可见 `rustup default 1.98.1`
+  与 `rustc 1.98.1 (48a229cea 2026-09-01)`。
+  > `tray.yml` 原先也被算在这份名单里，但 `533d46b` 之后它只有一个 toolchain
+  > action 且钉了 `1.98.1`，闸与出包已经统一，**不再属于此列**（此前算进去是记错）。
 - **Windows 上 `-no-window` 起模拟器时，进程名是 `qemu-system-x86_64-headless.exe`**，
   不是 `emulator` / `qemu-system-x86_64`。按名字 kill 会漏掉它，残留进程会一直占着
   AVD 的 `multiinstance.lock`，之后每次启动都直接

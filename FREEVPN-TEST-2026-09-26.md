@@ -40,7 +40,7 @@ free-VPN README → `scan` → `test` → `add` → 托盘订阅 → 出口 IP�
 | xray | v26.3.27 |
 | sing-box | v1.14.2 |
 | Rust（fmt/clippy/test 闸） | 1.98.1（`ci.yml:36`、`build-all.yml:37` 显式 `toolchain: 1.98.1`） |
-| Rust（**出包**用的） | `@stable`，**没钉版本** —— 见下方注 |
+| Rust（**出包**用的） | 1.98.1（**已与闸统一**，见下方注，`bcd06c6`） |
 | 测试用 AVD | `mc_test`，API 36 / x86_64 / 1080×2400 |
 
 所有构建与校验都走 GitHub Actions（仓库无本地 cargo），本机只下载产物运行。
@@ -55,15 +55,24 @@ v0.3.17  release asset digest        sha256:c4775d4526c665340b2674313b6f4e5dc84a
 ```
 
 
-> **顺带记一个跟 8.2 同类的闸缺口**（写这行时才发现，尚未修）：**出包用的 Rust
-> 和校验用的 Rust 不是同一个**。fmt/clippy/test 钉死 `1.98.1`，但 `ci.yml` 的
-> zigbuild 矩阵、`build-all.yml` 的全部出包 job、以及整个 `tray.yml`（`:35`）
-> 都只写 `dtolnay/rust-toolchain@stable` —— 跑的是「当时最新的 stable」。
-> 也就是说**闸验的编译器不是产物的编译器**：stable 一升，闸可能还绿着，
-> 而出包 job 先炸（或者更糟：闸红在 1.98.1 的新 lint 上，与出包成败无关）。
-> 这和 8.2(b) 是同一个病根 —— **闸与被闸的东西不是同一份配置**。
-> 要收就四处统一钉 `1.98.1`；本轮没动，因为它会让下一次出包换编译器，
-> 属于发版决策而不是补丁。
+> **顺带记一个跟 8.2 同类的闸缺口 —— 已在 `bcd06c6` 收口**：**出包用的 Rust
+> 一度和校验用的不是同一个**。fmt/clippy/test 钉死 `1.98.1`，但 `ci.yml` 的
+> zigbuild 矩阵和 `build-all.yml` 的**全部出包 job**（共 12 个）只写
+> `dtolnay/rust-toolchain@stable` —— 跑的是「当时最新的 stable」。也就是说
+> **闸验的编译器不是产物的编译器**：stable 一升，闸可能还绿着，而出包 job 先炸
+> （或者更糟：闸红在 1.98.1 的新 lint 上，与出包成败无关）。这和 8.2(b) 是同一个
+> 病根 —— **闸与被闸的东西不是同一份配置**。
+>
+> 收口做法：12 个出包 job 全部补 `toolchain: 1.98.1`，两个 workflow 文件头都写清
+> 这条不变量（要升版本就一次全升，否则闸与产物又会分叉）。**此前把 `tray.yml`
+> 也算进缺口名单是记错了** —— 它自 `533d46b` 起就只有一个 toolchain action 且钉了
+> `1.98.1`，闸与出包早已统一。
+>
+> 证据不落在「改了配置」上，而是落在**产物用的编译器**上：`Build All` run
+> **38113736422** 全 17 个 job success，日志里逐 job 可见
+> `rustup default 1.98.1` 与 `rustc 1.98.1 (48a229cea 2026-09-01)`（同一次运行里
+> `android` / `wasm` / `ios` / `musl` 等目标也都编过了，说明没有哪个目标偷偷
+> 依赖了比 1.98.1 更新的东西）。
 
 ---
 
