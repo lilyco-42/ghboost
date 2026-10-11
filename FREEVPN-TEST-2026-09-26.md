@@ -232,6 +232,23 @@ provider 侧 `GET /providers/proxies`：`vehicleType: File`，`proxies` 数组 2
 > 仍然没闭环的只剩两条：tun2socks 未接通（START 仍被挡回）、AVD 取不到私有目录
 > 做产物校验（`adb root` / `run-as` 对 production build 都不可用）。
 
+> **2026-09-28 再更正（对 tag 复查）**：上面那句「tun2socks 未接通（START 仍被挡回）」
+> **也是错的**，和上一段一样，是「把旧前提带过来」的产物，而不是观察到的现象。
+> 直接查 tag 即可推翻：`tun2socks::FORWARDING_IMPLEMENTED` 自 `bc3fb25`
+> （2026-09-11「接上代理内核 + 收紧 Start 闸门（两个条件）」）起就是 `true`，
+> 而该 commit 是 `v0.3.17`（`945ea75`）的**祖先**（中间隔 82 个 commit）——
+> 所以**发布出去的 v0.3.17 里这道闸已经是 true**，release notes 说的「TUN 轉發已接通、
+> Start 可啟停」与源码一致。
+>
+> 准确的状态：START 闸门是**两个条件**（`nativeTunForwardingImplemented`
+> + `hasRealNodes`），并不是「tun2socks 没接上所以锁着」。§4.3 的 AVD 表里**根本
+> 没有按下 START 这一项**，所以「START 被 `startVpn()` 挡回」从头到尾是**推**出来的，
+> 不是观察到的。按一次 START 真跑流量的复测仍然缺，列为 follow-up。
+>
+> 同类修正：三处 Kotlin 注释（`GhBoostCore.kt` / `GhBoostVpnService.kt` /
+> `LocalProxySetup.kt`）此前也写着 `= false`／「Start 仍锁着」，本轮一并改为现状。
+> **注释也是产物，也会腐坏，也要跟着改** —— 而且它比代码更容易骗人，因为没人编译它。
+
 ### 4.3 `v0.3.17` 在 AVD 上的复测（发布件本体）
 
 装的是**发布资产本体**（SHA256 与 release asset digest 逐位一致，见第 1 节），

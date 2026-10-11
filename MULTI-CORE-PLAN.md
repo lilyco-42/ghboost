@@ -195,6 +195,14 @@
 - **本机不编译 ⇒ 类型错误只能靠 CI 抓**：`f3de8d4` 一次红换来三个修复
   （`Pair` 解构拿错格、`Result.fold` 当 `List.fold` 用）。静态检查能过不代表
   类型对，别在提交前声称「改好了」。
+- **注释也是产物，也会腐坏，而且没人编译它**：`tun2socks` 在 `bc3fb25`
+  （2026-09-11）就已接通、`FORWARDING_IMPLEMENTED = true`，但三处 Kotlin 注释
+  （`GhBoostCore.kt` / `GhBoostVpnService.kt` / `LocalProxySetup.kt`）与测试报告
+  §4.2 一直写着「= false／Start 仍锁着／tun2socks 未接通」，一路无人发现 ——
+  因为**注释错了不会红**。查证成本极低：`git show <tag>:<file>` 就能看出发布件里
+  到底是什么。**带过来的旧结论要当成会腐坏的东西**，改到相关代码时顺手对一眼，
+  别拿上一轮的结论当这一轮的事实。反面教材就是这条：我据「上一轮结论」写 §4.2，
+  而没去 tag 里查一眼。
 
 - xray 无 domain 可用时（SOCKS 只给 IP）路由只能 geoip 级 → geoip.dat 随包，
   `XRAY_LOCATION_ASSET` env 指向 kernel 目录；geosite 规则在 xray 模式降级（记录）。

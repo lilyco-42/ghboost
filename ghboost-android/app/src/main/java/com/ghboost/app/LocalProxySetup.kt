@@ -18,16 +18,17 @@ import org.json.JSONObject
  *      节点来自 `providers/ghboost.yaml`
  *   3. 写一份 `providers/ghboost.yaml` 模板，里面放一个「直连占位」节点
  *
- * ⚠️ 载入这份配置后，mihomo 的 SOCKS5 入口是本机唯一出口，而它自己的
- * 出站**也必须被 protect**（走 `VpnService.protect`），否则仍会回圈。
- * 所以这里只负责把「文件就位」，真正的连通要等 mihomo 随 App 启动、
- * 且 us 把 protect 接上它的 socket —— 在那之前 Start 仍然锁着
- * （`FORWARDING_IMPLEMENTED` = false）。
+ * 这份配置由**内嵌内核**（meow-rs，MIT；解析 mihomo 格式的 config）读取：
+ * SOCKS5 入口开在 127.0.0.1:1080，节点来自 `providers/ghboost.yaml`。
+ * App 按 Start 时由 GhBoostVpnService 拉起它，再把 TUN fd 交给 tun2socks，
+ * 后者把 TUN 流量丢到 1080 —— 到这里链路才真正接上。
  *
- * TODO(m3): 内嵌 mihomo 二进制（arm64-v8a / armeabi-v7a / x86_64）
- * 并在 GhBoostVpnService 里拉起它、把它的进程 socket protect 掉。
- * 届时就由 [hasUsableConfig] 判断「能不能放开 Start」，而不是看
- * 一个写死的常数。
+ * ⚠️ 内核自己的出站也必须绕过 TUN，否则「TUN→SOCKS5→远端→TUN」回圈。
+ * 现在有两条腿兜底：内嵌内核的 `VpnService.protect(fd)`，以及
+ * `addDisallowedApplication(自身包名)` 把整个 App（含 exec 子进程）排除出 TUN。
+ *
+ * 所以这个物件只负责「把文件备好」；能不能放开 Start 看的是
+ * [hasRealNodes]（有真实节点），不是这里的文件在不在。
  */
 object LocalProxySetup {
 

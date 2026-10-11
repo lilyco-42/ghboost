@@ -18,11 +18,13 @@ import org.json.JSONObject
  * the Rust ghboost-ffi tun2socks module.
  *
  * Flow:
- *   1. Builder.establish() → TUN fd
- *   2. GhBoostCore.nativeStartTun2Socks(this, fd, DNS_PORT)
- *   3. Rust lwip 栈读写 TUN fd，TCP 经 SOCKS5 出站转发
- *      （UDP 尚未转发；且 Start 按钮仍锁着，见 tun2socks.rs 的
- *        FORWARDING_IMPLEMENTED —— 要等本地 SOCKS5 代理就位）
+ *   1. Builder.establish() → TUN fd（先 addDisallowedApplication(自身) 把整个
+ *      App 排除出 TUN，内核自己的出站才不会被隧道卷回去）
+ *   2. startProxyKernel() → 拉起代理内核，SOCKS5 监听 127.0.0.1:1080
+ *   3. GhBoostCore.nativeStartTun2Socks(this, fd, DNS_PORT)
+ *   4. Rust lwip 栈读写 TUN fd，TCP/UDP 经 SOCKS5 出站转发
+ *      （`FORWARDING_IMPLEMENTED` = true；但「有网」还需 `hasRealNodes` ——
+ *        两个条件都满足 UI 才放开 Start，见 MainActivity 的 tunReady）
  */
 class GhBoostVpnService : VpnService() {
 

@@ -102,13 +102,19 @@ object GhBoostCore {
     /**
      * 这个 .so 里的 tun2socks 是否**真的会转发流量**。
      *
-     * 现在是 false —— `start()` 只是置了个标志，TUN fd 没有任何人读写。
-     * 实测（API 36 模拟器）：按下 Start 后 TUN 建起来、系统显示 VPN 已连接，
-     * 但 ping 8.8.8.8 是 100% 丢包，等于整机断网。所以在它变成 true 之前，
-     * UI 必须拦住 Start，不能让使用者按下一个「按了就断网」的按钮。
+     * 由 Rust 侧 `tun2socks::FORWARDING_IMPLEMENTED` 决定（**现在是 true**，
+     * 自 `bc3fb25` 起：TUN ↔ 本地 SOCKS5 的 lwIP 栈 TCP/UDP 都已接上），
+     * 这里不用改。
      *
-     * 由 Rust 侧 `tun2socks::FORWARDING_IMPLEMENTED` 决定，接上 lwip 后翻成 true
-     * 即可，这里不用改。
+     * 之所以还留着这道闸、而不是干脆删掉放开：它曾经是 false —— `start()`
+     * 只置了个标志、TUN fd 没人读写，实测（API 36 模拟器）按下 Start 后 TUN
+     * 建起来、系统显示 VPN 已连接，但 ping 8.8.8.8 是 100% 丢包，等于整机断网。
+     * 留着它，「哪天内核那半段又坏了」时 UI 能自动把 Start 拦回去，不靠人记得。
+     *
+     * ⚠️ 这个值**只说明原生层会转发**，不说明使用者一定有网：节点清单若还是
+     * 出厂占位，内核照常启动、VPN 照常显示已连接，但每个连线都指向没人监听的
+     * 占位节点。所以 Start 闸门是**两个条件**（本值 + `hasRealNodes`），
+     * 见 MainActivity 的 `tunReady`。
      */
     external fun nativeTunForwardingImplemented(): Boolean
 
