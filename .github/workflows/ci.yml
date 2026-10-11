@@ -7,6 +7,13 @@ name: CI
 # 打 v* tag 时把全部产物发布为 GitHub Release。
 #
 # 参考：lilyco/build-release.yml、cute_box/build-all.yml（macOS/Android 走原生 runner + NDK）
+#
+# ── toolchain 不变量（改动前请读）─────────────────────────────────────
+# 所有 job 的 Rust toolchain 都钉在 1.98.1 —— **包括出包的 job**。
+# 理由：`test` 闸（fmt / clippy / test）与出包 job 若用不同 toolchain，那道闸
+# 就形同虚设 —— 它验的是 1.98.1 上的代码，发出去的却是「当今 stable」编的
+# 二进制。闸验的 Rust ≠ 出包的 Rust 时，绿只是假绿。
+# 要升版本就**一次全升**：本文件所有 `toolchain:` + build-all.yml + tray.yml 里的同名项。
 
 on:
   push:
@@ -68,6 +75,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          # 用 @stable 的话，闸（1.98.1）与产物（当今 stable）会各走各的，
+          # 一旦 stable 前进，出包的二进制就是一道从没被 fmt/clippy/test 验过的
+          # 编译器编出来的 —— 闸全绿却与产物无关。见文件头说明。
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       - name: Install zig
         run: |
@@ -129,6 +141,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          # 用 @stable 的话，闸（1.98.1）与产物（当今 stable）会各走各的，
+          # 一旦 stable 前进，出包的二进制就是一道从没被 fmt/clippy/test 验过的
+          # 编译器编出来的 —— 闸全绿却与产物无关。见文件头说明。
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -163,6 +180,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          toolchain: 1.98.1
           targets: aarch64-linux-android
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -209,6 +228,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          # 用 @stable 的话，闸（1.98.1）与产物（当今 stable）会各走各的，
+          # 一旦 stable 前进，出包的二进制就是一道从没被 fmt/clippy/test 验过的
+          # 编译器编出来的 —— 闸全绿却与产物无关。见文件头说明。
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}

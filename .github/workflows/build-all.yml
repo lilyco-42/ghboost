@@ -9,6 +9,13 @@ name: Build All Platforms
 #   - Android APK 需要 ghboost-android/ 目录下的 Gradle 项目
 #   - iOS 需要 Apple Developer 签名
 #   - 打 v* tag 时自动发布 GitHub Release
+#
+# ── toolchain 不变量（改动前请读）─────────────────────────────────────
+# 所有 job 的 Rust toolchain 都钉在 1.98.1 —— **包括出包的 job**。
+# 理由：`test` 闸（fmt / clippy / test）与出包 job 若用不同 toolchain，那道闸
+# 就形同虚设 —— 它验的是 1.98.1 上的代码，发出去的却是「当今 stable」编的
+# 二进制。闸验的 Rust ≠ 出包的 Rust 时，绿只是假绿。
+# 要升版本就**一次全升**：本文件所有 `toolchain:` + ci.yml + tray.yml 里的同名项。
 
 on:
   push:
@@ -79,6 +86,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          # 用 @stable 的话，闸（1.98.1）与产物（当今 stable）会各走各的，
+          # 出包的二进制就是一道从没被验过的编译器编出来的。见文件头说明。
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       - name: Install Android SDK + NDK
         uses: android-actions/setup-android@v3
@@ -565,6 +576,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          # 用 @stable 的话，闸（1.98.1）与产物（当今 stable）会各走各的，
+          # 出包的二进制就是一道从没被验过的编译器编出来的。见文件头说明。
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -628,6 +643,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          toolchain: 1.98.1
           targets: x86_64-pc-windows-msvc
       - name: Install cargo-wix
         run: cargo install cargo-wix --locked
@@ -739,6 +756,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          # 用 @stable 的话，闸（1.98.1）与产物（当今 stable）会各走各的，
+          # 出包的二进制就是一道从没被验过的编译器编出来的。见文件头说明。
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       # 不再装 libwebkit2gtk-4.1-dev：webview 是可选 feature 且发布构建不带它，
       # 默认构建不链接 webkit/gtk，装了纯属浪费 CI 时间。
@@ -808,6 +829,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          # 用 @stable 的话，闸（1.98.1）与产物（当今 stable）会各走各的，
+          # 出包的二进制就是一道从没被验过的编译器编出来的。见文件头说明。
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -856,6 +881,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          # 用 @stable 的话，闸（1.98.1）与产物（当今 stable）会各走各的，
+          # 出包的二进制就是一道从没被验过的编译器编出来的。见文件头说明。
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
       - name: Build static lib
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -911,6 +940,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          # 与 test 闸同一 toolchain：闸验的 Rust 必须就是出包的 Rust。
+          toolchain: 1.98.1
           targets: wasm32-unknown-unknown
       - name: Build WASM
         # --lib：bin 依赖被裁掉的 deploy/mihomo/proxy 模块，编不了也没意义
