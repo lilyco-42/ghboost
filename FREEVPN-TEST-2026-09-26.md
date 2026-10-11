@@ -496,14 +496,30 @@ UI 明说「系统代理不是 ghboost 开的，没有动它」。
 ### 7.3 `v0.3.18`
 
 反正道闸都已全绿之后才发（含新加的 `android-license-ui` 模拟器点击验闸，
-它已进 `Build All` 的 `release` `needs:`）。发布的直接理由：`v0.3.17` 之后 main 上
-有**用户看不到的修复** —— App 内「授權聲明」入口（`f3de8d4`+`a2243e1`）、托盘/APK
-许可证文本（`521c244`/`f373f0b`/`3ad51f3`）、xray 26.x QUIC 移除的协议对齐
-（`45919b8`）。本节的 tag SHA / run ID / 资产清单在发布完成后回填。
+它已进 `Build All` 的 `release` `needs:` —— 它红了就不发）。发布的直接理由：
+`v0.3.17` 之后 main 上有**用户看不到的修复** —— App 内「授權聲明」入口
+（`f3de8d4`+`a2243e1`）、托盘/APK 许可证文本（`521c244`/`f373f0b`/`3ad51f3`）、
+xray 26.x QUIC 移除的协议对齐（`45919b8`）。
 
-- tag `v0.3.18` → <待回填>
+- tag `v0.3.18` → `d979badf2c002efdf76d780a18140f742f60ffb7`（轻量 tag）。
+  发版动作：先推 main 让四 workflow 在 0.3.18 上全绿，再打 tag。
 - https://github.com/lilyco-42/ghboost/releases/tag/v0.3.18
-- <待回填：资产数 / 总大小 / 与 v0.3.17 的差异 / run ID>
+- 30 个资产 / 650.0 MB。与 `v0.3.17` 逐一核对，**只有 MSI 从
+  `lilyco-ghboost-0.3.17-x86_64.msi` 变 `lilyco-ghboost-0.3.18-x86_64.msi`**。
+- run（tag 触发，全 success）：CI **38121099365** / tray **38121099360** /
+  Build All **38121099375**（含 `android-license-ui` 模拟器验闸）。两个 Publish job
+  （CI 的 `Publish Release` 与 Build All 的 `Publish GitHub Release`）completed success。
+- **发布件直读验证**（下载 `v0.3.18` 的 zip 与 x86_64 APK 本体逐项检查）：
+  - 托盘 zip（81,209,966 B）：
+    `kernel/mihomo-LICENSE.txt` 35,149 B、`kernel/sing-box-LICENSE.txt`
+    **34,674 B** —— v0.3.16/17 的 zip 里缺的就是它，本版由构建**原生**带出，
+    不再靠 Release 补挂赎罪；`kernel/xray-LICENSE.txt` 16,725 B；
+    `THIRD-PARTY-NOTICES.md` 4,817 B（托盘自带那份，与
+    `ghboost-tray/THIRD-PARTY-NOTICES.md` 逐字节相同）。
+  - APK（x86_64，79,122,737 B）：`assets/licenses/` 下四份都在，
+    mihomo/sing-box/xray 三个正文与来源表数字完全一致；`THIRD-PARTY-NOTICES.md`
+    在 APK 里是 2,681 B —— 即仓库根文件（2,740 B，含 59 个 CRLF）被包进 APK 时
+    归一成 LF 的形态（2,740 − 59），内容一字不差，不是缺了一版。
 
 ---
 

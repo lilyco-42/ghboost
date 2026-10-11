@@ -243,6 +243,10 @@ PASS: 授權聲明按钮可点、清单可开、正文是真 GPL 全文（35149 
   是 crates.io 依赖，**不碰** —— 这是上一版提醒过的「版本号 6 处手改」的准确化。
 - 发版前先推 main 让四 workflow 在 0.3.18 上全绿（含新的 `android-license-ui`），
   再打 tag —— `Build All` 的 `release` job 现在 `needs:` 里含该 job：它红了就不发。
+- 结果（2026-10-11）：tag `v0.3.18` → `d979bad`，30 资产 / 650.0 MB，全部闸绿后
+  发版。发布件直读验证：托盘 zip 的 `kernel/sing-box-LICENSE.txt`（34,674 B）
+  **原生在包内**（v0.3.16/17 缺的就是它，这次不是靠 Release 补挂）；
+  APK 四份 `assets/licenses/*` 全在。详见报告 §7.3（含三份 run ID 与逐字节核对）。
 - 待办（其余都是用户侧）：真机端到端流量 + 真机 SELinux 严格度；simul 麦克风权限的
   实测；`ghboost-ffi` 的 Android-target clippy 闸（独立工作量）。
 
