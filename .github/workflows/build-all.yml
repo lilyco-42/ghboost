@@ -537,6 +537,44 @@ jobs:
           path: ghboost-android/app/build/outputs/apk/release/*.apk
           if-no-files-found: warn
 
+  # ============ Android 许可证 UI（真模拟器上点一次）============
+  # 这是许可证链唯一一次「人真的看得到」的验证。上面的静态闸能证明接线在、
+  # assets 在 APK 里、字节与暂存区逐字节相同 —— 但证明不了「点得到、点开有字」。
+  # 「打进包里」和「用户看得到」是两件事，分发义务要的是后者。
+  #
+  # 装的/点的就是 android-apk job 上传的**产物本体**（不是重编件），
+  # 也就是 Release 里会挂出去的那一个 artifact。所以它验的是要发的东西。
+  android-license-ui:
+    name: Android license UI (emulator)
+    needs: [android-apk]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the APK artifact (the one that ships)
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: apk
+      - name: Show what we got
+        run: ls -lh apk
+      # KVM：GitHub 的 ubuntu runner 支持，但要显式放行 /dev/kvm。
+      # 这段是 reactivecircus/android-emulator-runner 官方 README 给的规则。
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules || true
+          sudo udevadm trigger --name-match=kvm || true
+      - name: Boot emulator and click through 授權聲明
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: python3 ghboost-android/tools/android-license-ui-test.py apk/ghboost-android-x86_64.apk
+
   # ============ Windows ============
   windows:
     name: Windows (${{ matrix.target }})
@@ -967,7 +1005,11 @@ jobs:
     # 而 Android / Linux / macOS / iOS 还在构建 → 这就是竞态，不是偶发：
     # v0.3.5 只挂出 16 个资产（v0.3.4 有 23 个），Android 的 .so 全部缺席，
     # 但 Release 说明里照样写着「支持 Android」。谁先跑完谁上，全看运气。
-    needs: [test, android, android-apk, windows, windows-msi, linux, macos, ios, web]
+    #
+    # 也等 `android-license-ui`：许可证按钮「点得开、里面有真全文」这件事，
+    # 静态闸证明不了（见该 job 注释）。它红了就不该发 —— 否则又是
+    # 「绿的东西没验到要发的那个」。
+    needs: [test, android, android-apk, android-license-ui, windows, windows-msi, linux, macos, ios, web]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
