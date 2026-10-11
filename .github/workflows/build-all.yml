@@ -575,6 +575,45 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: python3 ghboost-android/tools/android-license-ui-test.py apk/ghboost-android-x86_64.apk
 
+  # ============ Android 端到端（真模拟器上 START + 真跑流量）============
+  # license-ui 闸证明「点得开许可证」；静态闸证明「TUN 代码在包里」。
+  # 但「按 START 之后，这台设备上的流量到底有没有真的进代理内核、出公网」，
+  # 「在 enforcing SELinux 下有没有被 avc 拒绝」——静态闸一句都答不了。
+  # 这是整个 Android 验证链里唯一一次「真跑」：真模拟器、真按钮、真流量。
+  #
+  # 装的/点的就是 android-apk job 上传的**产物本体**（不是重编件）。
+  # 详见过闸脚本 android-e2e-test.py 头注释：确定性本地 SOCKS5 节点 +
+  # 公网订阅兜底 —— 闸不赌公网免费节点的心情，但公网节点活着就是真实 VPN 使用。
+  # SELinux enforcing 用模拟器镜像自带策略验（各家 ROM 严格度仍属真机专测）。
+  android-e2e:
+    name: Android E2E VPN traffic (emulator)
+    needs: [android-apk]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the APK artifact (the one that ships)
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: apk
+      - name: Show what we got
+        run: ls -lh apk
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules || true
+          sudo udevadm trigger --name-match=kvm || true
+      - name: Boot emulator, press START, and push real traffic through the VPN
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: python3 ghboost-android/tools/android-e2e-test.py apk/ghboost-android-x86_64.apk
+
   # ============ Windows ============
   windows:
     name: Windows (${{ matrix.target }})
@@ -1009,7 +1048,11 @@ jobs:
     # 也等 `android-license-ui`：许可证按钮「点得开、里面有真全文」这件事，
     # 静态闸证明不了（见该 job 注释）。它红了就不该发 —— 否则又是
     # 「绿的东西没验到要发的那个」。
-    needs: [test, android, android-apk, android-license-ui, windows, windows-msi, linux, macos, ios, web]
+    #
+    # 也等 `android-e2e`：Release 文案声称「AVD 模擬器實測 E2E 通過」，
+    # 那就必须真有这么一道闸在跑 —— START 起得来、tun0 up、内核 1080
+    # 出口出网 2xx、SELinux enforcing 无 avc。它红了也不该发（见该 job 注释）。
+    needs: [test, android, android-apk, android-license-ui, android-e2e, windows, windows-msi, linux, macos, ios, web]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
