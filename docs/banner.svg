@@ -12,7 +12,7 @@
   <text x="552" y="164" font-size="84" font-weight="700" fill="#38bdf8" opacity="0.30" text-anchor="end" font-family="Consolas,monospace">↓</text>
   <rect x="0" y="0" width="6" height="200" fill="url(#ac)"/>
   <rect x="36" y="46" height="34" rx="17" width="130" fill="#38bdf8" opacity="0.14" stroke="#38bdf8"/>
-  <text x="101" y="69" font-size="15" fill="#22d3ee" text-anchor="middle">Rust · ★2</text>
+  <text x="101" y="69" font-size="15" fill="#22d3ee" text-anchor="middle">Rust · ★3</text>
   <text x="36" y="126" font-size="42" font-weight="700" fill="#f8fafc">ghboost</text>
   <text x="36" y="158" font-size="17" fill="#22d3ee">GitHub 加速 · 免费节点扫描 / 测速 / 一键注入 Clash</text>
 </svg>
